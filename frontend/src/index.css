@@ -1,0 +1,27 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+body {
+  font-family: "Tajawal", sans-serif;
+  @apply bg-slate-100 text-slate-800;
+}
+
+/* Clean paper output for printed invoices and reports. */
+@media print {
+  body {
+    background: white;
+  }
+  @page {
+    size: A4;
+    margin: 12mm;
+  }
+}
+
+/* Keyboard-first UX for warehouse staff: make focus states obvious. */
+input:focus-visible,
+select:focus-visible,
+button:focus-visible,
+textarea:focus-visible {
+  @apply outline outline-2 outline-emerald-600;
+}

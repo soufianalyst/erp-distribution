@@ -1,0 +1,24 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.pytest_cache/
+.ruff_cache/
+*.egg-info/
+
+# Environment
+.env
+
+# Node / React
+node_modules/
+frontend/build/
+frontend/dist/
+
+# OS / Editor
+.DS_Store
+.idea/
+.vscode/
+
+# Claude Code local tool-permission allowlist (machine/session-specific)
+.claude/settings.local.json
