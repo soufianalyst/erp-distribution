@@ -47,6 +47,10 @@ class Product(Base):
     sku: Mapped[str] = mapped_column(
         String(50), unique=True, index=True, nullable=False
     )
+    # For barcode-scanner lookup; optional since not every product carries one.
+    barcode: Mapped[str | None] = mapped_column(
+        String(50), unique=True, index=True, nullable=True
+    )
     name: Mapped[str] = mapped_column(String(150), nullable=False)
     # Smallest sellable unit (e.g. "حبة"); all stored quantities are in this unit.
     base_unit_name: Mapped[str] = mapped_column(String(30), nullable=False)

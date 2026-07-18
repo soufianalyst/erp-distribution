@@ -1,6 +1,13 @@
 """Import all models here so Base.metadata knows every table (needed by create_all/Alembic)."""
 
-from app.domain.models.accounting import Account, AccountType, JournalEntry, JournalItem
+from app.domain.models.accounting import (
+    Account,
+    AccountType,
+    BankStatementLine,
+    JournalEntry,
+    JournalItem,
+)
+from app.domain.models.audit import AuditAction, AuditLog
 from app.domain.models.cashier import CashMovement
 from app.domain.models.delivery import (
     DeliveryStop,
@@ -48,6 +55,9 @@ from app.domain.models.user import User, UserRole
 __all__ = [
     "Account",
     "AccountType",
+    "AuditAction",
+    "AuditLog",
+    "BankStatementLine",
     "CashMovement",
     "CompanySettings",
     "Customer",

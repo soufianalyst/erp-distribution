@@ -107,12 +107,25 @@ async def create_product(
     dependencies=[products_view],
 )
 async def list_products(
-    search: str | None = Query(default=None, description="بحث بالاسم أو رمز الصنف"),
+    search: str | None = Query(default=None, description="بحث بالاسم أو رمز الصنف أو الباركود"),
     db: AsyncSession = Depends(get_db),
 ) -> APIResponse[list[ProductOut]]:
     """عرض قائمة الأصناف مع إمكانية البحث."""
     products = await ProductService(db).list_products(search)
     return APIResponse(data=[ProductOut.model_validate(p) for p in products])
+
+
+@router.get(
+    "/products/barcode/{barcode}",
+    response_model=APIResponse[ProductOut],
+    dependencies=[products_view],
+)
+async def get_product_by_barcode(
+    barcode: str, db: AsyncSession = Depends(get_db)
+) -> APIResponse[ProductOut]:
+    """بحث سريع عن صنف بالباركود (لاستخدام ماسح الباركود)."""
+    product = await ProductService(db).get_by_barcode(barcode)
+    return APIResponse(data=ProductOut.model_validate(product))
 
 
 @router.get(
@@ -141,6 +154,19 @@ async def update_product(
     return APIResponse(
         data=ProductOut.model_validate(product), message="تم تحديث الصنف بنجاح."
     )
+
+
+@router.delete(
+    "/products/{product_id}",
+    response_model=APIResponse[None],
+    dependencies=[Depends(require_permissions("products.delete"))],
+)
+async def delete_product(
+    product_id: int, db: AsyncSession = Depends(get_db)
+) -> APIResponse[None]:
+    """حذف صنف نهائياً؛ يُرفض إن كانت له أي حركات مخزنية سابقة."""
+    await ProductService(db).delete_product(product_id)
+    return APIResponse(data=None, message="تم حذف الصنف بنجاح.")
 
 
 @router.get(

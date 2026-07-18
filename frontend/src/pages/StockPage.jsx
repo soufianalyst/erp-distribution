@@ -75,11 +75,13 @@ function ReceiveForm({ products, warehouses, onDone }) {
       <div className="grid grid-cols-1 gap-4 sm:grid-cols-3">
         <Select label="الصنف" value={form.product_id} onChange={set("product_id")} required>
           <option value="">— اختر الصنف —</option>
-          {products.map((p) => (
-            <option key={p.id} value={p.id}>
-              {p.sku} — {p.name}
-            </option>
-          ))}
+          {products
+            .filter((p) => p.is_active)
+            .map((p) => (
+              <option key={p.id} value={p.id}>
+                {p.sku} — {p.name}
+              </option>
+            ))}
         </Select>
         <Select label="المستودع" value={form.warehouse_id} onChange={set("warehouse_id")} required>
           <option value="">— اختر المستودع —</option>
@@ -142,11 +144,13 @@ function TransferForm({ products, warehouses, onDone }) {
       <div className="grid grid-cols-1 gap-4 sm:grid-cols-3">
         <Select label="الصنف" value={form.product_id} onChange={set("product_id")} required>
           <option value="">— اختر الصنف —</option>
-          {products.map((p) => (
-            <option key={p.id} value={p.id}>
-              {p.sku} — {p.name}
-            </option>
-          ))}
+          {products
+            .filter((p) => p.is_active)
+            .map((p) => (
+              <option key={p.id} value={p.id}>
+                {p.sku} — {p.name}
+              </option>
+            ))}
         </Select>
         <Select label="من مستودع" value={form.from_warehouse_id} onChange={set("from_warehouse_id")} required>
           <option value="">—</option>
@@ -235,11 +239,13 @@ function AdjustmentForm({ products, onDone }) {
         </Select>
         <Select label="الصنف" value={productId} onChange={(e) => selectProduct(e.target.value)} required>
           <option value="">— اختر الصنف —</option>
-          {products.map((p) => (
-            <option key={p.id} value={p.id}>
-              {p.sku} — {p.name}
-            </option>
-          ))}
+          {products
+            .filter((p) => p.is_active)
+            .map((p) => (
+              <option key={p.id} value={p.id}>
+                {p.sku} — {p.name}
+              </option>
+            ))}
         </Select>
       </div>
       <Input label="ملاحظات (اختياري)" value={notes} onChange={(e) => setNotes(e.target.value)} />

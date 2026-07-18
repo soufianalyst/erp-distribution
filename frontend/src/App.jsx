@@ -4,6 +4,8 @@ import { Loading } from "./components/Ui";
 import { AuthProvider, useAuth } from "./context/AuthContext";
 import AccountingPage from "./pages/AccountingPage";
 import AnalyticsPage from "./pages/AnalyticsPage";
+import AuditLogPage from "./pages/AuditLogPage";
+import BarcodeScanPage from "./pages/BarcodeScanPage";
 import CashierPage from "./pages/CashierPage";
 import CustomersPage from "./pages/CustomersPage";
 import DashboardPage from "./pages/DashboardPage";
@@ -72,6 +74,14 @@ export default function App() {
           >
             <Route path="/" element={<DashboardPage />} />
             <Route path="/products" element={<ProductsPage />} />
+            <Route
+              path="/barcode-scan"
+              element={
+                <RequirePerm perm="products.view">
+                  <BarcodeScanPage />
+                </RequirePerm>
+              }
+            />
             <Route path="/warehouses" element={<WarehousesPage />} />
             <Route path="/stock" element={<StockPage />} />
             <Route path="/customers" element={<CustomersPage />} />
@@ -124,6 +134,14 @@ export default function App() {
               element={
                 <RequirePerm perm="users.manage">
                   <UsersPage />
+                </RequirePerm>
+              }
+            />
+            <Route
+              path="/audit"
+              element={
+                <RequirePerm perm="audit.view">
+                  <AuditLogPage />
                 </RequirePerm>
               }
             />

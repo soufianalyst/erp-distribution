@@ -170,9 +170,11 @@ function InvoiceForm({ customers, warehouses, products, taxRates, isAdmin, onCre
       </div>
 
       <datalist id="invoice-products">
-        {products.map((p) => (
-          <option key={p.id} value={productLabel(p)} />
-        ))}
+        {products
+          .filter((p) => p.is_active)
+          .map((p) => (
+            <option key={p.id} value={productLabel(p)} />
+          ))}
       </datalist>
 
       <div>

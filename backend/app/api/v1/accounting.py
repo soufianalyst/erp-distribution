@@ -9,21 +9,32 @@ from app.api.deps import require_permissions
 from app.api.schemas.accounting import (
     AccountCreate,
     AccountOut,
+    BalanceSheetOut,
+    BankReconciliationSummaryOut,
+    BankStatementLineCreate,
+    BankStatementLineOut,
+    IncomeStatementOut,
     JournalEntryOut,
     ManualEntryCreate,
+    MatchRequest,
     TaxSummaryOut,
     TrialBalanceOut,
+    UnmatchedJournalItemOut,
 )
 from app.api.schemas.common import APIResponse
 from app.db.session import get_db
 from app.domain.models.user import User
 from app.services.accounting.accounting_service import AccountingService
+from app.services.accounting.bank_reconciliation_service import (
+    BankReconciliationService,
+)
 
 router = APIRouter(prefix="/accounting", tags=["Accounting"])
 
 # Each operation is gated by a granular permission (roles only supply defaults).
 accounting_view = Depends(require_permissions("accounting.view"))
 accounting_post = Depends(require_permissions("accounting.manual_entry"))
+bank_reconciliation = Depends(require_permissions("accounting.bank_reconciliation"))
 
 
 @router.get(
@@ -128,3 +139,135 @@ async def tax_summary(
     """تقرير الضرائب: الضريبة المحصلة على المبيعات مقابل الضريبة المدفوعة في المشتريات."""
     report = await AccountingService(db).tax_summary(date_from, date_to)
     return APIResponse(data=report)
+
+
+@router.get(
+    "/reports/income-statement",
+    response_model=APIResponse[IncomeStatementOut],
+    dependencies=[accounting_view],
+)
+async def income_statement(
+    date_from: date | None = Query(default=None, description="بداية الفترة"),
+    date_to: date | None = Query(default=None, description="نهاية الفترة"),
+    db: AsyncSession = Depends(get_db),
+) -> APIResponse[IncomeStatementOut]:
+    """قائمة الدخل: الإيرادات - تكلفة البضاعة المباعة - المصاريف = صافي الربح."""
+    report = await AccountingService(db).income_statement(date_from, date_to)
+    return APIResponse(data=report)
+
+
+@router.get(
+    "/reports/balance-sheet",
+    response_model=APIResponse[BalanceSheetOut],
+    dependencies=[accounting_view],
+)
+async def balance_sheet(
+    as_of: date | None = Query(default=None, description="حتى تاريخ"),
+    db: AsyncSession = Depends(get_db),
+) -> APIResponse[BalanceSheetOut]:
+    """الميزانية العمومية: الأصول = الالتزامات + حقوق الملكية (بما فيها الأرباح المرحلة)."""
+    report = await AccountingService(db).balance_sheet(as_of)
+    return APIResponse(data=report)
+
+
+# --- Bank reconciliation ---
+@router.post(
+    "/bank-reconciliation/lines",
+    response_model=APIResponse[BankStatementLineOut],
+    status_code=status.HTTP_201_CREATED,
+)
+async def create_bank_statement_line(
+    body: BankStatementLineCreate,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(require_permissions("accounting.bank_reconciliation")),
+) -> APIResponse[BankStatementLineOut]:
+    """إضافة بند من كشف الحساب البنكي يدوياً."""
+    line = await BankReconciliationService(db).create_line(
+        body, created_by=current_user.id
+    )
+    return APIResponse(
+        data=BankStatementLineOut.model_validate(line),
+        message="تم إضافة بند كشف الحساب بنجاح.",
+    )
+
+
+@router.get(
+    "/bank-reconciliation/lines",
+    response_model=APIResponse[list[BankStatementLineOut]],
+    dependencies=[bank_reconciliation],
+)
+async def list_bank_statement_lines(
+    is_reconciled: bool | None = Query(default=None),
+    date_from: date | None = Query(default=None),
+    date_to: date | None = Query(default=None),
+    db: AsyncSession = Depends(get_db),
+) -> APIResponse[list[BankStatementLineOut]]:
+    """عرض بنود كشف الحساب البنكي، مع إمكانية التصفية حسب حالة المطابقة والفترة."""
+    lines = await BankReconciliationService(db).list_lines(
+        is_reconciled, date_from, date_to
+    )
+    return APIResponse(data=[BankStatementLineOut.model_validate(l) for l in lines])
+
+
+@router.get(
+    "/bank-reconciliation/unmatched-entries",
+    response_model=APIResponse[list[UnmatchedJournalItemOut]],
+    dependencies=[bank_reconciliation],
+)
+async def list_unmatched_journal_items(
+    db: AsyncSession = Depends(get_db),
+) -> APIResponse[list[UnmatchedJournalItemOut]]:
+    """حركات دفتر الأستاذ على حساب البنك التي لم تُطابق بعد."""
+    items = await BankReconciliationService(db).list_unmatched_journal_items()
+    return APIResponse(data=items)
+
+
+@router.post(
+    "/bank-reconciliation/lines/{line_id}/match",
+    response_model=APIResponse[BankStatementLineOut],
+)
+async def match_bank_statement_line(
+    line_id: int,
+    body: MatchRequest,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(require_permissions("accounting.bank_reconciliation")),
+) -> APIResponse[BankStatementLineOut]:
+    """مطابقة بند كشف الحساب بحركة من دفتر الأستاذ على حساب البنك."""
+    line = await BankReconciliationService(db).match(
+        line_id, body.journal_item_id, current_user.id
+    )
+    return APIResponse(
+        data=BankStatementLineOut.model_validate(line),
+        message="تمت المطابقة بنجاح.",
+    )
+
+
+@router.post(
+    "/bank-reconciliation/lines/{line_id}/unmatch",
+    response_model=APIResponse[BankStatementLineOut],
+    dependencies=[bank_reconciliation],
+)
+async def unmatch_bank_statement_line(
+    line_id: int, db: AsyncSession = Depends(get_db)
+) -> APIResponse[BankStatementLineOut]:
+    """التراجع عن مطابقة بند كشف الحساب."""
+    line = await BankReconciliationService(db).unmatch(line_id)
+    return APIResponse(
+        data=BankStatementLineOut.model_validate(line),
+        message="تم التراجع عن المطابقة.",
+    )
+
+
+@router.get(
+    "/bank-reconciliation/summary",
+    response_model=APIResponse[BankReconciliationSummaryOut],
+    dependencies=[bank_reconciliation],
+)
+async def bank_reconciliation_summary(
+    date_from: date | None = Query(default=None),
+    date_to: date | None = Query(default=None),
+    db: AsyncSession = Depends(get_db),
+) -> APIResponse[BankReconciliationSummaryOut]:
+    """ملخص المطابقة البنكية: عدد البنود المطابقة وغير المطابقة والإجماليات."""
+    summary = await BankReconciliationService(db).summary(date_from, date_to)
+    return APIResponse(data=summary)

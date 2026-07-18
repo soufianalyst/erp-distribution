@@ -9,6 +9,10 @@ from sqlalchemy.orm import selectinload
 
 from app.api.schemas.accounting import (
     AccountCreate,
+    BalanceSheetOut,
+    BalanceSheetRow,
+    IncomeStatementOut,
+    IncomeStatementRow,
     ManualEntryCreate,
     TaxSummaryOut,
     TaxSummaryRow,
@@ -284,4 +288,150 @@ class AccountingService:
             total_collected=total_collected,
             total_paid=total_paid,
             total_net=total_collected - total_paid,
+        )
+
+    async def income_statement(
+        self, date_from: date | None, date_to: date | None
+    ) -> IncomeStatementOut:
+        """قائمة الدخل: الإيرادات - تكلفة البضاعة المباعة - المصاريف = صافي الربح."""
+        stmt = (
+            select(
+                Account.code,
+                Account.name,
+                Account.type,
+                func.coalesce(func.sum(JournalItem.debit), 0),
+                func.coalesce(func.sum(JournalItem.credit), 0),
+            )
+            .join(JournalItem, JournalItem.account_id == Account.id)
+            .join(JournalEntry, JournalItem.entry_id == JournalEntry.id)
+            .where(Account.type.in_([AccountType.REVENUE, AccountType.EXPENSE]))
+            .group_by(Account.code, Account.name, Account.type)
+            .order_by(Account.code)
+        )
+        if date_from is not None:
+            stmt = stmt.where(JournalEntry.entry_date >= date_from)
+        if date_to is not None:
+            stmt = stmt.where(JournalEntry.entry_date <= date_to)
+        result = await self.session.execute(stmt)
+
+        revenue_rows: list[IncomeStatementRow] = []
+        cogs_rows: list[IncomeStatementRow] = []
+        expense_rows: list[IncomeStatementRow] = []
+        total_revenue = Decimal("0")
+        total_cogs = Decimal("0")
+        total_expenses = Decimal("0")
+
+        for code, name, account_type, debit, credit in result.all():
+            debit = Decimal(str(debit))
+            credit = Decimal(str(credit))
+            if account_type == AccountType.REVENUE:
+                # Revenue accounts normally carry a credit balance.
+                amount = credit - debit
+                revenue_rows.append(
+                    IncomeStatementRow(account_code=code, account_name=name, amount=amount)
+                )
+                total_revenue += amount
+            elif code == COGS:
+                amount = debit - credit
+                cogs_rows.append(
+                    IncomeStatementRow(account_code=code, account_name=name, amount=amount)
+                )
+                total_cogs += amount
+            else:
+                # Expense accounts normally carry a debit balance.
+                amount = debit - credit
+                expense_rows.append(
+                    IncomeStatementRow(account_code=code, account_name=name, amount=amount)
+                )
+                total_expenses += amount
+
+        gross_profit = total_revenue - total_cogs
+        return IncomeStatementOut(
+            date_from=date_from,
+            date_to=date_to,
+            revenue_rows=revenue_rows,
+            total_revenue=total_revenue,
+            cogs_rows=cogs_rows,
+            total_cogs=total_cogs,
+            gross_profit=gross_profit,
+            expense_rows=expense_rows,
+            total_expenses=total_expenses,
+            net_profit=gross_profit - total_expenses,
+        )
+
+    async def balance_sheet(self, as_of: date | None = None) -> BalanceSheetOut:
+        """الميزانية العمومية: الأصول = الالتزامات + حقوق الملكية.
+
+        This system has no period-end closing entries (revenue/expense accounts
+        just accumulate), so cumulative net income up to `as_of` is folded into
+        equity as retained earnings — otherwise the sheet would never balance.
+        """
+        stmt = (
+            select(
+                Account.code,
+                Account.name,
+                Account.type,
+                func.coalesce(func.sum(JournalItem.debit), 0),
+                func.coalesce(func.sum(JournalItem.credit), 0),
+            )
+            .join(JournalItem, JournalItem.account_id == Account.id)
+            .join(JournalEntry, JournalItem.entry_id == JournalEntry.id)
+            .where(
+                Account.type.in_(
+                    [AccountType.ASSET, AccountType.LIABILITY, AccountType.EQUITY]
+                )
+            )
+            .group_by(Account.code, Account.name, Account.type)
+            .order_by(Account.code)
+        )
+        if as_of is not None:
+            stmt = stmt.where(JournalEntry.entry_date <= as_of)
+        result = await self.session.execute(stmt)
+
+        asset_rows: list[BalanceSheetRow] = []
+        liability_rows: list[BalanceSheetRow] = []
+        equity_rows: list[BalanceSheetRow] = []
+        total_assets = Decimal("0")
+        total_liabilities = Decimal("0")
+        total_equity = Decimal("0")
+
+        for code, name, account_type, debit, credit in result.all():
+            debit = Decimal(str(debit))
+            credit = Decimal(str(credit))
+            if account_type == AccountType.ASSET:
+                amount = debit - credit
+                asset_rows.append(
+                    BalanceSheetRow(account_code=code, account_name=name, amount=amount)
+                )
+                total_assets += amount
+            elif account_type == AccountType.LIABILITY:
+                amount = credit - debit
+                liability_rows.append(
+                    BalanceSheetRow(account_code=code, account_name=name, amount=amount)
+                )
+                total_liabilities += amount
+            else:  # EQUITY
+                amount = credit - debit
+                equity_rows.append(
+                    BalanceSheetRow(account_code=code, account_name=name, amount=amount)
+                )
+                total_equity += amount
+
+        retained_earnings = (
+            await self.income_statement(date_from=None, date_to=as_of)
+        ).net_profit
+        total_equity_with_earnings = total_equity + retained_earnings
+        total_liabilities_and_equity = total_liabilities + total_equity_with_earnings
+
+        return BalanceSheetOut(
+            as_of=as_of,
+            asset_rows=asset_rows,
+            total_assets=total_assets,
+            liability_rows=liability_rows,
+            total_liabilities=total_liabilities,
+            equity_rows=equity_rows,
+            retained_earnings=retained_earnings,
+            total_equity=total_equity_with_earnings,
+            total_liabilities_and_equity=total_liabilities_and_equity,
+            is_balanced=total_assets == total_liabilities_and_equity,
         )

@@ -13,9 +13,11 @@ from sqlalchemy import select
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from app.api.v1.router import api_router
+from app.core import audit_listeners  # noqa: F401 -- import registers the session hooks
+from app.core.audit_context import current_user_id
 from app.core.config import get_settings
 from app.core.exceptions import AppException
-from app.core.security import hash_password
+from app.core.security import decode_token, hash_password
 from app.db.base import Base
 from app.db.session import AsyncSessionLocal, engine
 from app.domain.models.user import User, UserRole
@@ -74,6 +76,21 @@ app.add_middleware(
     allow_methods=["GET", "POST", "PUT", "PATCH", "DELETE"],
     allow_headers=["Authorization", "Content-Type"],
 )
+
+
+@app.middleware("http")
+async def populate_audit_user_context(request: Request, call_next):
+    """Best-effort: decode the bearer token so the audit-log listeners can
+    attribute changes to a user. Never blocks the request — actual auth
+    enforcement stays with the route-level permission dependencies."""
+    auth_header = request.headers.get("Authorization", "")
+    if auth_header.startswith("Bearer "):
+        try:
+            payload = decode_token(auth_header[7:], expected_type="access")
+            current_user_id.set(int(payload["sub"]))
+        except Exception:
+            pass
+    return await call_next(request)
 
 
 def _envelope(status_code: int, message: str, data: object = None) -> JSONResponse:

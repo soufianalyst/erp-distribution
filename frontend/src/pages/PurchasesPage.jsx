@@ -170,11 +170,13 @@ function PurchaseForm({ suppliers, warehouses, products, taxRates, onCreated, in
                   required
                 >
                   <option value="">—</option>
-                  {products.map((p) => (
-                    <option key={p.id} value={p.id}>
-                      {p.sku} — {p.name}
-                    </option>
-                  ))}
+                  {products
+                    .filter((p) => p.is_active || String(p.id) === String(line.product_id))
+                    .map((p) => (
+                      <option key={p.id} value={p.id}>
+                        {p.sku} — {p.name}
+                      </option>
+                    ))}
                 </Select>
               </div>
               <div className="col-span-2">

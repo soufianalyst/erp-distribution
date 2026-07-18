@@ -17,6 +17,7 @@ PERMISSION_GROUPS: list[dict] = [
         "permissions": [
             {"code": "products.view", "label": "عرض الأصناف"},
             {"code": "products.manage", "label": "إدارة الأصناف والأسعار"},
+            {"code": "products.delete", "label": "حذف الأصناف"},
             {"code": "warehouses.view", "label": "عرض المستودعات"},
             {"code": "warehouses.manage", "label": "إدارة المستودعات"},
             {"code": "stock.view", "label": "عرض الأرصدة وتقارير الصلاحية"},
@@ -96,12 +97,17 @@ PERMISSION_GROUPS: list[dict] = [
                 "code": "accounting.manual_entry",
                 "label": "تسجيل قيود يدوية وإدارة الحسابات",
             },
+            {
+                "code": "accounting.bank_reconciliation",
+                "label": "مطابقة كشف الحساب البنكي",
+            },
         ],
     },
     {
         "group": "النظام",
         "permissions": [
             {"code": "users.manage", "label": "إدارة المستخدمين والصلاحيات"},
+            {"code": "audit.view", "label": "عرض سجل تتبع العمليات (Audit Trail)"},
         ],
     },
     {
@@ -193,6 +199,7 @@ ROLE_DEFAULT_PERMISSIONS: dict[str, frozenset[str]] = {
             "purchases.payments",
             "accounting.view",
             "accounting.manual_entry",
+            "accounting.bank_reconciliation",
             "analytics.view",
             "expenses.view",
             "expenses.manage",

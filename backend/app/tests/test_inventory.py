@@ -156,6 +156,220 @@ class TestCatalog:
         assert response.status_code == 403
 
 
+class TestBarcode:
+    async def test_create_product_with_barcode(self, client: AsyncClient) -> None:
+        headers = await login(client, "admin", TEST_ADMIN_PASSWORD)
+        warehouse_id = await create_warehouse(client, headers, "المستودع الرئيسي")
+        response = await client.post(
+            "/api/v1/inventory/products",
+            headers=headers,
+            json={
+                "sku": "BAR-1",
+                "barcode": "6221234567890",
+                "name": "صنف بباركود",
+                "base_unit_name": "حبة",
+                "wholesale_price": "5",
+                "half_wholesale_price": "5.5",
+                "retail_price": "6",
+                "warehouse_id": warehouse_id,
+            },
+        )
+        assert response.status_code == 201, response.text
+        assert response.json()["data"]["barcode"] == "6221234567890"
+
+    async def test_duplicate_barcode_rejected(self, client: AsyncClient) -> None:
+        headers = await login(client, "admin", TEST_ADMIN_PASSWORD)
+        warehouse_id = await create_warehouse(client, headers, "المستودع الرئيسي")
+        base = {
+            "barcode": "6221234567890",
+            "base_unit_name": "حبة",
+            "wholesale_price": "5",
+            "half_wholesale_price": "5.5",
+            "retail_price": "6",
+            "warehouse_id": warehouse_id,
+        }
+        first = await client.post(
+            "/api/v1/inventory/products",
+            headers=headers,
+            json={**base, "sku": "BAR-1", "name": "الأول"},
+        )
+        assert first.status_code == 201
+
+        second = await client.post(
+            "/api/v1/inventory/products",
+            headers=headers,
+            json={**base, "sku": "BAR-2", "name": "الثاني"},
+        )
+        assert second.status_code == 409
+
+    async def test_two_products_without_barcode_allowed(
+        self, client: AsyncClient
+    ) -> None:
+        headers = await login(client, "admin", TEST_ADMIN_PASSWORD)
+        warehouse_id = await create_warehouse(client, headers, "المستودع الرئيسي")
+        base = {
+            "base_unit_name": "حبة",
+            "wholesale_price": "5",
+            "half_wholesale_price": "5.5",
+            "retail_price": "6",
+            "warehouse_id": warehouse_id,
+        }
+        first = await client.post(
+            "/api/v1/inventory/products",
+            headers=headers,
+            json={**base, "sku": "NB-1", "name": "بدون باركود 1"},
+        )
+        second = await client.post(
+            "/api/v1/inventory/products",
+            headers=headers,
+            json={**base, "sku": "NB-2", "name": "بدون باركود 2"},
+        )
+        assert first.status_code == 201
+        assert second.status_code == 201
+
+    async def test_update_barcode_rejects_duplicate(
+        self, client: AsyncClient
+    ) -> None:
+        headers = await login(client, "admin", TEST_ADMIN_PASSWORD)
+        warehouse_id = await create_warehouse(client, headers, "المستودع الرئيسي")
+        base = {
+            "base_unit_name": "حبة",
+            "wholesale_price": "5",
+            "half_wholesale_price": "5.5",
+            "retail_price": "6",
+            "warehouse_id": warehouse_id,
+        }
+        first = await client.post(
+            "/api/v1/inventory/products",
+            headers=headers,
+            json={**base, "sku": "UB-1", "barcode": "111", "name": "الأول"},
+        )
+        second = await client.post(
+            "/api/v1/inventory/products",
+            headers=headers,
+            json={**base, "sku": "UB-2", "name": "الثاني"},
+        )
+        second_id = second.json()["data"]["id"]
+
+        response = await client.patch(
+            f"/api/v1/inventory/products/{second_id}",
+            headers=headers,
+            json={"barcode": "111"},
+        )
+        assert response.status_code == 409
+        assert first.status_code == 201
+
+    async def test_get_product_by_barcode(self, client: AsyncClient) -> None:
+        headers = await login(client, "admin", TEST_ADMIN_PASSWORD)
+        warehouse_id = await create_warehouse(client, headers, "المستودع الرئيسي")
+        created = await client.post(
+            "/api/v1/inventory/products",
+            headers=headers,
+            json={
+                "sku": "GB-1",
+                "barcode": "999888777",
+                "name": "صنف للبحث بالباركود",
+                "base_unit_name": "حبة",
+                "wholesale_price": "5",
+                "half_wholesale_price": "5.5",
+                "retail_price": "6",
+                "warehouse_id": warehouse_id,
+            },
+        )
+        product_id = created.json()["data"]["id"]
+
+        response = await client.get(
+            "/api/v1/inventory/products/barcode/999888777", headers=headers
+        )
+        assert response.status_code == 200, response.text
+        assert response.json()["data"]["id"] == product_id
+
+    async def test_get_product_by_unknown_barcode_404(
+        self, client: AsyncClient
+    ) -> None:
+        headers = await login(client, "admin", TEST_ADMIN_PASSWORD)
+        response = await client.get(
+            "/api/v1/inventory/products/barcode/no-such-barcode", headers=headers
+        )
+        assert response.status_code == 404
+
+    async def test_search_matches_barcode(self, client: AsyncClient) -> None:
+        headers = await login(client, "admin", TEST_ADMIN_PASSWORD)
+        warehouse_id = await create_warehouse(client, headers, "المستودع الرئيسي")
+        await client.post(
+            "/api/v1/inventory/products",
+            headers=headers,
+            json={
+                "sku": "SB-1",
+                "barcode": "555444333",
+                "name": "منتج",
+                "base_unit_name": "حبة",
+                "wholesale_price": "5",
+                "half_wholesale_price": "5.5",
+                "retail_price": "6",
+                "warehouse_id": warehouse_id,
+            },
+        )
+        response = await client.get(
+            "/api/v1/inventory/products",
+            headers=headers,
+            params={"search": "555444333"},
+        )
+        assert response.status_code == 200
+        assert len(response.json()["data"]) == 1
+
+
+class TestProductDelete:
+    async def test_delete_unused_product_succeeds(self, client: AsyncClient) -> None:
+        headers = await login(client, "admin", TEST_ADMIN_PASSWORD)
+        warehouse_id = await create_warehouse(client, headers, "المستودع الرئيسي")
+        product = await create_product(client, headers, warehouse_id=warehouse_id)
+
+        response = await client.delete(
+            f"/api/v1/inventory/products/{product['id']}", headers=headers
+        )
+        assert response.status_code == 200, response.text
+
+        get_response = await client.get(
+            f"/api/v1/inventory/products/{product['id']}", headers=headers
+        )
+        assert get_response.status_code == 404
+
+    async def test_delete_blocked_once_stock_received(
+        self, client: AsyncClient
+    ) -> None:
+        headers = await login(client, "admin", TEST_ADMIN_PASSWORD)
+        warehouse_id = await create_warehouse(client, headers, "المستودع الرئيسي")
+        product = await create_product(client, headers, warehouse_id=warehouse_id)
+        await receive(client, headers, product["id"], warehouse_id, "B-1", 60, "10")
+
+        response = await client.delete(
+            f"/api/v1/inventory/products/{product['id']}", headers=headers
+        )
+        assert response.status_code == 400
+        assert "حركات مخزنية" in response.json()["message"]
+
+    async def test_delete_nonexistent_product_404(self, client: AsyncClient) -> None:
+        headers = await login(client, "admin", TEST_ADMIN_PASSWORD)
+        response = await client.delete(
+            "/api/v1/inventory/products/999999", headers=headers
+        )
+        assert response.status_code == 404
+
+    async def test_storekeeper_cannot_delete_product(
+        self, client: AsyncClient
+    ) -> None:
+        admin = await login(client, "admin", TEST_ADMIN_PASSWORD)
+        warehouse_id = await create_warehouse(client, admin, "المستودع الرئيسي")
+        product = await create_product(client, admin, warehouse_id=warehouse_id)
+
+        headers = await login(client, "storekeeper", TEST_STORE_PASSWORD)
+        response = await client.delete(
+            f"/api/v1/inventory/products/{product['id']}", headers=headers
+        )
+        assert response.status_code == 403
+
+
 class TestReceiving:
     async def test_receive_stock_in_base_unit(self, client: AsyncClient) -> None:
         admin = await login(client, "admin", TEST_ADMIN_PASSWORD)

@@ -5,6 +5,7 @@ import { ROLE_LABELS, useAuth } from "../context/AuthContext";
 const NAV_ITEMS = [
   { to: "/", label: "لوحة التحكم", icon: "📊", perm: null },
   { to: "/products", label: "الأصناف", icon: "📦", perm: "products.view" },
+  { to: "/barcode-scan", label: "مسح الباركود", icon: "📷", perm: "products.view" },
   { to: "/warehouses", label: "المستودعات", icon: "🏬", perm: "warehouses.view" },
   { to: "/stock", label: "حركة المخزون", icon: "🔄", perm: "stock.view" },
   { to: "/customers", label: "العملاء", icon: "🧑‍💼", perm: "customers.view" },
@@ -18,6 +19,7 @@ const NAV_ITEMS = [
   { to: "/analytics", label: "التحليلات والتقارير", icon: "📈", perm: "analytics.view" },
   { to: "/settings", label: "الإعدادات", icon: "⚙️", perm: "settings.view" },
   { to: "/users", label: "المستخدمون", icon: "👥", perm: "users.manage" },
+  { to: "/audit", label: "سجل التتبع", icon: "🕵️", perm: "audit.view" },
 ];
 
 export default function Layout() {

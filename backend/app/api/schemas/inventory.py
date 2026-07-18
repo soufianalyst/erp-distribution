@@ -45,6 +45,7 @@ class ProductUnitOut(BaseModel):
 
 class ProductCreate(BaseModel):
     sku: str = Field(min_length=1, max_length=50)
+    barcode: str | None = Field(default=None, min_length=1, max_length=50)
     name: str = Field(min_length=2, max_length=150)
     base_unit_name: str = Field(min_length=1, max_length=30)
     wholesale_price: Decimal = Field(ge=0)
@@ -58,6 +59,7 @@ class ProductCreate(BaseModel):
 
 class ProductUpdate(BaseModel):
     name: str | None = Field(default=None, min_length=2, max_length=150)
+    barcode: str | None = Field(default=None, min_length=1, max_length=50)
     wholesale_price: Decimal | None = Field(default=None, ge=0)
     half_wholesale_price: Decimal | None = Field(default=None, ge=0)
     retail_price: Decimal | None = Field(default=None, ge=0)
@@ -71,6 +73,7 @@ class ProductOut(BaseModel):
 
     id: int
     sku: str
+    barcode: str | None
     name: str
     base_unit_name: str
     wholesale_price: Decimal
