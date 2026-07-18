@@ -21,6 +21,15 @@ const EMPTY_LINE = { product_id: "", batch_number: "", expiry_date: "", quantity
 const PAYMENT_METHOD_LABELS = { cash: "نقدي", card: "بطاقة", credit: "آجل" };
 const PAYMENT_METHOD_TONE = { cash: "green", card: "blue", credit: "amber" };
 
+// Record-keeping only — goods always leave the warehouse back to the supplier
+// regardless of reason (unlike sales returns, there is no "resellable" branch).
+export const PURCHASE_RETURN_REASON_LABELS = {
+  defective: "تالف / معيب",
+  wrong_item: "صنف خاطئ",
+  excess: "فائض عن الحاجة",
+  other: "أخرى",
+};
+
 function PurchaseForm({ suppliers, warehouses, products, taxRates, onCreated, invoice }) {
   const editing = !!invoice;
   const defaultTaxRate = taxRates.find((t) => t.is_default);
@@ -244,15 +253,94 @@ function PurchaseForm({ suppliers, warehouses, products, taxRates, onCreated, in
   );
 }
 
+function PurchaseReturnForm({ invoice, products, onDone }) {
+  // Aggregate the invoice's batch lines into per-product received totals.
+  const receivedByProduct = {};
+  for (const line of invoice.lines) {
+    receivedByProduct[line.product_id] =
+      (receivedByProduct[line.product_id] || 0) + Number(line.quantity);
+  }
+  const productIds = Object.keys(receivedByProduct);
+
+  const [reason, setReason] = useState("defective");
+  const [quantities, setQuantities] = useState({});
+  const [error, setError] = useState(null);
+
+  const submit = async (event) => {
+    event.preventDefault();
+    setError(null);
+    const lines = productIds
+      .filter((id) => Number(quantities[id]) > 0)
+      .map((id) => ({ product_id: Number(id), quantity: quantities[id] }));
+    if (!lines.length) {
+      setError("أدخل كمية مرتجعة لصنف واحد على الأقل.");
+      return;
+    }
+    try {
+      const { data } = await api.post("/purchases/returns", {
+        invoice_id: invoice.id,
+        reason,
+        lines,
+      });
+      onDone(data.data);
+    } catch (err) {
+      setError(apiMessage(err));
+    }
+  };
+
+  return (
+    <form onSubmit={submit} className="space-y-4">
+      <Alert>{error}</Alert>
+      <Select label="سبب الإرجاع" value={reason} onChange={(e) => setReason(e.target.value)}>
+        {Object.entries(PURCHASE_RETURN_REASON_LABELS).map(([value, label]) => (
+          <option key={value} value={value}>
+            {label}
+          </option>
+        ))}
+      </Select>
+      <p className="text-xs font-bold text-rose-700">
+        البضاعة المرتجعة تخرج نهائياً من المخزون وتعود للمورد، أياً كان السبب.
+      </p>
+      {productIds.map((id) => {
+        const product = products.find((p) => p.id === Number(id));
+        return (
+          <div key={id} className="grid grid-cols-2 items-end gap-4">
+            <div className="text-sm font-bold">
+              {product?.name ?? `صنف ${id}`}
+              <div className="text-xs font-normal text-slate-500">
+                المستلم: {qty(receivedByProduct[id])} {product?.base_unit_name ?? ""}
+              </div>
+            </div>
+            <Input
+              label="الكمية المرتجعة"
+              type="number"
+              step="any"
+              min="0"
+              max={receivedByProduct[id]}
+              value={quantities[id] ?? ""}
+              onChange={(e) => setQuantities({ ...quantities, [id]: e.target.value })}
+            />
+          </div>
+        );
+      })}
+      <Button type="submit" variant="danger">
+        تسجيل مرتجع المشتريات
+      </Button>
+    </form>
+  );
+}
+
 export default function PurchasesPage() {
   const { can } = useAuth();
   const canBuy = can("purchases.create");
   const [tab, setTab] = useState("list");
   const [viewing, setViewing] = useState(null);
   const [editing, setEditing] = useState(null);
+  const [returnFor, setReturnFor] = useState(null);
   const [notice, setNotice] = useState(null);
 
   const invoices = useFetch(() => api.get("/purchases/invoices"));
+  const returns = useFetch(() => api.get("/purchases/returns"));
   const suppliers = useFetch(() => api.get("/purchases/suppliers"));
   const warehouses = useFetch(() => api.get("/inventory/warehouses"));
   const products = useFetch(() => api.get("/inventory/products"));
@@ -266,21 +354,24 @@ export default function PurchasesPage() {
     <div className="space-y-6">
       <div className="flex items-center justify-between">
         <h1 className="text-2xl font-extrabold">فواتير المشتريات</h1>
-        {canBuy && (
-          <div className="flex gap-2">
-            <Button variant={tab === "list" ? "primary" : "secondary"} onClick={() => setTab("list")}>
-              القائمة
-            </Button>
+        <div className="flex gap-2">
+          <Button variant={tab === "list" ? "primary" : "secondary"} onClick={() => setTab("list")}>
+            القائمة
+          </Button>
+          {canBuy && (
             <Button variant={tab === "new" ? "primary" : "secondary"} onClick={() => setTab("new")}>
               + فاتورة جديدة
             </Button>
-          </div>
-        )}
+          )}
+          <Button variant={tab === "returns" ? "primary" : "secondary"} onClick={() => setTab("returns")}>
+            المرتجعات
+          </Button>
+        </div>
       </div>
 
       <Alert tone="success">{notice}</Alert>
 
-      {tab === "new" && canBuy ? (
+      {tab === "new" && canBuy && (
         <Card title="فاتورة شراء جديدة — تُدخل البضاعة للمخزون في عملية واحدة">
           <PurchaseForm
             suppliers={suppliers.data}
@@ -295,7 +386,41 @@ export default function PurchasesPage() {
             }}
           />
         </Card>
-      ) : (
+      )}
+
+      {tab === "returns" && (
+        <Card title="مرتجعات المشتريات">
+          <Alert>{returns.error}</Alert>
+          {returns.loading ? (
+            <Loading />
+          ) : (
+            <Table
+              columns={[
+                { key: "id", label: "#" },
+                { key: "invoice_id", label: "الفاتورة", render: (r) => `#${r.invoice_id}` },
+                {
+                  key: "supplier_id",
+                  label: "المورد",
+                  render: (r) => suppliers.data.find((s) => s.id === r.supplier_id)?.name ?? r.supplier_id,
+                },
+                {
+                  key: "reason",
+                  label: "السبب",
+                  render: (r) => <Badge tone="red">{PURCHASE_RETURN_REASON_LABELS[r.reason]}</Badge>,
+                },
+                { key: "subtotal", label: "قبل الضريبة", render: (r) => money(r.subtotal) },
+                { key: "vat_amount", label: "الضريبة", render: (r) => money(r.vat_amount) },
+                { key: "total", label: "الإجمالي", render: (r) => <b>{money(r.total)}</b> },
+                { key: "created_at", label: "التاريخ", render: (r) => r.created_at?.slice(0, 10) },
+              ]}
+              rows={returns.data}
+              empty="لا توجد مرتجعات مشتريات بعد."
+            />
+          )}
+        </Card>
+      )}
+
+      {tab === "list" && (
         <Card>
           <Alert>{invoices.error}</Alert>
           {invoices.loading ? (
@@ -371,6 +496,57 @@ export default function PurchasesPage() {
               ]}
               rows={viewing.lines}
             />
+
+            {(() => {
+              const invoiceReturns = (returns.data || []).filter(
+                (r) => r.invoice_id === viewing.id
+              );
+              if (!invoiceReturns.length) return null;
+              return (
+                <div className="rounded-lg border border-rose-200 bg-rose-50 p-3">
+                  <div className="mb-2 text-sm font-bold text-rose-700">
+                    مرتجعات هذه الفاتورة ({invoiceReturns.length})
+                  </div>
+                  <div className="space-y-3">
+                    {invoiceReturns.map((ret) => (
+                      <div key={ret.id} className="rounded border border-rose-100 bg-white p-2">
+                        <div className="mb-1 flex items-center justify-between text-xs">
+                          <span className="font-bold">
+                            مرتجع #{ret.id} — {ret.created_at?.slice(0, 10)}
+                          </span>
+                          <Badge tone="red">{PURCHASE_RETURN_REASON_LABELS[ret.reason]}</Badge>
+                        </div>
+                        <table className="w-full text-xs">
+                          <thead>
+                            <tr className="text-slate-500">
+                              <th className="text-right font-normal">الصنف</th>
+                              <th className="text-right font-normal">الكمية</th>
+                              <th className="text-right font-normal">القيمة</th>
+                            </tr>
+                          </thead>
+                          <tbody>
+                            {ret.lines.map((line) => (
+                              <tr key={line.id}>
+                                <td>
+                                  {products.data.find((p) => p.id === line.product_id)?.name ??
+                                    line.product_id}
+                                </td>
+                                <td>{qty(line.quantity)}</td>
+                                <td>{money(line.line_total)}</td>
+                              </tr>
+                            ))}
+                          </tbody>
+                        </table>
+                        <div className="mt-1 text-right text-xs font-bold text-rose-700">
+                          إجمالي هذا المرتجع: {money(ret.total)}
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              );
+            })()}
+
             <div className="flex flex-wrap items-center justify-between gap-4">
               <div className="flex flex-wrap items-center gap-6 text-sm font-bold">
                 {viewing.payment_method === "credit" ? (
@@ -390,6 +566,17 @@ export default function PurchasesPage() {
                 <span className="text-emerald-700">الإجمالي: {money(viewing.total)}</span>
               </div>
               <div className="flex gap-2">
+                {can("purchases.returns") && (
+                  <Button
+                    variant="danger"
+                    onClick={() => {
+                      setReturnFor(viewing);
+                      setViewing(null);
+                    }}
+                  >
+                    تسجيل مرتجع لهذه الفاتورة
+                  </Button>
+                )}
                 {can("purchases.edit") && (
                   <Button
                     variant="secondary"
@@ -447,6 +634,26 @@ export default function PurchasesPage() {
               setEditing(null);
               setViewing(invoice);
               setNotice(`تم تعديل فاتورة الشراء رقم ${invoice.id} وإعادة احتساب المخزون والقيود.`);
+              invoices.reload();
+            }}
+          />
+        )}
+      </Modal>
+
+      <Modal
+        open={!!returnFor}
+        title={returnFor ? `مرتجع عن فاتورة الشراء رقم ${returnFor.id}` : ""}
+        onClose={() => setReturnFor(null)}
+      >
+        {returnFor && (
+          <PurchaseReturnForm
+            invoice={returnFor}
+            products={products.data}
+            onDone={() => {
+              setReturnFor(null);
+              setNotice("تم تسجيل مرتجع المشتريات بنجاح.");
+              setTab("returns");
+              returns.reload();
               invoices.reload();
             }}
           />

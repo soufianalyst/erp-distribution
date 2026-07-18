@@ -11,7 +11,7 @@ from app.core.security import (
     create_refresh_token,
     decode_token,
     hash_password,
-    verify_password,
+    verify_password_or_dummy,
 )
 from app.domain.models.user import User
 
@@ -35,9 +35,13 @@ class AuthService:
 
     async def authenticate(self, username: str, password: str) -> TokenPair:
         user = await self._get_by_username(username)
-        # Same message for unknown user and wrong password to avoid username enumeration.
-        if user is None or not verify_password(password, user.hashed_password):
+        # Same message AND same bcrypt cost for an unknown user as for a wrong
+        # password, to avoid username enumeration via response content or timing.
+        if not verify_password_or_dummy(
+            password, user.hashed_password if user else None
+        ):
             raise AppException(401, "اسم المستخدم أو كلمة المرور غير صحيحة.")
+        assert user is not None
         if not user.is_active:
             raise AppException(403, "هذا الحساب معطل، يرجى مراجعة مدير النظام.")
         return self._issue_tokens(user)

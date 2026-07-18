@@ -9,12 +9,23 @@ from app.domain.models.delivery import (
     TripStatus,
 )
 from app.domain.models.expenses import Expense, ExpenseCategory, ExpensePaymentMethod
-from app.domain.models.inventory import Product, ProductBatch, ProductUnit, Warehouse
+from app.domain.models.inventory import (
+    Product,
+    ProductBatch,
+    ProductUnit,
+    StockAdjustment,
+    StockAdjustmentLine,
+    StockAdjustmentReason,
+    Warehouse,
+)
 from app.domain.models.purchases import (
     PurchaseInvoice,
     PurchaseInvoiceLine,
     PurchaseInvoiceTax,
     PurchasePaymentMethod,
+    PurchaseReturn,
+    PurchaseReturnLine,
+    PurchaseReturnReason,
     Supplier,
     SupplierPayment,
 )
@@ -55,10 +66,16 @@ __all__ = [
     "Product",
     "ProductBatch",
     "ProductUnit",
+    "StockAdjustment",
+    "StockAdjustmentLine",
+    "StockAdjustmentReason",
     "PurchaseInvoice",
     "PurchaseInvoiceLine",
     "PurchaseInvoiceTax",
     "PurchasePaymentMethod",
+    "PurchaseReturn",
+    "PurchaseReturnLine",
+    "PurchaseReturnReason",
     "ReturnReason",
     "SalesInvoice",
     "SalesInvoiceLine",

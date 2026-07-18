@@ -1,5 +1,6 @@
 """Inventory entities: warehouses, products, units of measure, and expiry-tracked batches."""
 
+import enum
 from datetime import date, datetime
 from decimal import Decimal
 
@@ -7,6 +8,7 @@ from sqlalchemy import (
     Boolean,
     Date,
     DateTime,
+    Enum,
     ForeignKey,
     Numeric,
     String,
@@ -16,6 +18,14 @@ from sqlalchemy import (
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.db.base import Base
+
+
+class StockAdjustmentReason(str, enum.Enum):
+    EXPIRED = "expired"  # منتهي الصلاحية
+    DAMAGED = "damaged"  # تالف
+    SPOILED = "spoiled"  # فاسد
+    COUNT_SHORTFALL = "count_shortfall"  # نقص عند الجرد
+    OTHER = "other"  # أخرى
 
 
 class Warehouse(Base):
@@ -113,3 +123,55 @@ class ProductBatch(Base):
 
     product: Mapped[Product] = relationship()
     warehouse: Mapped[Warehouse] = relationship()
+
+
+class StockAdjustment(Base):
+    """تعديل/إتلاف مخزون — write-off outside any sale or purchase return.
+
+    Decrease-only: goods are always removed from stock (damaged, expired,
+    spoiled, or a physical-count shortfall); one classification per document,
+    mirroring sales/purchase returns.
+    """
+
+    __tablename__ = "stock_adjustments"
+
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    reason: Mapped[StockAdjustmentReason] = mapped_column(
+        Enum(StockAdjustmentReason, values_callable=lambda e: [m.value for m in e]),
+        nullable=False,
+    )
+    total_cost: Mapped[Decimal] = mapped_column(Numeric(14, 2), nullable=False)
+    notes: Mapped[str | None] = mapped_column(String(300))
+    created_by: Mapped[int | None] = mapped_column(ForeignKey("users.id"))
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+
+    lines: Mapped[list["StockAdjustmentLine"]] = relationship(
+        back_populates="adjustment", cascade="all, delete-orphan"
+    )
+
+
+class StockAdjustmentLine(Base):
+    __tablename__ = "stock_adjustment_lines"
+
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    adjustment_id: Mapped[int] = mapped_column(
+        ForeignKey("stock_adjustments.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    product_id: Mapped[int] = mapped_column(ForeignKey("products.id"), nullable=False)
+    batch_id: Mapped[int] = mapped_column(
+        ForeignKey("product_batches.id"), nullable=False
+    )
+    warehouse_id: Mapped[int] = mapped_column(
+        ForeignKey("warehouses.id"), nullable=False
+    )
+    quantity: Mapped[Decimal] = mapped_column(Numeric(14, 3), nullable=False)
+    # Snapshot of the batch's cost per base unit; 0 when the batch has none
+    # (e.g. stock received directly without a purchase invoice).
+    unit_cost: Mapped[Decimal] = mapped_column(Numeric(12, 4), nullable=False)
+    line_total: Mapped[Decimal] = mapped_column(Numeric(14, 2), nullable=False)
+
+    adjustment: Mapped[StockAdjustment] = relationship(back_populates="lines")

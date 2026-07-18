@@ -8,11 +8,20 @@ import {
   Loading,
   Select,
   Table,
+  money,
   qty,
 } from "../components/Ui";
 import { useAuth } from "../context/AuthContext";
 import useFetch from "../hooks/useFetch";
 import api, { apiMessage } from "../services/api";
+
+const ADJUSTMENT_REASON_LABELS = {
+  expired: "منتهي الصلاحية",
+  damaged: "تالف",
+  spoiled: "فاسد",
+  count_shortfall: "نقص عند الجرد",
+  other: "أخرى",
+};
 
 function UnitOptions({ product }) {
   if (!product) return null;
@@ -165,16 +174,119 @@ function TransferForm({ products, warehouses, onDone }) {
   );
 }
 
+function AdjustmentForm({ products, onDone }) {
+  const [reason, setReason] = useState("damaged");
+  const [notes, setNotes] = useState("");
+  const [productId, setProductId] = useState("");
+  const [batches, setBatches] = useState([]);
+  const [batchesLoading, setBatchesLoading] = useState(false);
+  const [quantities, setQuantities] = useState({});
+  const [error, setError] = useState(null);
+
+  const selectProduct = async (pid) => {
+    setProductId(pid);
+    setQuantities({});
+    setBatches([]);
+    if (!pid) return;
+    setBatchesLoading(true);
+    try {
+      const { data } = await api.get(`/inventory/products/${pid}/batches`);
+      setBatches(data.data);
+    } finally {
+      setBatchesLoading(false);
+    }
+  };
+
+  const submit = async (event) => {
+    event.preventDefault();
+    setError(null);
+    const lines = Object.entries(quantities)
+      .filter(([, quantity]) => Number(quantity) > 0)
+      .map(([batch_id, quantity]) => ({ batch_id: Number(batch_id), quantity }));
+    if (!lines.length) {
+      setError("أدخل كمية الإتلاف لتشغيلة واحدة على الأقل.");
+      return;
+    }
+    try {
+      const { data } = await api.post("/inventory/stock/adjustments", {
+        reason,
+        notes: notes || null,
+        lines,
+      });
+      setNotes("");
+      setQuantities({});
+      onDone(data.message);
+      selectProduct(productId);
+    } catch (err) {
+      setError(apiMessage(err));
+    }
+  };
+
+  return (
+    <form onSubmit={submit} className="space-y-4">
+      <Alert>{error}</Alert>
+      <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
+        <Select label="السبب" value={reason} onChange={(e) => setReason(e.target.value)}>
+          {Object.entries(ADJUSTMENT_REASON_LABELS).map(([value, label]) => (
+            <option key={value} value={value}>
+              {label}
+            </option>
+          ))}
+        </Select>
+        <Select label="الصنف" value={productId} onChange={(e) => selectProduct(e.target.value)} required>
+          <option value="">— اختر الصنف —</option>
+          {products.map((p) => (
+            <option key={p.id} value={p.id}>
+              {p.sku} — {p.name}
+            </option>
+          ))}
+        </Select>
+      </div>
+      <Input label="ملاحظات (اختياري)" value={notes} onChange={(e) => setNotes(e.target.value)} />
+
+      {batchesLoading && <Loading />}
+      {!batchesLoading && productId && batches.length === 0 && (
+        <p className="text-sm text-slate-400">لا توجد تشغيلات متوفرة لهذا الصنف.</p>
+      )}
+      {batches.map((b) => (
+        <div key={b.id} className="grid grid-cols-2 items-end gap-4">
+          <div className="text-sm font-bold">
+            {b.batch_number}
+            <div className="text-xs font-normal text-slate-500">
+              المتوفر: {qty(b.quantity)} — الانتهاء: {b.expiry_date}
+            </div>
+          </div>
+          <Input
+            label="الكمية المُتلَفة"
+            type="number"
+            step="any"
+            min="0"
+            max={b.quantity}
+            value={quantities[b.id] ?? ""}
+            onChange={(e) => setQuantities({ ...quantities, [b.id]: e.target.value })}
+          />
+        </div>
+      ))}
+      <Button type="submit" variant="danger">
+        تسجيل تعديل المخزون
+      </Button>
+    </form>
+  );
+}
+
 export default function StockPage() {
   const { can } = useAuth();
   const canReceive = can("stock.receive");
   const canTransfer = can("stock.transfer");
+  const canAdjust = can("stock.adjust");
   const [tab, setTab] = useState("levels");
+  const [notice, setNotice] = useState(null);
 
   const products = useFetch(() => api.get("/inventory/products"));
   const warehouses = useFetch(() => api.get("/inventory/warehouses"));
   const levels = useFetch(() => api.get("/inventory/stock/levels"));
   const nearExpiry = useFetch(() => api.get("/inventory/stock/near-expiry", { params: { days: 60 } }));
+  const adjustments = useFetch(() => api.get("/inventory/stock/adjustments"));
 
   const reloadAll = () => {
     levels.reload();
@@ -185,6 +297,7 @@ export default function StockPage() {
     { id: "levels", label: "الأرصدة" },
     ...(canReceive ? [{ id: "receive", label: "استلام بضاعة" }] : []),
     ...(canTransfer ? [{ id: "transfer", label: "تحويل بين المستودعات" }] : []),
+    ...(canAdjust ? [{ id: "adjust", label: "تعديل/إتلاف المخزون" }] : []),
     { id: "expiry", label: "قرب الانتهاء" },
   ];
 
@@ -206,6 +319,8 @@ export default function StockPage() {
           </button>
         ))}
       </div>
+
+      <Alert tone="success">{notice}</Alert>
 
       {tab === "levels" && (
         <Card title="أرصدة المخزون حسب الصنف والمستودع">
@@ -240,6 +355,48 @@ export default function StockPage() {
         <Card title="تحويل بضاعة — يتم اختيار التشغيلات الأقرب انتهاءً أولاً (FEFO)">
           <TransferForm products={products.data} warehouses={warehouses.data} onDone={reloadAll} />
         </Card>
+      )}
+
+      {tab === "adjust" && canAdjust && (
+        <div className="space-y-6">
+          <Card title="تعديل/إتلاف المخزون — يخرج نهائياً من المخزون خارج أي عملية بيع">
+            <AdjustmentForm
+              products={products.data}
+              onDone={(message) => {
+                setNotice(message);
+                reloadAll();
+                adjustments.reload();
+              }}
+            />
+          </Card>
+          <Card title="سجل تعديلات/إتلاف المخزون">
+            <Alert>{adjustments.error}</Alert>
+            {adjustments.loading ? (
+              <Loading />
+            ) : (
+              <Table
+                columns={[
+                  { key: "id", label: "#" },
+                  {
+                    key: "reason",
+                    label: "السبب",
+                    render: (r) => <Badge tone="red">{ADJUSTMENT_REASON_LABELS[r.reason]}</Badge>,
+                  },
+                  {
+                    key: "lines",
+                    label: "عدد الأصناف",
+                    render: (r) => r.lines.length,
+                  },
+                  { key: "total_cost", label: "قيمة الخسارة", render: (r) => money(r.total_cost) },
+                  { key: "notes", label: "ملاحظات", render: (r) => r.notes || "—" },
+                  { key: "created_at", label: "التاريخ", render: (r) => r.created_at?.slice(0, 10) },
+                ]}
+                rows={adjustments.data}
+                empty="لا توجد تعديلات مخزون بعد."
+              />
+            )}
+          </Card>
+        </div>
       )}
 
       {tab === "expiry" && (

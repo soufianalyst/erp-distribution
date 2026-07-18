@@ -17,6 +17,26 @@ from app.tests.test_inventory import (
     create_warehouse,
     days_from_now,
 )
+from app.tests.test_sales import create_customer, post_invoice
+
+
+def items_by_code(entry: dict) -> dict[str, tuple[Decimal, Decimal]]:
+    return {
+        item["account"]["code"]: (as_decimal(item["debit"]), as_decimal(item["credit"]))
+        for item in entry["items"]
+    }
+
+
+async def entries_for(
+    client: AsyncClient, headers: dict[str, str], reference_type: str, reference_id: int
+) -> list[dict]:
+    response = await client.get(
+        "/api/v1/accounting/journal-entries",
+        headers=headers,
+        params={"reference_type": reference_type, "reference_id": reference_id},
+    )
+    assert response.status_code == 200, response.text
+    return response.json()["data"]
 
 
 async def create_supplier(
@@ -563,6 +583,216 @@ class TestPurchaseInvoices:
             },
         )
         assert response.status_code == 403
+
+
+class TestPurchaseReturns:
+    async def _purchase(
+        self, client: AsyncClient, admin: dict[str, str], quantity: str = "100"
+    ) -> tuple[int, dict, int, int]:
+        """Buy `quantity` on credit at 8.00/unit; returns (invoice_id, product, supplier_id, warehouse_id)."""
+        warehouse_id, product, supplier_id = await setup_catalog(client, admin)
+        response = await client.post(
+            "/api/v1/purchases/invoices",
+            headers=admin,
+            json={
+                "supplier_id": supplier_id,
+                "warehouse_id": warehouse_id,
+                "payment_method": "credit",
+                "tax_rate_ids": [DEFAULT_TAX_RATE_ID],
+                "lines": [
+                    {
+                        "product_id": product["id"],
+                        "batch_number": "PB-1",
+                        "expiry_date": days_from_now(120),
+                        "quantity": quantity,
+                        "unit_cost": "8.00",
+                    }
+                ],
+            },
+        )
+        assert response.status_code == 201, response.text
+        return (
+            int(response.json()["data"]["id"]),
+            product,
+            supplier_id,
+            warehouse_id,
+        )
+
+    async def test_return_reduces_stock_and_supplier_balance(
+        self, client: AsyncClient
+    ) -> None:
+        admin = await login(client, "admin", TEST_ADMIN_PASSWORD)
+        invoice_id, product, supplier_id, _ = await self._purchase(client, admin, "100")
+
+        response = await client.post(
+            "/api/v1/purchases/returns",
+            headers=admin,
+            json={
+                "invoice_id": invoice_id,
+                "reason": "defective",
+                "lines": [{"product_id": product["id"], "quantity": "20"}],
+            },
+        )
+        assert response.status_code == 201, response.text
+        ret = response.json()["data"]
+        # 20 x 8.00 = 160.00 + 16% VAT (128/800 fraction) = 25.60 -> total 185.60.
+        assert as_decimal(ret["subtotal"]) == Decimal("160.00")
+        assert as_decimal(ret["vat_amount"]) == Decimal("25.60")
+        assert as_decimal(ret["total"]) == Decimal("185.60")
+
+        # Stock decreases: bought 100, returned 20 -> 80 remain.
+        levels = (
+            await client.get("/api/v1/inventory/stock/levels", headers=admin)
+        ).json()["data"]
+        assert as_decimal(levels[0]["total_quantity"]) == Decimal("80")
+
+        # Supplier balance drops: 928.00 (800 + 128 VAT) - 185.60 = 742.40.
+        statement = (
+            await client.get(
+                f"/api/v1/purchases/suppliers/{supplier_id}/statement", headers=admin
+            )
+        ).json()["data"]
+        assert as_decimal(statement["total_returns"]) == Decimal("185.60")
+        assert as_decimal(statement["balance"]) == Decimal("742.40")
+
+    async def test_journal_entry_reverses_payable_inventory_and_vat(
+        self, client: AsyncClient
+    ) -> None:
+        admin = await login(client, "admin", TEST_ADMIN_PASSWORD)
+        invoice_id, product, _, _ = await self._purchase(client, admin, "100")
+
+        response = await client.post(
+            "/api/v1/purchases/returns",
+            headers=admin,
+            json={
+                "invoice_id": invoice_id,
+                "reason": "wrong_item",
+                "lines": [{"product_id": product["id"], "quantity": "10"}],
+            },
+        )
+        assert response.status_code == 201, response.text
+        return_id = int(response.json()["data"]["id"])
+
+        entries = await entries_for(client, admin, "purchase_return", return_id)
+        assert len(entries) == 1
+        items = items_by_code(entries[0])
+        # 10 x 8.00 = 80.00 subtotal, VAT 12.80, total 92.80.
+        assert items["2010"] == (Decimal("92.80"), Decimal("0"))
+        assert items["1030"] == (Decimal("0"), Decimal("80.00"))
+        assert items["2020"] == (Decimal("0"), Decimal("12.80"))
+
+    async def test_return_exceeding_received_rejected(
+        self, client: AsyncClient
+    ) -> None:
+        admin = await login(client, "admin", TEST_ADMIN_PASSWORD)
+        invoice_id, product, _, _ = await self._purchase(client, admin, "100")
+
+        first = await client.post(
+            "/api/v1/purchases/returns",
+            headers=admin,
+            json={
+                "invoice_id": invoice_id,
+                "reason": "excess",
+                "lines": [{"product_id": product["id"], "quantity": "60"}],
+            },
+        )
+        assert first.status_code == 201
+
+        second = await client.post(
+            "/api/v1/purchases/returns",
+            headers=admin,
+            json={
+                "invoice_id": invoice_id,
+                "reason": "excess",
+                "lines": [{"product_id": product["id"], "quantity": "50"}],
+            },
+        )
+        assert second.status_code == 400
+        assert "أكبر من الكمية المستلمة" in second.json()["message"]
+
+    async def test_return_blocked_when_already_sold(self, client: AsyncClient) -> None:
+        admin = await login(client, "admin", TEST_ADMIN_PASSWORD)
+        # Product's home warehouse must match the receiving warehouse for the
+        # later sale to find the stock via FEFO.
+        warehouse_id = await create_warehouse(client, admin, "الرئيسي")
+        product = await create_product(client, admin, warehouse_id=warehouse_id)
+        supplier_id = await create_supplier(client, admin)
+        purchase = await client.post(
+            "/api/v1/purchases/invoices",
+            headers=admin,
+            json={
+                "supplier_id": supplier_id,
+                "warehouse_id": warehouse_id,
+                "payment_method": "credit",
+                "tax_rate_ids": [DEFAULT_TAX_RATE_ID],
+                "lines": [
+                    {
+                        "product_id": product["id"],
+                        "batch_number": "PB-1",
+                        "expiry_date": days_from_now(120),
+                        "quantity": "100",
+                        "unit_cost": "8.00",
+                    }
+                ],
+            },
+        )
+        assert purchase.status_code == 201, purchase.text
+        invoice_id = int(purchase.json()["data"]["id"])
+
+        # Sell 90 of the 100 received, leaving only 10 in the batch.
+        customer_id = await create_customer(client, admin, credit_limit="10000")
+        sale = await post_invoice(
+            client, admin, customer_id, warehouse_id, product["id"], "90", "credit"
+        )
+        assert sale.status_code == 201, sale.text
+
+        response = await client.post(
+            "/api/v1/purchases/returns",
+            headers=admin,
+            json={
+                "invoice_id": invoice_id,
+                "reason": "defective",
+                "lines": [{"product_id": product["id"], "quantity": "20"}],
+            },
+        )
+        assert response.status_code == 400
+        assert "تم بيعه بالفعل" in response.json()["message"]
+
+    async def test_sales_role_cannot_create_purchase_return(
+        self, client: AsyncClient
+    ) -> None:
+        admin = await login(client, "admin", TEST_ADMIN_PASSWORD)
+        invoice_id, product, _, _ = await self._purchase(client, admin, "50")
+
+        sales = await login(client, "salesman", TEST_SALES_PASSWORD)
+        response = await client.post(
+            "/api/v1/purchases/returns",
+            headers=sales,
+            json={
+                "invoice_id": invoice_id,
+                "reason": "defective",
+                "lines": [{"product_id": product["id"], "quantity": "5"}],
+            },
+        )
+        assert response.status_code == 403
+
+    async def test_accountant_can_create_purchase_return(
+        self, client: AsyncClient
+    ) -> None:
+        admin = await login(client, "admin", TEST_ADMIN_PASSWORD)
+        invoice_id, product, _, _ = await self._purchase(client, admin, "50")
+
+        accountant = await login(client, "accountant", TEST_ACCOUNTANT_PASSWORD)
+        response = await client.post(
+            "/api/v1/purchases/returns",
+            headers=accountant,
+            json={
+                "invoice_id": invoice_id,
+                "reason": "defective",
+                "lines": [{"product_id": product["id"], "quantity": "5"}],
+            },
+        )
+        assert response.status_code == 201, response.text
 
 
 class TestSupplierPayments:

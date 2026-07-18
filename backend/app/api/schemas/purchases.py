@@ -6,7 +6,7 @@ from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from app.domain.models.purchases import PurchasePaymentMethod
+from app.domain.models.purchases import PurchasePaymentMethod, PurchaseReturnReason
 
 
 # --- Suppliers ---
@@ -107,6 +107,46 @@ class PurchaseInvoiceOut(BaseModel):
     taxes: list[PurchaseInvoiceTaxOut]
 
 
+# --- Purchase returns ---
+class PurchaseReturnLineIn(BaseModel):
+    product_id: int
+    quantity: Decimal = Field(gt=0)
+    unit_id: int | None = None
+
+
+class PurchaseReturnCreate(BaseModel):
+    invoice_id: int
+    reason: PurchaseReturnReason
+    notes: str | None = Field(default=None, max_length=300)
+    lines: list[PurchaseReturnLineIn] = Field(min_length=1)
+
+
+class PurchaseReturnLineOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: int
+    product_id: int
+    batch_id: int
+    quantity: Decimal
+    unit_cost: Decimal
+    line_total: Decimal
+
+
+class PurchaseReturnOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: int
+    invoice_id: int
+    supplier_id: int
+    reason: PurchaseReturnReason
+    subtotal: Decimal
+    vat_amount: Decimal
+    total: Decimal
+    notes: str | None
+    created_at: datetime
+    lines: list[PurchaseReturnLineOut]
+
+
 # --- Supplier payments & statement ---
 class SupplierPaymentCreate(BaseModel):
     supplier_id: int
@@ -133,8 +173,10 @@ class SupplierStatementOut(BaseModel):
     supplier: SupplierOut
     opening_balance: Decimal
     total_invoices: Decimal
+    total_returns: Decimal
     total_paid: Decimal
     # What we still owe the supplier.
     balance: Decimal
     invoices: list[PurchaseInvoiceOut]
+    returns: list[PurchaseReturnOut]
     payments: list[SupplierPaymentOut]

@@ -81,3 +81,21 @@ class TrialBalanceOut(BaseModel):
     total_debit: Decimal
     total_credit: Decimal
     is_balanced: bool
+
+
+# --- Tax summary ---
+class TaxSummaryRow(BaseModel):
+    name: str
+    rate: Decimal
+    collected: Decimal  # tax on sales invoices (output tax)
+    paid: Decimal  # tax on purchase invoices (input tax)
+    net: Decimal  # collected - paid; positive means payable to the tax authority
+
+
+class TaxSummaryOut(BaseModel):
+    date_from: date | None
+    date_to: date | None
+    rows: list[TaxSummaryRow]
+    total_collected: Decimal
+    total_paid: Decimal
+    total_net: Decimal

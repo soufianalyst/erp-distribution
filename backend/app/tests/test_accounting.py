@@ -1,9 +1,14 @@
 """Integration tests for accounting: automatic postings, manual entries, trial balance."""
 
+from datetime import date
 from decimal import Decimal
 
 from httpx import AsyncClient
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.domain.models.purchases import PurchaseInvoice
+from app.domain.models.sales import SalesInvoice
 from app.tests.conftest import (
     DEFAULT_TAX_RATE_ID,
     TEST_ACCOUNTANT_PASSWORD,
@@ -362,3 +367,72 @@ class TestManualEntriesAndTrialBalance:
         assert report["is_balanced"] is True
         assert as_decimal(report["total_debit"]) == as_decimal(report["total_credit"])
         assert as_decimal(report["total_debit"]) > 0
+
+
+class TestTaxSummary:
+    async def test_summary_reflects_sales_and_purchases(
+        self, client: AsyncClient
+    ) -> None:
+        admin = await login(client, "admin", TEST_ADMIN_PASSWORD)
+        await full_trade_cycle(client, admin)
+
+        response = await client.get(
+            "/api/v1/accounting/reports/tax-summary", headers=admin
+        )
+        assert response.status_code == 200
+        report = response.json()["data"]
+        assert len(report["rows"]) == 1
+        row = report["rows"][0]
+        assert row["name"] == "ضريبة القيمة المضافة"
+        assert as_decimal(row["collected"]) == Decimal("42.00")
+        assert as_decimal(row["paid"]) == Decimal("128.00")
+        assert as_decimal(row["net"]) == Decimal("-86.00")
+        assert as_decimal(report["total_collected"]) == Decimal("42.00")
+        assert as_decimal(report["total_paid"]) == Decimal("128.00")
+        assert as_decimal(report["total_net"]) == Decimal("-86.00")
+
+    async def test_date_filter_excludes_other_periods(
+        self, client: AsyncClient, db_session: AsyncSession
+    ) -> None:
+        admin = await login(client, "admin", TEST_ADMIN_PASSWORD)
+        ids = await full_trade_cycle(client, admin)
+
+        # Push both documents' dates back to last year.
+        last_year = date.today().replace(year=date.today().year - 1)
+        sale_result = await db_session.execute(
+            select(SalesInvoice).where(SalesInvoice.id == ids["sale_id"])
+        )
+        sale_result.scalar_one().invoice_date = last_year
+        purchase_result = await db_session.execute(
+            select(PurchaseInvoice).where(PurchaseInvoice.id == ids["purchase_id"])
+        )
+        purchase_result.scalar_one().invoice_date = last_year
+        await db_session.commit()
+
+        this_year = await client.get(
+            "/api/v1/accounting/reports/tax-summary",
+            headers=admin,
+            params={"date_from": date.today().replace(month=1, day=1).isoformat()},
+        )
+        assert this_year.status_code == 200
+        assert this_year.json()["data"]["rows"] == []
+
+        last_year_report = await client.get(
+            "/api/v1/accounting/reports/tax-summary",
+            headers=admin,
+            params={
+                "date_from": last_year.replace(month=1, day=1).isoformat(),
+                "date_to": last_year.replace(month=12, day=31).isoformat(),
+            },
+        )
+        assert last_year_report.status_code == 200
+        assert len(last_year_report.json()["data"]["rows"]) == 1
+
+    async def test_sales_role_cannot_view_tax_summary(
+        self, client: AsyncClient
+    ) -> None:
+        sales = await login(client, "salesman", TEST_SALES_PASSWORD)
+        response = await client.get(
+            "/api/v1/accounting/reports/tax-summary", headers=sales
+        )
+        assert response.status_code == 403

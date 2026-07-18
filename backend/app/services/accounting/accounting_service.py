@@ -10,11 +10,15 @@ from sqlalchemy.orm import selectinload
 from app.api.schemas.accounting import (
     AccountCreate,
     ManualEntryCreate,
+    TaxSummaryOut,
+    TaxSummaryRow,
     TrialBalanceOut,
     TrialBalanceRow,
 )
 from app.core.exceptions import AppException
 from app.domain.models.accounting import Account, AccountType, JournalEntry, JournalItem
+from app.domain.models.purchases import PurchaseInvoice, PurchaseInvoiceTax
+from app.domain.models.sales import SalesInvoice, SalesInvoiceTax
 
 # System account codes used by automatic postings.
 CASH = "1010"
@@ -213,4 +217,71 @@ class AccountingService:
             total_debit=total_debit,
             total_credit=total_credit,
             is_balanced=total_debit == total_credit,
+        )
+
+    async def tax_summary(
+        self, date_from: date | None, date_to: date | None
+    ) -> TaxSummaryOut:
+        """تقرير الضرائب: مقارنة الضريبة المحصلة على المبيعات بالضريبة المدفوعة في المشتريات لكل نوع ضريبة."""
+
+        sales_stmt = (
+            select(
+                SalesInvoiceTax.name,
+                SalesInvoiceTax.rate,
+                func.coalesce(func.sum(SalesInvoiceTax.amount), 0),
+            )
+            .join(SalesInvoice, SalesInvoice.id == SalesInvoiceTax.invoice_id)
+            .group_by(SalesInvoiceTax.name, SalesInvoiceTax.rate)
+        )
+        if date_from is not None:
+            sales_stmt = sales_stmt.where(SalesInvoice.invoice_date >= date_from)
+        if date_to is not None:
+            sales_stmt = sales_stmt.where(SalesInvoice.invoice_date <= date_to)
+        sales_result = await self.session.execute(sales_stmt)
+
+        purchases_stmt = (
+            select(
+                PurchaseInvoiceTax.name,
+                PurchaseInvoiceTax.rate,
+                func.coalesce(func.sum(PurchaseInvoiceTax.amount), 0),
+            )
+            .join(PurchaseInvoice, PurchaseInvoice.id == PurchaseInvoiceTax.invoice_id)
+            .group_by(PurchaseInvoiceTax.name, PurchaseInvoiceTax.rate)
+        )
+        if date_from is not None:
+            purchases_stmt = purchases_stmt.where(
+                PurchaseInvoice.invoice_date >= date_from
+            )
+        if date_to is not None:
+            purchases_stmt = purchases_stmt.where(
+                PurchaseInvoice.invoice_date <= date_to
+            )
+        purchases_result = await self.session.execute(purchases_stmt)
+
+        collected = {
+            (name, Decimal(str(rate))): Decimal(str(amount))
+            for name, rate, amount in sales_result.all()
+        }
+        paid = {
+            (name, Decimal(str(rate))): Decimal(str(amount))
+            for name, rate, amount in purchases_result.all()
+        }
+
+        rows: list[TaxSummaryRow] = []
+        total_collected = Decimal("0")
+        total_paid = Decimal("0")
+        for name, rate in sorted(set(collected) | set(paid)):
+            c = collected.get((name, rate), Decimal("0"))
+            p = paid.get((name, rate), Decimal("0"))
+            rows.append(TaxSummaryRow(name=name, rate=rate, collected=c, paid=p, net=c - p))
+            total_collected += c
+            total_paid += p
+
+        return TaxSummaryOut(
+            date_from=date_from,
+            date_to=date_to,
+            rows=rows,
+            total_collected=total_collected,
+            total_paid=total_paid,
+            total_net=total_collected - total_paid,
         )

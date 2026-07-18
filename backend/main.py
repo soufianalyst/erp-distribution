@@ -1,5 +1,6 @@
 """Application entry point: FastAPI app factory, startup seeding, and error envelopes."""
 
+import logging
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 
@@ -21,6 +22,9 @@ from app.domain.models.user import User, UserRole
 from app.services.accounting.accounting_service import seed_chart_of_accounts
 
 settings = get_settings()
+
+logging.basicConfig(level=logging.INFO if settings.DEBUG else logging.WARNING)
+logger = logging.getLogger("app")
 
 
 async def seed_first_admin() -> None:
@@ -55,14 +59,20 @@ app = FastAPI(
     description="نظام تخطيط موارد المؤسسات لشركات بيع وتوزيع المواد الغذائية بالجملة",
     version="0.1.0",
     lifespan=lifespan,
+    # Interactive docs leak schema/route details; only expose them in dev.
+    docs_url="/docs" if settings.DEBUG else None,
+    redoc_url="/redoc" if settings.DEBUG else None,
+    openapi_url="/openapi.json" if settings.DEBUG else None,
 )
 
 app.add_middleware(
     CORSMiddleware,
     allow_origins=[o.strip() for o in settings.CORS_ORIGINS.split(",") if o.strip()],
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
+    # The frontend authenticates with a Bearer token (see services/api.js), never
+    # cookies, so credentialed CORS requests are not needed.
+    allow_credentials=False,
+    allow_methods=["GET", "POST", "PUT", "PATCH", "DELETE"],
+    allow_headers=["Authorization", "Content-Type"],
 )
 
 
@@ -95,6 +105,17 @@ async def validation_exception_handler(
         # exc.errors() can embed raw non-JSON types (e.g. Decimal) in the
         # echoed invalid input; jsonable_encoder normalizes them safely.
         data=jsonable_encoder(exc.errors()),
+    )
+
+
+@app.exception_handler(Exception)
+async def unhandled_exception_handler(_: Request, exc: Exception) -> JSONResponse:
+    """Last-resort handler so unexpected errors get the same response envelope
+    (and never leak a stack trace) instead of Starlette's default 500 page."""
+    logger.exception("Unhandled exception", exc_info=exc)
+    return _envelope(
+        status.HTTP_500_INTERNAL_SERVER_ERROR,
+        "حدث خطأ غير متوقع في الخادم، يرجى المحاولة لاحقاً.",
     )
 
 

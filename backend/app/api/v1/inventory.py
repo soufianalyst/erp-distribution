@@ -11,6 +11,8 @@ from app.api.schemas.inventory import (
     ProductCreate,
     ProductOut,
     ProductUpdate,
+    StockAdjustmentCreate,
+    StockAdjustmentOut,
     StockLevelOut,
     StockReceiveRequest,
     StockTransferRequest,
@@ -20,6 +22,7 @@ from app.api.schemas.inventory import (
     WarehouseUpdate,
 )
 from app.db.session import get_db
+from app.domain.models.user import User
 from app.services.inventory.product_service import ProductService
 from app.services.inventory.stock_service import StockService
 from app.services.inventory.warehouse_service import WarehouseService
@@ -212,3 +215,37 @@ async def near_expiry(
     """تنبيهات البضاعة قريبة الانتهاء أو المنتهية وما زالت في المخزون."""
     items = await StockService(db).near_expiry(days)
     return APIResponse(data=items)
+
+
+# --- Stock adjustments (write-offs) ---
+@router.post(
+    "/stock/adjustments",
+    response_model=APIResponse[StockAdjustmentOut],
+    status_code=status.HTTP_201_CREATED,
+)
+async def create_adjustment(
+    body: StockAdjustmentCreate,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(require_permissions("stock.adjust")),
+) -> APIResponse[StockAdjustmentOut]:
+    """تسجيل تعديل/إتلاف مخزون مباشرة من تشغيلة محددة، خارج أي عملية بيع أو مرتجع شراء."""
+    adjustment = await StockService(db).create_adjustment(
+        body, created_by=current_user.id
+    )
+    return APIResponse(
+        data=StockAdjustmentOut.model_validate(adjustment),
+        message="تم تسجيل تعديل المخزون بنجاح.",
+    )
+
+
+@router.get(
+    "/stock/adjustments",
+    response_model=APIResponse[list[StockAdjustmentOut]],
+    dependencies=[stock_view],
+)
+async def list_adjustments(
+    db: AsyncSession = Depends(get_db),
+) -> APIResponse[list[StockAdjustmentOut]]:
+    """عرض تعديلات/إتلاف المخزون."""
+    adjustments = await StockService(db).list_adjustments()
+    return APIResponse(data=[StockAdjustmentOut.model_validate(a) for a in adjustments])

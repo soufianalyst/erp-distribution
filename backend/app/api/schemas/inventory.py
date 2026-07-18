@@ -5,6 +5,8 @@ from decimal import Decimal
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from app.domain.models.inventory import StockAdjustmentReason
+
 
 # --- Warehouses ---
 class WarehouseCreate(BaseModel):
@@ -138,3 +140,39 @@ class NearExpiryOut(BaseModel):
     expiry_date: date
     quantity: Decimal
     days_remaining: int
+
+
+# --- Stock adjustments (write-offs) ---
+class StockAdjustmentLineIn(BaseModel):
+    batch_id: int
+    quantity: Decimal = Field(gt=0)
+    unit_id: int | None = None
+
+
+class StockAdjustmentCreate(BaseModel):
+    reason: StockAdjustmentReason
+    notes: str | None = Field(default=None, max_length=300)
+    lines: list[StockAdjustmentLineIn] = Field(min_length=1)
+
+
+class StockAdjustmentLineOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: int
+    product_id: int
+    batch_id: int
+    warehouse_id: int
+    quantity: Decimal
+    unit_cost: Decimal
+    line_total: Decimal
+
+
+class StockAdjustmentOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: int
+    reason: StockAdjustmentReason
+    total_cost: Decimal
+    notes: str | None
+    created_at: datetime
+    lines: list[StockAdjustmentLineOut]

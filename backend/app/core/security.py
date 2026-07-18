@@ -27,6 +27,16 @@ def verify_password(plain_password: str, hashed_password: str) -> bool:
         return False
 
 
+# A fixed bcrypt hash with no matching plaintext. Used so a login attempt for a
+# nonexistent username still pays the same bcrypt cost as a real one, closing a
+# timing side-channel that could otherwise reveal whether a username exists.
+_DUMMY_HASH = hash_password("no-such-user-timing-safety-placeholder")
+
+
+def verify_password_or_dummy(plain_password: str, hashed_password: str | None) -> bool:
+    return verify_password(plain_password, hashed_password or _DUMMY_HASH)
+
+
 def _create_token(
     subject: str, role: str, token_type: TokenType, expires_delta: timedelta
 ) -> str:

@@ -1,7 +1,7 @@
-"""Stock movements: receiving, FEFO allocation, transfers, levels, and expiry alerts."""
+"""Stock movements: receiving, FEFO allocation, transfers, levels, expiry alerts, and write-offs."""
 
 from datetime import date, timedelta
-from decimal import Decimal
+from decimal import ROUND_HALF_UP, Decimal
 
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -9,18 +9,33 @@ from sqlalchemy.orm import selectinload
 
 from app.api.schemas.inventory import (
     NearExpiryOut,
+    StockAdjustmentCreate,
     StockLevelOut,
     StockReceiveRequest,
     StockTransferRequest,
     TransferLineOut,
 )
 from app.core.exceptions import AppException
-from app.domain.models.inventory import Product, ProductBatch, Warehouse
+from app.domain.models.inventory import (
+    Product,
+    ProductBatch,
+    StockAdjustment,
+    StockAdjustmentLine,
+    Warehouse,
+)
+from app.services.accounting.accounting_service import (
+    DAMAGE_LOSS,
+    INVENTORY,
+    AccountingService,
+)
+
+TWO_PLACES = Decimal("0.01")
 
 
 class StockService:
     def __init__(self, session: AsyncSession) -> None:
         self.session = session
+        self.accounting = AccountingService(session)
 
     async def get_active_product(self, product_id: int) -> Product:
         result = await self.session.execute(
@@ -287,3 +302,87 @@ class StockService:
             )
             for batch, product_name, warehouse_name in result.all()
         ]
+
+    # --- Stock adjustments (write-offs) ---
+    async def create_adjustment(
+        self, data: StockAdjustmentCreate, created_by: int | None = None
+    ) -> StockAdjustment:
+        """Write off damaged/expired/spoiled stock or a physical-count shortfall,
+        directly from a specific batch — outside any sale or purchase return.
+
+        Decrease-only: unlike sales/purchase returns there is no restock branch,
+        the goods are simply removed from stock.
+        """
+        adjustment = StockAdjustment(
+            reason=data.reason,
+            total_cost=Decimal("0"),
+            notes=data.notes,
+            created_by=created_by,
+        )
+
+        total_cost = Decimal("0")
+        for line in data.lines:
+            batch = await self.session.get(ProductBatch, line.batch_id)
+            if batch is None:
+                raise AppException(404, f"التشغيلة رقم {line.batch_id} غير موجودة.")
+            product = await self.get_active_product(batch.product_id)
+
+            base_quantity = self.to_base_quantity(product, line.quantity, line.unit_id)
+            if base_quantity > batch.quantity:
+                raise AppException(
+                    400,
+                    f"الكمية المطلوب إتلافها من الصنف ({product.name}) أكبر من "
+                    f"الرصيد المتاح في هذه التشغيلة ({batch.quantity}).",
+                )
+            batch.quantity -= base_quantity
+
+            # Batches received directly (outside a purchase invoice) may have no cost.
+            unit_cost = batch.unit_cost or Decimal("0")
+            line_total = (base_quantity * unit_cost).quantize(
+                TWO_PLACES, rounding=ROUND_HALF_UP
+            )
+            adjustment.lines.append(
+                StockAdjustmentLine(
+                    product_id=batch.product_id,
+                    batch_id=batch.id,
+                    warehouse_id=batch.warehouse_id,
+                    quantity=base_quantity,
+                    unit_cost=unit_cost,
+                    line_total=line_total,
+                )
+            )
+            total_cost += line_total
+
+        adjustment.total_cost = total_cost
+        self.session.add(adjustment)
+        await self.session.flush()
+
+        # Automatic double-entry: only when the write-off has a known cost impact.
+        if total_cost > 0:
+            await self.accounting.add_entry_no_commit(
+                entry_date=date.today(),
+                description=f"تعديل/إتلاف مخزون رقم {adjustment.id}",
+                items=[
+                    (DAMAGE_LOSS, total_cost, Decimal("0")),
+                    (INVENTORY, Decimal("0"), total_cost),
+                ],
+                reference_type="stock_adjustment",
+                reference_id=adjustment.id,
+                created_by=created_by,
+            )
+
+        await self.session.commit()
+        result = await self.session.execute(
+            select(StockAdjustment)
+            .options(selectinload(StockAdjustment.lines))
+            .where(StockAdjustment.id == adjustment.id)
+        )
+        return result.scalar_one()
+
+    async def list_adjustments(self) -> list[StockAdjustment]:
+        result = await self.session.execute(
+            select(StockAdjustment)
+            .options(selectinload(StockAdjustment.lines))
+            .order_by(StockAdjustment.id.desc())
+        )
+        return list(result.scalars().all())

@@ -71,7 +71,7 @@ def upgrade() -> None:
     op.execute(
         """
         INSERT INTO accounts (code, name, type, is_system, is_active)
-        SELECT '5020', 'مصاريف تشغيلية عامة', 'expense', 1, 1
+        SELECT '5020', 'مصاريف تشغيلية عامة', 'expense', true, true
         WHERE NOT EXISTS (SELECT 1 FROM accounts WHERE code = '5020')
         """
     )

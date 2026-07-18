@@ -9,6 +9,7 @@ from sqlalchemy.orm import selectinload
 
 from app.api.schemas.purchases import (
     PurchaseInvoiceCreate,
+    PurchaseReturnCreate,
     SupplierCreate,
     SupplierPaymentCreate,
     SupplierStatementOut,
@@ -22,6 +23,8 @@ from app.domain.models.purchases import (
     PurchaseInvoiceLine,
     PurchaseInvoiceTax,
     PurchasePaymentMethod,
+    PurchaseReturn,
+    PurchaseReturnLine,
     Supplier,
     SupplierPayment,
 )
@@ -408,6 +411,143 @@ class PurchaseService:
         result = await self.session.execute(stmt)
         return list(result.scalars().all())
 
+    # --- Purchase returns ---
+    async def create_return(
+        self, data: PurchaseReturnCreate, created_by: int | None = None
+    ) -> PurchaseReturn:
+        """Post a purchase return: goods always leave the warehouse back to the
+        supplier, regardless of reason (unlike sales returns, there is no
+        "resellable" branch — see PurchaseReturnReason)."""
+        invoice = await self.get_invoice(data.invoice_id)
+        supplier = await self.get_supplier(invoice.supplier_id)
+
+        # Quantities already returned against this invoice, per batch.
+        returned_result = await self.session.execute(
+            select(
+                PurchaseReturnLine.batch_id,
+                func.coalesce(func.sum(PurchaseReturnLine.quantity), 0),
+            )
+            .join(PurchaseReturn, PurchaseReturnLine.return_id == PurchaseReturn.id)
+            .where(PurchaseReturn.invoice_id == invoice.id)
+            .group_by(PurchaseReturnLine.batch_id)
+        )
+        returned_per_batch: dict[int, Decimal] = {
+            batch_id: Decimal(str(qty)) for batch_id, qty in returned_result.all()
+        }
+
+        purchase_return = PurchaseReturn(
+            invoice_id=invoice.id,
+            supplier_id=supplier.id,
+            reason=data.reason,
+            subtotal=Decimal("0"),
+            vat_amount=Decimal("0"),
+            total=Decimal("0"),
+            notes=data.notes,
+            created_by=created_by,
+        )
+
+        subtotal = Decimal("0")
+        for line in data.lines:
+            product = await self.stock.get_active_product(line.product_id)
+            remaining = self.stock.to_base_quantity(
+                product, line.quantity, line.unit_id
+            )
+
+            # Walk the invoice lines of this product and take back from their batches in order.
+            for inv_line in invoice.lines:
+                if inv_line.product_id != line.product_id or remaining <= 0:
+                    continue
+                already = returned_per_batch.get(inv_line.batch_id, Decimal("0"))
+                returnable = inv_line.quantity - already
+                if returnable <= 0:
+                    continue
+                take = min(returnable, remaining)
+
+                batch = await self.session.get(ProductBatch, inv_line.batch_id)
+                if batch is not None:
+                    if batch.quantity < take:
+                        raise AppException(
+                            400,
+                            f"لا يمكن إرجاع هذه الكمية من الصنف ({product.name})؛ "
+                            "جزء منها تم بيعه بالفعل.",
+                        )
+                    batch.quantity -= take
+
+                line_total = (take * inv_line.unit_cost).quantize(
+                    TWO_PLACES, rounding=ROUND_HALF_UP
+                )
+                purchase_return.lines.append(
+                    PurchaseReturnLine(
+                        product_id=line.product_id,
+                        batch_id=inv_line.batch_id,
+                        quantity=take,
+                        unit_cost=inv_line.unit_cost,
+                        line_total=line_total,
+                    )
+                )
+                subtotal += line_total
+                returned_per_batch[inv_line.batch_id] = already + take
+                remaining -= take
+
+            if remaining > 0:
+                raise AppException(
+                    400,
+                    f"الكمية المرتجعة للصنف ({product.name}) أكبر من الكمية المستلمة في الفاتورة.",
+                )
+
+        # Derive the tax proportionally from the ORIGINAL invoice's own numbers
+        # (not any currently-configured rate), same convention as sales returns.
+        effective_tax_fraction = (
+            invoice.vat_amount / invoice.subtotal if invoice.subtotal > 0 else Decimal("0")
+        )
+        purchase_return.subtotal = subtotal
+        purchase_return.vat_amount = (
+            (subtotal * effective_tax_fraction).quantize(
+                TWO_PLACES, rounding=ROUND_HALF_UP
+            )
+            if invoice.vat_amount > 0
+            else Decimal("0")
+        )
+        purchase_return.total = subtotal + purchase_return.vat_amount
+
+        self.session.add(purchase_return)
+        await self.session.flush()
+
+        # Automatic double-entry: reverse inventory + VAT against the supplier's payable.
+        await self.accounting.add_entry_no_commit(
+            entry_date=date.today(),
+            description=f"مرتجع مشتريات رقم {purchase_return.id} عن الفاتورة رقم {invoice.id}",
+            items=[
+                (ACCOUNTS_PAYABLE, purchase_return.total, Decimal("0")),
+                (INVENTORY, Decimal("0"), subtotal),
+                (VAT, Decimal("0"), purchase_return.vat_amount),
+            ],
+            reference_type="purchase_return",
+            reference_id=purchase_return.id,
+            created_by=created_by,
+        )
+
+        await self.session.commit()
+        result = await self.session.execute(
+            select(PurchaseReturn)
+            .options(selectinload(PurchaseReturn.lines))
+            .where(PurchaseReturn.id == purchase_return.id)
+        )
+        return result.scalar_one()
+
+    async def list_returns(
+        self, invoice_id: int | None = None
+    ) -> list[PurchaseReturn]:
+        stmt = (
+            select(PurchaseReturn)
+            .options(selectinload(PurchaseReturn.lines))
+            .order_by(PurchaseReturn.id.desc())
+        )
+        if invoice_id is not None:
+            stmt = stmt.where(PurchaseReturn.invoice_id == invoice_id)
+        result = await self.session.execute(stmt)
+        return list(result.scalars().all())
+
     # --- Payments & statement ---
     async def create_payment(
         self, data: SupplierPaymentCreate, created_by: int | None = None
@@ -448,7 +588,7 @@ class PurchaseService:
         return payment
 
     async def supplier_balance(self, supplier_id: int) -> Decimal:
-        """Outstanding balance = opening + unpaid invoice amounts - payments made."""
+        """Outstanding = opening + unpaid invoice amounts - returns - payments made."""
         supplier = await self.get_supplier(supplier_id)
 
         invoiced = await self.session.execute(
@@ -458,6 +598,13 @@ class PurchaseService:
             ).where(PurchaseInvoice.supplier_id == supplier_id)
         )
         total_invoices, paid_on_invoices = invoiced.one()
+
+        returns = await self.session.execute(
+            select(func.coalesce(func.sum(PurchaseReturn.total), 0)).where(
+                PurchaseReturn.supplier_id == supplier_id
+            )
+        )
+        total_returns = returns.scalar_one()
 
         payments = await self.session.execute(
             select(func.coalesce(func.sum(SupplierPayment.amount), 0)).where(
@@ -470,18 +617,27 @@ class PurchaseService:
             supplier.opening_balance
             + Decimal(str(total_invoices))
             - Decimal(str(paid_on_invoices))
+            - Decimal(str(total_returns))
             - Decimal(str(total_payments))
         )
 
     async def supplier_statement(self, supplier_id: int) -> SupplierStatementOut:
         from app.api.schemas.purchases import (
             PurchaseInvoiceOut,
+            PurchaseReturnOut,
             SupplierOut,
             SupplierPaymentOut,
         )
 
         supplier = await self.get_supplier(supplier_id)
         invoices = await self.list_invoices(supplier_id)
+        returns_result = await self.session.execute(
+            select(PurchaseReturn)
+            .options(selectinload(PurchaseReturn.lines))
+            .where(PurchaseReturn.supplier_id == supplier_id)
+            .order_by(PurchaseReturn.id)
+        )
+        returns = list(returns_result.scalars().all())
         payments_result = await self.session.execute(
             select(SupplierPayment)
             .where(SupplierPayment.supplier_id == supplier_id)
@@ -490,6 +646,7 @@ class PurchaseService:
         payments = list(payments_result.scalars().all())
 
         total_invoices = sum((i.total for i in invoices), Decimal("0"))
+        total_returns = sum((r.total for r in returns), Decimal("0"))
         total_paid = sum((i.paid_amount for i in invoices), Decimal("0")) + sum(
             (p.amount for p in payments), Decimal("0")
         )
@@ -497,8 +654,13 @@ class PurchaseService:
             supplier=SupplierOut.model_validate(supplier),
             opening_balance=supplier.opening_balance,
             total_invoices=total_invoices,
+            total_returns=total_returns,
             total_paid=total_paid,
-            balance=supplier.opening_balance + total_invoices - total_paid,
+            balance=supplier.opening_balance
+            + total_invoices
+            - total_returns
+            - total_paid,
             invoices=[PurchaseInvoiceOut.model_validate(i) for i in invoices],
+            returns=[PurchaseReturnOut.model_validate(r) for r in returns],
             payments=[SupplierPaymentOut.model_validate(p) for p in payments],
         )

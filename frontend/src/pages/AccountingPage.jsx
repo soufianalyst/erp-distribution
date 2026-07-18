@@ -138,11 +138,21 @@ export default function AccountingPage() {
   const accounts = useFetch(() => api.get("/accounting/accounts"));
   const entries = useFetch(() => api.get("/accounting/journal-entries"));
   const trialBalance = useFetch(() => api.get("/accounting/reports/trial-balance"));
+  const [dateFrom, setDateFrom] = useState("");
+  const [dateTo, setDateTo] = useState("");
+  const taxSummary = useFetch(
+    () =>
+      api.get("/accounting/reports/tax-summary", {
+        params: { date_from: dateFrom || undefined, date_to: dateTo || undefined },
+      }),
+    [dateFrom, dateTo]
+  );
 
   const TABS = [
     { id: "journal", label: "قيود اليومية" },
     { id: "manual", label: "+ قيد يدوي" },
     { id: "trial", label: "ميزان المراجعة" },
+    { id: "tax", label: "تقرير الضرائب" },
     { id: "chart", label: "دليل الحسابات" },
   ];
 
@@ -248,6 +258,59 @@ export default function AccountingPage() {
                 <div className="mt-3 flex justify-end gap-8 border-t-2 border-slate-300 pt-3 font-extrabold">
                   <span>مجموع المدين: {money(trialBalance.data.total_debit)}</span>
                   <span>مجموع الدائن: {money(trialBalance.data.total_credit)}</span>
+                </div>
+              )}
+            </>
+          )}
+        </Card>
+      )}
+
+      {tab === "tax" && (
+        <Card title="تقرير الضرائب — الضريبة المحصلة على المبيعات مقابل الضريبة المدفوعة في المشتريات">
+          <div className="mb-4 grid grid-cols-1 gap-4 sm:grid-cols-2">
+            <Input
+              label="من تاريخ"
+              type="date"
+              value={dateFrom}
+              onChange={(e) => setDateFrom(e.target.value)}
+            />
+            <Input
+              label="إلى تاريخ"
+              type="date"
+              value={dateTo}
+              onChange={(e) => setDateTo(e.target.value)}
+            />
+          </div>
+          <Alert>{taxSummary.error}</Alert>
+          {taxSummary.loading ? (
+            <Loading />
+          ) : (
+            <>
+              <Table
+                columns={[
+                  { key: "name", label: "نوع الضريبة" },
+                  { key: "rate", label: "النسبة", render: (r) => `${r.rate}%` },
+                  { key: "collected", label: "المحصّلة (مبيعات)", render: (r) => money(r.collected) },
+                  { key: "paid", label: "المدفوعة (مشتريات)", render: (r) => money(r.paid) },
+                  {
+                    key: "net",
+                    label: "الصافي المستحق",
+                    render: (r) => (
+                      <span className={Number(r.net) >= 0 ? "text-emerald-700" : "text-red-700"}>
+                        {money(r.net)}
+                      </span>
+                    ),
+                  },
+                ]}
+                rows={taxSummary.data?.rows}
+                keyField="name"
+                empty="لا توجد حركات ضريبية في هذه الفترة."
+              />
+              {taxSummary.data?.rows?.length > 0 && (
+                <div className="mt-3 flex flex-wrap justify-end gap-8 border-t-2 border-slate-300 pt-3 font-extrabold">
+                  <span>إجمالي المحصّلة: {money(taxSummary.data.total_collected)}</span>
+                  <span>إجمالي المدفوعة: {money(taxSummary.data.total_paid)}</span>
+                  <span>الصافي المستحق: {money(taxSummary.data.total_net)}</span>
                 </div>
               )}
             </>

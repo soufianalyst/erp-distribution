@@ -1,4 +1,6 @@
-"""Accounting endpoints: chart of accounts, journal entries, and the trial balance."""
+"""Accounting endpoints: chart of accounts, journal entries, and reports."""
+
+from datetime import date
 
 from fastapi import APIRouter, Depends, Query, status
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -9,6 +11,7 @@ from app.api.schemas.accounting import (
     AccountOut,
     JournalEntryOut,
     ManualEntryCreate,
+    TaxSummaryOut,
     TrialBalanceOut,
 )
 from app.api.schemas.common import APIResponse
@@ -109,4 +112,19 @@ async def trial_balance(
 ) -> APIResponse[TrialBalanceOut]:
     """ميزان المراجعة: مجاميع الحركة المدينة والدائنة لكل حساب."""
     report = await AccountingService(db).trial_balance()
+    return APIResponse(data=report)
+
+
+@router.get(
+    "/reports/tax-summary",
+    response_model=APIResponse[TaxSummaryOut],
+    dependencies=[accounting_view],
+)
+async def tax_summary(
+    date_from: date | None = Query(default=None, description="بداية الفترة"),
+    date_to: date | None = Query(default=None, description="نهاية الفترة"),
+    db: AsyncSession = Depends(get_db),
+) -> APIResponse[TaxSummaryOut]:
+    """تقرير الضرائب: الضريبة المحصلة على المبيعات مقابل الضريبة المدفوعة في المشتريات."""
+    report = await AccountingService(db).tax_summary(date_from, date_to)
     return APIResponse(data=report)

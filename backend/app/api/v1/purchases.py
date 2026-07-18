@@ -8,6 +8,8 @@ from app.api.schemas.common import APIResponse
 from app.api.schemas.purchases import (
     PurchaseInvoiceCreate,
     PurchaseInvoiceOut,
+    PurchaseReturnCreate,
+    PurchaseReturnOut,
     SupplierCreate,
     SupplierOut,
     SupplierPaymentCreate,
@@ -159,6 +161,41 @@ async def delete_invoice(
     """حذف فاتورة شراء نهائياً (المدير): يُعكس أثرها على المخزون وتُحذف قيودها."""
     await PurchaseService(db).delete_invoice(invoice_id)
     return APIResponse(data=None, message="تم حذف فاتورة الشراء وعكس أثرها على المخزون بنجاح.")
+
+
+# --- Purchase returns ---
+@router.post(
+    "/returns",
+    response_model=APIResponse[PurchaseReturnOut],
+    status_code=status.HTTP_201_CREATED,
+)
+async def create_return(
+    body: PurchaseReturnCreate,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(require_permissions("purchases.returns")),
+) -> APIResponse[PurchaseReturnOut]:
+    """تسجيل مرتجع مشتريات: تعاد البضاعة للمورد دائماً بغض النظر عن السبب."""
+    purchase_return = await PurchaseService(db).create_return(
+        body, created_by=current_user.id
+    )
+    return APIResponse(
+        data=PurchaseReturnOut.model_validate(purchase_return),
+        message="تم تسجيل مرتجع المشتريات بنجاح.",
+    )
+
+
+@router.get(
+    "/returns",
+    response_model=APIResponse[list[PurchaseReturnOut]],
+    dependencies=[purchases_view],
+)
+async def list_returns(
+    invoice_id: int | None = Query(default=None),
+    db: AsyncSession = Depends(get_db),
+) -> APIResponse[list[PurchaseReturnOut]]:
+    """عرض مرتجعات المشتريات، مع إمكانية التصفية حسب الفاتورة."""
+    returns = await PurchaseService(db).list_returns(invoice_id)
+    return APIResponse(data=[PurchaseReturnOut.model_validate(r) for r in returns])
 
 
 # --- Supplier payments ---
