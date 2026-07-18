@@ -18,32 +18,70 @@ import api, { apiMessage } from "../services/api";
 
 const EMPTY_LINE = { product_id: "", batch_number: "", expiry_date: "", quantity: "", unit_id: "", unit_cost: "" };
 
-function PurchaseForm({ suppliers, warehouses, products, onCreated }) {
-  const [form, setForm] = useState({
-    supplier_id: "",
-    warehouse_id: "",
-    payment_method: "credit",
-    shipping_cost: "0",
-    vat_amount: "0",
-    supplier_invoice_number: "",
-  });
-  const [lines, setLines] = useState([{ ...EMPTY_LINE }]);
+const PAYMENT_METHOD_LABELS = { cash: "نقدي", card: "بطاقة", credit: "آجل" };
+const PAYMENT_METHOD_TONE = { cash: "green", card: "blue", credit: "amber" };
+
+function PurchaseForm({ suppliers, warehouses, products, taxRates, onCreated, invoice }) {
+  const editing = !!invoice;
+  const defaultTaxRate = taxRates.find((t) => t.is_default);
+  const [form, setForm] = useState(
+    editing
+      ? {
+          supplier_id: String(invoice.supplier_id),
+          warehouse_id: String(invoice.warehouse_id),
+          payment_method: invoice.payment_method,
+          shipping_cost: String(invoice.shipping_cost),
+          tax_rate_ids: invoice.taxes.map((t) => t.tax_rate_id).filter((id) => id != null),
+          supplier_invoice_number: invoice.supplier_invoice_number || "",
+          invoice_date: invoice.invoice_date,
+        }
+      : {
+          supplier_id: "",
+          warehouse_id: "",
+          payment_method: "credit",
+          shipping_cost: "0",
+          tax_rate_ids: defaultTaxRate ? [defaultTaxRate.id] : [],
+          supplier_invoice_number: "",
+        }
+  );
+  const [lines, setLines] = useState(
+    editing
+      ? invoice.lines.map((l) => ({
+          product_id: String(l.product_id),
+          batch_number: l.batch_number,
+          expiry_date: l.expiry_date,
+          quantity: String(l.quantity),
+          unit_id: "",
+          unit_cost: String(l.unit_cost),
+        }))
+      : [{ ...EMPTY_LINE }]
+  );
   const [error, setError] = useState(null);
   const set = (key) => (e) => setForm({ ...form, [key]: e.target.value });
+  const toggleTax = (taxId) =>
+    setForm((f) => ({
+      ...f,
+      tax_rate_ids: f.tax_rate_ids.includes(taxId)
+        ? f.tax_rate_ids.filter((id) => id !== taxId)
+        : [...f.tax_rate_ids, taxId],
+    }));
   const setLine = (index, key, value) =>
     setLines(lines.map((l, i) => (i === index ? { ...l, [key]: value } : l)));
 
   const submit = async (event) => {
     event.preventDefault();
     setError(null);
+    const payload = {
+      ...form,
+      supplier_invoice_number: form.supplier_invoice_number || null,
+      lines: lines
+        .filter((l) => l.product_id && l.quantity)
+        .map((l) => ({ ...l, unit_id: l.unit_id || null })),
+    };
     try {
-      const { data } = await api.post("/purchases/invoices", {
-        ...form,
-        supplier_invoice_number: form.supplier_invoice_number || null,
-        lines: lines
-          .filter((l) => l.product_id && l.quantity)
-          .map((l) => ({ ...l, unit_id: l.unit_id || null })),
-      });
+      const { data } = editing
+        ? await api.put(`/purchases/invoices/${invoice.id}`, payload)
+        : await api.post("/purchases/invoices", payload);
       onCreated(data.data);
     } catch (err) {
       setError(apiMessage(err));
@@ -73,10 +111,33 @@ function PurchaseForm({ suppliers, warehouses, products, onCreated }) {
         <Select label="طريقة الدفع" value={form.payment_method} onChange={set("payment_method")}>
           <option value="credit">آجل</option>
           <option value="cash">نقدي</option>
+          <option value="card">بطاقة</option>
         </Select>
         <Input label="رقم فاتورة المورد (اختياري)" value={form.supplier_invoice_number} onChange={set("supplier_invoice_number")} />
         <Input label="تكلفة الشحن" type="number" step="0.01" min="0" value={form.shipping_cost} onChange={set("shipping_cost")} />
-        <Input label="ضريبة القيمة المضافة" type="number" step="0.01" min="0" value={form.vat_amount} onChange={set("vat_amount")} />
+      </div>
+
+      <div>
+        <span className="mb-1 block text-sm font-bold text-slate-600">
+          الضرائب المطبّقة (يمكن اختيار أكثر من ضريبة)
+        </span>
+        <div className="flex flex-wrap gap-3 rounded-lg border border-slate-300 bg-white p-3">
+          {taxRates.filter((t) => t.is_active).length === 0 && (
+            <span className="text-sm text-slate-400">لا توجد ضرائب مفعّلة.</span>
+          )}
+          {taxRates
+            .filter((t) => t.is_active)
+            .map((t) => (
+              <label key={t.id} className="flex items-center gap-2 text-sm font-bold text-slate-700">
+                <input
+                  type="checkbox"
+                  checked={form.tax_rate_ids.includes(t.id)}
+                  onChange={() => toggleTax(t.id)}
+                />
+                {t.name} ({t.rate}%)
+              </label>
+            ))}
+        </div>
       </div>
 
       <div>
@@ -178,7 +239,7 @@ function PurchaseForm({ suppliers, warehouses, products, onCreated }) {
         })}
       </div>
 
-      <Button type="submit">تثبيت الفاتورة وإدخال البضاعة</Button>
+      <Button type="submit">{editing ? "حفظ التعديلات" : "تثبيت الفاتورة وإدخال البضاعة"}</Button>
     </form>
   );
 }
@@ -188,13 +249,18 @@ export default function PurchasesPage() {
   const canBuy = can("purchases.create");
   const [tab, setTab] = useState("list");
   const [viewing, setViewing] = useState(null);
+  const [editing, setEditing] = useState(null);
+  const [notice, setNotice] = useState(null);
 
   const invoices = useFetch(() => api.get("/purchases/invoices"));
   const suppliers = useFetch(() => api.get("/purchases/suppliers"));
   const warehouses = useFetch(() => api.get("/inventory/warehouses"));
   const products = useFetch(() => api.get("/inventory/products"));
+  const taxRates = useFetch(() => api.get("/settings/tax-rates", { params: { active_only: true } }));
 
-  if (suppliers.loading || warehouses.loading || products.loading) return <Loading />;
+  if (suppliers.loading || warehouses.loading || products.loading || taxRates.loading) {
+    return <Loading />;
+  }
 
   return (
     <div className="space-y-6">
@@ -212,15 +278,19 @@ export default function PurchasesPage() {
         )}
       </div>
 
+      <Alert tone="success">{notice}</Alert>
+
       {tab === "new" && canBuy ? (
         <Card title="فاتورة شراء جديدة — تُدخل البضاعة للمخزون في عملية واحدة">
           <PurchaseForm
             suppliers={suppliers.data}
             warehouses={warehouses.data}
             products={products.data}
+            taxRates={taxRates.data || []}
             onCreated={(invoice) => {
               setViewing(invoice);
               setTab("list");
+              setNotice(null);
               invoices.reload();
             }}
           />
@@ -239,11 +309,27 @@ export default function PurchasesPage() {
                 {
                   key: "payment_method",
                   label: "الدفع",
+                  render: (r) => (
+                    <Badge tone={PAYMENT_METHOD_TONE[r.payment_method]}>
+                      {PAYMENT_METHOD_LABELS[r.payment_method]}
+                    </Badge>
+                  ),
+                },
+                {
+                  key: "payment_confirmed_at",
+                  label: "حالة السداد",
                   render: (r) =>
-                    r.payment_method === "cash" ? <Badge tone="green">نقدي</Badge> : <Badge tone="amber">آجل</Badge>,
+                    r.payment_method === "credit" ? (
+                      <Badge tone="slate">آجل — عبر حساب المورد</Badge>
+                    ) : r.payment_confirmed_at ? (
+                      <Badge tone="green">تم السداد</Badge>
+                    ) : (
+                      <Badge tone="amber">بانتظار الصندوق</Badge>
+                    ),
                 },
                 { key: "subtotal", label: "البضاعة", render: (r) => money(r.subtotal) },
                 { key: "shipping_cost", label: "الشحن", render: (r) => money(r.shipping_cost) },
+                { key: "vat_amount", label: "الضريبة", render: (r) => money(r.vat_amount) },
                 { key: "total", label: "الإجمالي", render: (r) => <b>{money(r.total)}</b> },
                 {
                   key: "view",
@@ -269,20 +355,100 @@ export default function PurchasesPage() {
         wide
       >
         {viewing && (
-          <Table
-            columns={[
-              {
-                key: "product_id",
-                label: "الصنف",
-                render: (r) => products.data.find((p) => p.id === r.product_id)?.name ?? r.product_id,
-              },
-              { key: "batch_number", label: "التشغيلة" },
-              { key: "expiry_date", label: "الانتهاء" },
-              { key: "quantity", label: "الكمية", render: (r) => qty(r.quantity) },
-              { key: "unit_cost", label: "تكلفة الوحدة", render: (r) => money(r.unit_cost) },
-              { key: "line_total", label: "الإجمالي", render: (r) => money(r.line_total) },
-            ]}
-            rows={viewing.lines}
+          <div className="space-y-4">
+            <Table
+              columns={[
+                {
+                  key: "product_id",
+                  label: "الصنف",
+                  render: (r) => products.data.find((p) => p.id === r.product_id)?.name ?? r.product_id,
+                },
+                { key: "batch_number", label: "التشغيلة" },
+                { key: "expiry_date", label: "الانتهاء" },
+                { key: "quantity", label: "الكمية", render: (r) => qty(r.quantity) },
+                { key: "unit_cost", label: "تكلفة الوحدة", render: (r) => money(r.unit_cost) },
+                { key: "line_total", label: "الإجمالي", render: (r) => money(r.line_total) },
+              ]}
+              rows={viewing.lines}
+            />
+            <div className="flex flex-wrap items-center justify-between gap-4">
+              <div className="flex flex-wrap items-center gap-6 text-sm font-bold">
+                {viewing.payment_method === "credit" ? (
+                  <Badge tone="slate">آجل — عبر حساب المورد</Badge>
+                ) : viewing.payment_confirmed_at ? (
+                  <Badge tone="green">تم السداد من الصندوق</Badge>
+                ) : (
+                  <Badge tone="amber">بانتظار السداد من الصندوق</Badge>
+                )}
+                <span>البضاعة: {money(viewing.subtotal)}</span>
+                <span>الشحن: {money(viewing.shipping_cost)}</span>
+                {viewing.taxes.map((t) => (
+                  <span key={t.id}>
+                    {t.name} ({t.rate}%): {money(t.amount)}
+                  </span>
+                ))}
+                <span className="text-emerald-700">الإجمالي: {money(viewing.total)}</span>
+              </div>
+              <div className="flex gap-2">
+                {can("purchases.edit") && (
+                  <Button
+                    variant="secondary"
+                    onClick={() => {
+                      setEditing(viewing);
+                      setViewing(null);
+                    }}
+                  >
+                    ✏️ تعديل
+                  </Button>
+                )}
+                {can("purchases.delete") && (
+                  <Button
+                    variant="danger"
+                    onClick={async () => {
+                      if (
+                        !window.confirm(
+                          `حذف فاتورة الشراء رقم ${viewing.id} نهائياً؟ سيُعكس أثرها على المخزون وتُحذف قيودها المحاسبية.`
+                        )
+                      )
+                        return;
+                      try {
+                        await api.delete(`/purchases/invoices/${viewing.id}`);
+                        setViewing(null);
+                        setNotice(`تم حذف فاتورة الشراء رقم ${viewing.id} وعكس أثرها على المخزون.`);
+                        invoices.reload();
+                      } catch (err) {
+                        alert(apiMessage(err));
+                      }
+                    }}
+                  >
+                    🗑️ حذف
+                  </Button>
+                )}
+              </div>
+            </div>
+          </div>
+        )}
+      </Modal>
+
+      <Modal
+        open={!!editing}
+        title={editing ? `تعديل فاتورة الشراء رقم ${editing.id}` : ""}
+        onClose={() => setEditing(null)}
+        wide
+      >
+        {editing && (
+          <PurchaseForm
+            invoice={editing}
+            suppliers={suppliers.data}
+            warehouses={warehouses.data}
+            products={products.data}
+            taxRates={taxRates.data || []}
+            onCreated={(invoice) => {
+              setEditing(null);
+              setViewing(invoice);
+              setNotice(`تم تعديل فاتورة الشراء رقم ${invoice.id} وإعادة احتساب المخزون والقيود.`);
+              invoices.reload();
+            }}
           />
         )}
       </Modal>

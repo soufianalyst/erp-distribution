@@ -3,7 +3,7 @@
 from datetime import date, datetime, timezone
 from decimal import Decimal
 
-from sqlalchemy import func, select
+from sqlalchemy import func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
@@ -31,6 +31,7 @@ from app.domain.models.sales import (
     FulfillmentType,
     SalesInvoice,
     SalesInvoiceLine,
+    SalesPaymentMethod,
 )
 from app.services.inventory.stock_service import StockService
 
@@ -41,10 +42,20 @@ class DeliveryService:
         self.stock = StockService(session)
 
     async def list_invoice_summaries(self) -> list[DeliveryInvoiceSummary]:
-        """Price-free invoice list for delivery staff: items, quantities, destination."""
+        """Price-free invoice list for delivery staff: items, quantities, destination.
+
+        Cash/card invoices stay hidden here until the cashier confirms payment;
+        credit invoices are visible immediately (settled later via accounts).
+        """
         result = await self.session.execute(
             select(SalesInvoice, Customer.name)
             .join(Customer, SalesInvoice.customer_id == Customer.id)
+            .where(
+                or_(
+                    SalesInvoice.payment_method == SalesPaymentMethod.CREDIT,
+                    SalesInvoice.payment_confirmed_at.isnot(None),
+                )
+            )
             .order_by(SalesInvoice.id.desc())
         )
         rows = result.all()
@@ -197,6 +208,14 @@ class DeliveryService:
         if invoice.fulfillment == FulfillmentType.PICKUP:
             raise AppException(
                 400, "هذه الفاتورة استلام من المستودع ولا تُضاف لرحلات التوصيل."
+            )
+        if (
+            invoice.payment_method != SalesPaymentMethod.CREDIT
+            and invoice.payment_confirmed_at is None
+        ):
+            raise AppException(
+                400,
+                "لم يتم تحصيل قيمة الفاتورة من الصندوق بعد؛ لا يمكن إضافتها لرحلة توزيع.",
             )
 
         # An invoice may ride on at most one trip that is not completed yet.

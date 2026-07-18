@@ -1,6 +1,7 @@
 """Test fixtures: in-memory SQLite database and an HTTP client wired to the app."""
 
 from collections.abc import AsyncIterator
+from decimal import Decimal
 
 import pytest
 from httpx import ASGITransport, AsyncClient
@@ -10,6 +11,7 @@ from sqlalchemy.pool import StaticPool
 from app.core.security import hash_password
 from app.db.base import Base
 from app.db.session import get_db
+from app.domain.models.settings import TaxRate
 from app.domain.models.user import User, UserRole
 from app.services.accounting.accounting_service import seed_chart_of_accounts
 from main import app
@@ -18,6 +20,11 @@ TEST_ADMIN_PASSWORD = "Admin@Test1234"
 TEST_SALES_PASSWORD = "Sales@Test1234"
 TEST_STORE_PASSWORD = "Store@Test1234"
 TEST_ACCOUNTANT_PASSWORD = "Acct@Test1234"
+TEST_CASHIER_PASSWORD = "Cash@Test1234"
+
+# The default 16% VAT tax rate seeded below is always the first tax_rates row
+# in a fresh test database, so its id is deterministically 1.
+DEFAULT_TAX_RATE_ID = 1
 
 
 @pytest.fixture
@@ -62,6 +69,12 @@ async def db_session() -> AsyncIterator[AsyncSession]:
                     role=UserRole.ACCOUNTANT,
                 ),
                 User(
+                    username="cashier",
+                    full_name="أمين الصندوق",
+                    hashed_password=hash_password(TEST_CASHIER_PASSWORD),
+                    role=UserRole.CASHIER,
+                ),
+                User(
                     username="disabled_user",
                     full_name="حساب معطل",
                     hashed_password=hash_password(TEST_SALES_PASSWORD),
@@ -72,6 +85,19 @@ async def db_session() -> AsyncIterator[AsyncSession]:
         )
         await session.commit()
         await seed_chart_of_accounts(session)
+        # Default 16% VAT rate, matching the pre-configurable-tax behavior, so
+        # existing tests that expect automatic VAT keep working unchanged.
+        # First (and only) row inserted here, so its id is deterministically 1.
+        session.add(
+            TaxRate(
+                name="ضريبة القيمة المضافة",
+                code="VAT",
+                rate=Decimal("16.000"),
+                is_active=True,
+                is_default=True,
+            )
+        )
+        await session.commit()
 
     async def override_get_db() -> AsyncIterator[AsyncSession]:
         async with session_factory() as override_session:

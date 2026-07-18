@@ -4,6 +4,7 @@ from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, Request, status
+from fastapi.encoders import jsonable_encoder
 from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
@@ -91,7 +92,9 @@ async def validation_exception_handler(
     return _envelope(
         status.HTTP_422_UNPROCESSABLE_CONTENT,
         "البيانات المدخلة غير صالحة، يرجى التحقق من الحقول.",
-        data=exc.errors(),
+        # exc.errors() can embed raw non-JSON types (e.g. Decimal) in the
+        # echoed invalid input; jsonable_encoder normalizes them safely.
+        data=jsonable_encoder(exc.errors()),
     )
 
 

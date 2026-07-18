@@ -20,7 +20,8 @@ from app.db.base import Base
 
 
 class PurchasePaymentMethod(str, enum.Enum):
-    CASH = "cash"  # نقدي — يُسدد فوراً
+    CASH = "cash"  # نقدي — يُسدد من الصندوق
+    CARD = "card"  # بطاقة — يُسدد من الصندوق
     CREDIT = "credit"  # آجل — يضاف إلى رصيد المورد
 
 
@@ -66,9 +67,17 @@ class PurchaseInvoice(Base):
         Numeric(12, 2), nullable=False, default=Decimal("0")
     )
     total: Mapped[Decimal] = mapped_column(Numeric(14, 2), nullable=False)
-    # Amount settled at posting time (equals total for cash invoices).
     paid_amount: Mapped[Decimal] = mapped_column(
         Numeric(14, 2), nullable=False, default=Decimal("0")
+    )
+    # Cashier gate: cash/card invoices sit here until the cashier actually pays
+    # the supplier out of the register; credit invoices are confirmed immediately
+    # (settled later via the existing supplier-statement/payment flow).
+    payment_confirmed_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    payment_confirmed_by: Mapped[int | None] = mapped_column(
+        ForeignKey("users.id"), nullable=True
     )
     notes: Mapped[str | None] = mapped_column(String(300))
     created_by: Mapped[int | None] = mapped_column(ForeignKey("users.id"))
@@ -78,6 +87,9 @@ class PurchaseInvoice(Base):
 
     supplier: Mapped[Supplier] = relationship()
     lines: Mapped[list["PurchaseInvoiceLine"]] = relationship(
+        back_populates="invoice", cascade="all, delete-orphan"
+    )
+    taxes: Mapped[list["PurchaseInvoiceTax"]] = relationship(
         back_populates="invoice", cascade="all, delete-orphan"
     )
 
@@ -103,6 +115,31 @@ class PurchaseInvoiceLine(Base):
     line_total: Mapped[Decimal] = mapped_column(Numeric(14, 2), nullable=False)
 
     invoice: Mapped[PurchaseInvoice] = relationship(back_populates="lines")
+
+
+class PurchaseInvoiceTax(Base):
+    """One applied tax on a purchase invoice — an invoice may carry several at once.
+
+    Name/rate/amount are snapshotted at invoice time so an invoice keeps showing
+    exactly what was charged even if the TaxRate is later edited or deleted.
+    """
+
+    __tablename__ = "purchase_invoice_taxes"
+
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    invoice_id: Mapped[int] = mapped_column(
+        ForeignKey("purchase_invoices.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    tax_rate_id: Mapped[int | None] = mapped_column(
+        ForeignKey("tax_rates.id", ondelete="SET NULL"), nullable=True
+    )
+    name: Mapped[str] = mapped_column(String(100), nullable=False)
+    rate: Mapped[Decimal] = mapped_column(Numeric(6, 3), nullable=False)
+    amount: Mapped[Decimal] = mapped_column(Numeric(12, 2), nullable=False)
+
+    invoice: Mapped[PurchaseInvoice] = relationship(back_populates="taxes")
 
 
 class SupplierPayment(Base):

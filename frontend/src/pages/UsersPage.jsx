@@ -229,6 +229,7 @@ export default function UsersPage() {
             <option value="sales">مندوب مبيعات</option>
             <option value="storekeeper">أمين مستودع</option>
             <option value="driver">سائق توصيل</option>
+            <option value="cashier">أمين الصندوق</option>
             <option value="accountant">محاسب</option>
             <option value="admin">مدير النظام</option>
           </Select>

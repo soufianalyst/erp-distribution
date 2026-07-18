@@ -4,7 +4,12 @@ from decimal import Decimal
 
 from httpx import AsyncClient
 
-from app.tests.conftest import TEST_ADMIN_PASSWORD, TEST_SALES_PASSWORD, login
+from app.tests.conftest import (
+    DEFAULT_TAX_RATE_ID,
+    TEST_ADMIN_PASSWORD,
+    TEST_SALES_PASSWORD,
+    login,
+)
 from app.tests.test_inventory import as_decimal
 from app.tests.test_sales import create_customer, post_invoice, setup_stocked_catalog
 
@@ -39,6 +44,7 @@ class TestInvoiceEdit:
                 "customer_id": customer_id,
                 "warehouse_id": warehouse_id,
                 "payment_method": "credit",
+                "tax_rate_ids": [DEFAULT_TAX_RATE_ID],
                 "lines": [{"product_id": product["id"], "quantity": "10"}],
             },
         )
@@ -81,6 +87,7 @@ class TestInvoiceEdit:
                 "customer_id": customer_id,
                 "warehouse_id": warehouse_id,
                 "payment_method": "credit",
+                "tax_rate_ids": [DEFAULT_TAX_RATE_ID],
                 "lines": [{"product_id": product["id"], "quantity": "10"}],
             },
         )
@@ -124,6 +131,7 @@ class TestInvoiceEdit:
                 "customer_id": customer_id,
                 "warehouse_id": warehouse_id,
                 "payment_method": "credit",
+                "tax_rate_ids": [DEFAULT_TAX_RATE_ID],
                 "lines": [{"product_id": product["id"], "quantity": "60"}],
             },
         )
@@ -163,6 +171,7 @@ class TestInvoiceEdit:
                 "customer_id": customer_id,
                 "warehouse_id": warehouse_id,
                 "payment_method": "credit",
+                "tax_rate_ids": [DEFAULT_TAX_RATE_ID],
                 "lines": [{"product_id": product["id"], "quantity": "10"}],
             },
         )
@@ -183,6 +192,7 @@ class TestInvoiceEdit:
                 "customer_id": customer_id,
                 "warehouse_id": warehouse_id,
                 "payment_method": "credit",
+                "tax_rate_ids": [DEFAULT_TAX_RATE_ID],
                 "lines": [{"product_id": product["id"], "quantity": "10"}],
             },
         )

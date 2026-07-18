@@ -99,7 +99,7 @@ class TestTaxFreeInvoices:
                 "customer_id": customer_id,
                 "warehouse_id": warehouse_id,
                 "payment_method": "credit",
-                "apply_vat": False,
+                "tax_rate_ids": [],
                 "lines": [{"product_id": product["id"], "quantity": "10"}],
             },
         )
@@ -158,10 +158,12 @@ class TestDriverRole:
     ) -> None:
         admin = await login(client, "admin", TEST_ADMIN_PASSWORD)
         warehouse_id, product = await setup_stocked_catalog(client, admin)
-        customer_id = await create_customer(client, admin)
+        # Credit so the invoice is visible to delivery immediately (cash/card
+        # would sit behind the cashier gate, which isn't what this test covers).
+        customer_id = await create_customer(client, admin, credit_limit="5000")
         invoice_id = (
             await post_invoice(
-                client, admin, customer_id, warehouse_id, product["id"], "10"
+                client, admin, customer_id, warehouse_id, product["id"], "10", "credit"
             )
         ).json()["data"]["id"]
 
@@ -208,10 +210,12 @@ class TestDriverRole:
     ) -> None:
         admin = await login(client, "admin", TEST_ADMIN_PASSWORD)
         warehouse_id, product = await setup_stocked_catalog(client, admin)
-        customer_id = await create_customer(client, admin)
+        # Credit so the invoice is assignable to a trip immediately (cash/card
+        # would sit behind the cashier gate, which isn't what this test covers).
+        customer_id = await create_customer(client, admin, credit_limit="5000")
         invoice_id = (
             await post_invoice(
-                client, admin, customer_id, warehouse_id, product["id"], "10"
+                client, admin, customer_id, warehouse_id, product["id"], "10", "credit"
             )
         ).json()["data"]["id"]
 

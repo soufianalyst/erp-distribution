@@ -53,7 +53,9 @@ class PurchaseInvoiceCreate(BaseModel):
     supplier_invoice_number: str | None = Field(default=None, max_length=50)
     invoice_date: date | None = None
     shipping_cost: Decimal = Field(default=Decimal("0"), ge=0)
-    vat_amount: Decimal = Field(default=Decimal("0"), ge=0)
+    # Which configured taxes to apply (see /settings/tax-rates); empty = tax-free.
+    # Several may be selected at once (e.g. VAT + a local tax).
+    tax_rate_ids: list[int] = Field(default_factory=list)
     notes: str | None = Field(default=None, max_length=300)
     lines: list[PurchaseLineIn] = Field(min_length=1)
 
@@ -71,6 +73,16 @@ class PurchaseLineOut(BaseModel):
     line_total: Decimal
 
 
+class PurchaseInvoiceTaxOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: int
+    tax_rate_id: int | None
+    name: str
+    rate: Decimal
+    amount: Decimal
+
+
 class PurchaseInvoiceOut(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
@@ -82,12 +94,17 @@ class PurchaseInvoiceOut(BaseModel):
     payment_method: PurchasePaymentMethod
     subtotal: Decimal
     shipping_cost: Decimal
+    # Sum of all applied taxes' amounts (see `taxes` for the per-tax breakdown).
     vat_amount: Decimal
     total: Decimal
     paid_amount: Decimal
+    # NULL for cash/card invoices awaiting cashier disbursement; credit invoices
+    # are confirmed immediately since they settle later via the supplier account.
+    payment_confirmed_at: datetime | None
     notes: str | None
     created_at: datetime
     lines: list[PurchaseLineOut]
+    taxes: list[PurchaseInvoiceTaxOut]
 
 
 # --- Supplier payments & statement ---

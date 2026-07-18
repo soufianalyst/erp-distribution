@@ -1,6 +1,5 @@
 """Application-wide settings loaded from environment variables / .env file."""
 
-from decimal import Decimal
 from functools import lru_cache
 
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -28,9 +27,6 @@ class Settings(BaseSettings):
     JWT_ALGORITHM: str = "HS256"
     ACCESS_TOKEN_EXPIRE_MINUTES: int = 15
     REFRESH_TOKEN_EXPIRE_DAYS: int = 7
-
-    # VAT rate applied on sales invoices (e.g. 0.16 = 16%).
-    VAT_RATE: Decimal = Decimal("0.16")
 
     # First admin account, seeded on startup when the users table is empty.
     FIRST_ADMIN_USERNAME: str = "admin"

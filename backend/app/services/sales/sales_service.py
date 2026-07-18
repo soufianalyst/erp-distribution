@@ -15,7 +15,6 @@ from app.api.schemas.sales import (
     SalesInvoiceCreate,
     SalesReturnCreate,
 )
-from app.core.config import get_settings
 from app.core.exceptions import AppException
 from app.core.permissions import has_permission
 from app.domain.models.accounting import JournalEntry
@@ -29,14 +28,15 @@ from app.domain.models.sales import (
     ReturnReason,
     SalesInvoice,
     SalesInvoiceLine,
+    SalesInvoiceTax,
     SalesPaymentMethod,
     SalesReturn,
     SalesReturnLine,
 )
+from app.domain.models.settings import TaxRate
 from app.domain.models.user import User, UserRole
 from app.services.accounting.accounting_service import (
     ACCOUNTS_RECEIVABLE,
-    CASH,
     COGS,
     DAMAGE_LOSS,
     INVENTORY,
@@ -235,6 +235,43 @@ class SalesService:
         warehouse_ids = {line.warehouse_id for line in invoice.lines}
         return next(iter(warehouse_ids)) if len(warehouse_ids) == 1 else None
 
+    async def _resolve_taxes(self, tax_rate_ids: list[int]) -> list[TaxRate]:
+        """Validate and fetch the configured taxes to apply; empty means tax-free.
+
+        Several taxes may be selected at once (e.g. VAT + a local tax); duplicates
+        in the input are ignored.
+        """
+        taxes: list[TaxRate] = []
+        seen: set[int] = set()
+        for tax_rate_id in tax_rate_ids:
+            if tax_rate_id in seen:
+                continue
+            seen.add(tax_rate_id)
+            tax_rate = await self.session.get(TaxRate, tax_rate_id)
+            if tax_rate is None or not tax_rate.is_active:
+                raise AppException(400, "إحدى الضرائب المحددة غير موجودة أو غير مفعّلة.")
+            taxes.append(tax_rate)
+        return taxes
+
+    @staticmethod
+    def _apply_taxes(invoice: SalesInvoice, tax_rates: list[TaxRate], subtotal: Decimal) -> Decimal:
+        """Snapshot each selected tax onto the invoice; returns their summed amount."""
+        total_tax = Decimal("0")
+        for tax_rate in tax_rates:
+            amount = (subtotal * tax_rate.rate / Decimal("100")).quantize(
+                TWO_PLACES, rounding=ROUND_HALF_UP
+            )
+            invoice.taxes.append(
+                SalesInvoiceTax(
+                    tax_rate_id=tax_rate.id,
+                    name=tax_rate.name,
+                    rate=tax_rate.rate,
+                    amount=amount,
+                )
+            )
+            total_tax += amount
+        return total_tax
+
     def _check_credit_limit(
         self,
         customer: Customer,
@@ -263,17 +300,17 @@ class SalesService:
         cost_total: Decimal,
         user: User,
     ) -> None:
-        """Automatic double-entry: receivable/cash vs revenue + VAT, plus COGS when known."""
-        debit_account = (
-            CASH
-            if invoice.payment_method == SalesPaymentMethod.CASH
-            else ACCOUNTS_RECEIVABLE
-        )
+        """Automatic double-entry: receivable vs revenue + VAT, plus COGS when known.
+
+        Every invoice posts as a receivable at creation time regardless of payment
+        method — cash/card invoices only actually collect the money once the cashier
+        confirms it (see CashierService), which posts its own reclassifying entry.
+        """
         await self.accounting.add_entry_no_commit(
             entry_date=invoice.invoice_date,
             description=f"فاتورة مبيعات رقم {invoice.id} للعميل ({customer.name})",
             items=[
-                (debit_account, invoice.total, Decimal("0")),
+                (ACCOUNTS_RECEIVABLE, invoice.total, Decimal("0")),
                 (SALES_REVENUE, Decimal("0"), subtotal),
                 (VAT, Decimal("0"), invoice.vat_amount),
             ],
@@ -302,8 +339,8 @@ class SalesService:
         if not customer.is_active:
             raise AppException(400, "هذا العميل موقوف ولا يمكن البيع له.")
         self.ensure_customer_access(user, customer)
+        tax_rates = await self._resolve_taxes(data.tax_rate_ids)
 
-        settings = get_settings()
         invoice = SalesInvoice(
             customer_id=customer.id,
             salesman_id=customer.salesman_id,
@@ -321,21 +358,21 @@ class SalesService:
         invoice.warehouse_id = self._resolve_invoice_warehouse(invoice)
 
         invoice.subtotal = subtotal
-        invoice.vat_amount = (
-            (subtotal * settings.VAT_RATE).quantize(TWO_PLACES, rounding=ROUND_HALF_UP)
-            if data.apply_vat
-            else Decimal("0")
-        )
+        invoice.vat_amount = self._apply_taxes(invoice, tax_rates, subtotal)
         invoice.total = subtotal + invoice.vat_amount
 
         if data.payment_method == SalesPaymentMethod.CREDIT:
             balance = await self.customer_balance(customer.id)
             self._check_credit_limit(customer, balance, invoice.total, data, user)
 
-        invoice.paid_amount = (
-            invoice.total
-            if data.payment_method == SalesPaymentMethod.CASH
-            else Decimal("0")
+        # Cashier gate: cash/card invoices wait unpaid until the cashier collects
+        # them (see CashierService); credit invoices are confirmed immediately
+        # since they're settled later through the customer's account.
+        invoice.paid_amount = Decimal("0")
+        invoice.payment_confirmed_at = (
+            None
+            if data.payment_method in (SalesPaymentMethod.CASH, SalesPaymentMethod.CARD)
+            else datetime.now(timezone.utc)
         )
 
         self.session.add(invoice)
@@ -387,8 +424,11 @@ class SalesService:
         for entry in old_entries.scalars().all():
             await self.session.delete(entry)
 
+        tax_rates = await self._resolve_taxes(data.tax_rate_ids)
+
         # 3) Reset the document, then rebuild it through the same pipeline as creation.
         invoice.lines.clear()
+        invoice.taxes.clear()
         invoice.customer_id = customer.id
         invoice.salesman_id = customer.salesman_id
         invoice.payment_method = data.payment_method
@@ -401,14 +441,9 @@ class SalesService:
         invoice.total = Decimal("0")
         invoice.paid_amount = Decimal("0")
 
-        settings = get_settings()
         subtotal, cost_total = await self._build_lines(invoice, data, customer)
         invoice.warehouse_id = self._resolve_invoice_warehouse(invoice)
-        vat_amount = (
-            (subtotal * settings.VAT_RATE).quantize(TWO_PLACES, rounding=ROUND_HALF_UP)
-            if data.apply_vat
-            else Decimal("0")
-        )
+        vat_amount = self._apply_taxes(invoice, tax_rates, subtotal)
         total = subtotal + vat_amount
 
         if data.payment_method == SalesPaymentMethod.CREDIT:
@@ -419,9 +454,15 @@ class SalesService:
         invoice.subtotal = subtotal
         invoice.vat_amount = vat_amount
         invoice.total = total
-        invoice.paid_amount = (
-            total if data.payment_method == SalesPaymentMethod.CASH else Decimal("0")
+        # Cashier gate resets on edit too: a changed total/method needs re-collecting
+        # (or re-confirming) rather than trusting a stale prior confirmation.
+        invoice.paid_amount = Decimal("0")
+        invoice.payment_confirmed_at = (
+            None
+            if data.payment_method in (SalesPaymentMethod.CASH, SalesPaymentMethod.CARD)
+            else datetime.now(timezone.utc)
         )
+        invoice.payment_confirmed_by = None
 
         await self.session.flush()
         await self._post_invoice_entries(invoice, customer, subtotal, cost_total, user)
@@ -500,6 +541,15 @@ class SalesService:
             )
         if invoice.picked_up_at is not None:
             raise AppException(400, "تم تسليم بضاعة هذه الفاتورة من قبل.")
+        if (
+            invoice.payment_method != SalesPaymentMethod.CREDIT
+            and invoice.payment_confirmed_at is None
+        ):
+            raise AppException(
+                400,
+                "لم يتم تحصيل قيمة الفاتورة من الصندوق بعد؛ "
+                "يرجى التحصيل من شاشة الصندوق أولاً.",
+            )
         invoice.picked_up_at = datetime.now(timezone.utc)
         await self.session.commit()
         return await self.get_invoice(invoice_id)
@@ -507,7 +557,9 @@ class SalesService:
     async def get_invoice(self, invoice_id: int) -> SalesInvoice:
         result = await self.session.execute(
             select(SalesInvoice)
-            .options(selectinload(SalesInvoice.lines))
+            .options(
+                selectinload(SalesInvoice.lines), selectinload(SalesInvoice.taxes)
+            )
             .where(SalesInvoice.id == invoice_id)
         )
         invoice = result.scalar_one_or_none()
@@ -521,7 +573,9 @@ class SalesService:
     ) -> list[SalesInvoice]:
         stmt = (
             select(SalesInvoice)
-            .options(selectinload(SalesInvoice.lines))
+            .options(
+                selectinload(SalesInvoice.lines), selectinload(SalesInvoice.taxes)
+            )
             .order_by(SalesInvoice.id.desc())
         )
         if not has_permission(user, "sales.all_customers"):
@@ -539,7 +593,6 @@ class SalesService:
         invoice = await self.get_invoice(data.invoice_id)
         customer = await self.get_customer(invoice.customer_id)
         self.ensure_customer_access(user, customer)
-        settings = get_settings()
 
         # Quantities already returned against this invoice, per batch.
         returned_result = await self.session.execute(
@@ -615,9 +668,20 @@ class SalesService:
                     f"الكمية المرتجعة للصنف ({product.name}) أكبر من الكمية المباعة في الفاتورة.",
                 )
 
+        # Derive the tax proportionally from the ORIGINAL invoice's own numbers
+        # (not any currently-configured rate) — so a return always matches
+        # whatever tax was actually charged on that specific invoice, even if
+        # tax rates have since changed.
+        effective_tax_fraction = (
+            invoice.vat_amount / invoice.subtotal
+            if invoice.subtotal > 0
+            else Decimal("0")
+        )
         sales_return.subtotal = subtotal
         sales_return.vat_amount = (
-            (subtotal * settings.VAT_RATE).quantize(TWO_PLACES, rounding=ROUND_HALF_UP)
+            (subtotal * effective_tax_fraction).quantize(
+                TWO_PLACES, rounding=ROUND_HALF_UP
+            )
             if invoice.vat_amount > 0
             else Decimal("0")
         )

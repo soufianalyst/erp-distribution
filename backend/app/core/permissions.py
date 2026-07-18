@@ -52,7 +52,27 @@ PERMISSION_GROUPS: list[dict] = [
             {"code": "suppliers.manage", "label": "إدارة الموردين وكشوف حساباتهم"},
             {"code": "purchases.view", "label": "عرض فواتير المشتريات"},
             {"code": "purchases.create", "label": "تثبيت فواتير شراء"},
+            {"code": "purchases.edit", "label": "تعديل فواتير المشتريات"},
+            {"code": "purchases.delete", "label": "حذف فواتير المشتريات"},
             {"code": "purchases.payments", "label": "سندات صرف للموردين"},
+        ],
+    },
+    {
+        "group": "الصندوق",
+        "permissions": [
+            {"code": "cashier.view", "label": "عرض الفواتير والمستحقات بانتظار الصندوق"},
+            {"code": "cashier.collect", "label": "تحصيل الدفعات النقدية وبالبطاقة"},
+            {
+                "code": "cashier.pay",
+                "label": "صرف مدفوعات المشتريات والمصاريف من الصندوق",
+            },
+        ],
+    },
+    {
+        "group": "المصاريف",
+        "permissions": [
+            {"code": "expenses.view", "label": "عرض المصاريف وتصنيفاتها"},
+            {"code": "expenses.manage", "label": "تسجيل المصاريف وإدارة تصنيفاتها"},
         ],
     },
     {
@@ -88,6 +108,16 @@ PERMISSION_GROUPS: list[dict] = [
             {"code": "analytics.view", "label": "عرض لوحة التحليلات والتقارير"},
         ],
     },
+    {
+        "group": "الإعدادات",
+        "permissions": [
+            {"code": "settings.view", "label": "عرض الضرائب وبيانات الشركة"},
+            {
+                "code": "settings.manage",
+                "label": "إدارة الضرائب وبيانات الشركة (لوحة التحكم)",
+            },
+        ],
+    },
 ]
 
 ALL_PERMISSIONS: frozenset[str] = frozenset(
@@ -107,6 +137,7 @@ ROLE_DEFAULT_PERMISSIONS: dict[str, frozenset[str]] = {
             "delivery.view",
             "delivery.manage",
             "delivery.deliver",
+            "settings.view",
         }
     ),
     "sales": frozenset(
@@ -120,6 +151,7 @@ ROLE_DEFAULT_PERMISSIONS: dict[str, frozenset[str]] = {
             "sales.returns",
             "sales.payments",
             "delivery.view",
+            "settings.view",
         }
     ),
     "driver": frozenset(
@@ -127,6 +159,17 @@ ROLE_DEFAULT_PERMISSIONS: dict[str, frozenset[str]] = {
             "warehouses.view",
             "delivery.view",
             "delivery.deliver",
+            "settings.view",
+        }
+    ),
+    "cashier": frozenset(
+        {
+            "cashier.view",
+            "cashier.collect",
+            "cashier.pay",
+            "customers.view",
+            "suppliers.view",
+            "settings.view",
         }
     ),
     "accountant": frozenset(
@@ -147,6 +190,9 @@ ROLE_DEFAULT_PERMISSIONS: dict[str, frozenset[str]] = {
             "accounting.view",
             "accounting.manual_entry",
             "analytics.view",
+            "expenses.view",
+            "expenses.manage",
+            "settings.view",
         }
     ),
 }

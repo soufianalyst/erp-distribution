@@ -62,8 +62,9 @@ class SalesInvoiceCreate(BaseModel):
     payment_method: SalesPaymentMethod
     # Warehouse pickup (استلام من المستودع) or driver delivery (توصيل).
     fulfillment: FulfillmentType = FulfillmentType.DELIVERY
-    # False issues the invoice tax-free (بدون ضريبة).
-    apply_vat: bool = True
+    # Which configured taxes to apply (see /settings/tax-rates); empty = tax-free.
+    # Several may be selected at once (e.g. VAT + a local municipality tax).
+    tax_rate_ids: list[int] = Field(default_factory=list)
     notes: str | None = Field(default=None, max_length=300)
     lines: list[SalesLineIn] = Field(min_length=1)
     # Manager approval flag: lets an admin exceed the customer's credit limit.
@@ -84,6 +85,16 @@ class SalesLineOut(BaseModel):
     line_total: Decimal
 
 
+class SalesInvoiceTaxOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: int
+    tax_rate_id: int | None
+    name: str
+    rate: Decimal
+    amount: Decimal
+
+
 class SalesInvoiceOut(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
@@ -96,7 +107,11 @@ class SalesInvoiceOut(BaseModel):
     payment_method: SalesPaymentMethod
     fulfillment: FulfillmentType
     picked_up_at: datetime | None
+    # NULL for cash/card invoices awaiting cashier collection; credit invoices are
+    # confirmed immediately since they're settled later through the customer's account.
+    payment_confirmed_at: datetime | None
     subtotal: Decimal
+    # Sum of all applied taxes' amounts (see `taxes` for the per-tax breakdown).
     vat_amount: Decimal
     total: Decimal
     paid_amount: Decimal
@@ -105,6 +120,7 @@ class SalesInvoiceOut(BaseModel):
     # Total credited back via returns; net = total - returned_total.
     returned_total: Decimal = Decimal("0")
     lines: list[SalesLineOut]
+    taxes: list[SalesInvoiceTaxOut]
 
 
 # --- Returns ---

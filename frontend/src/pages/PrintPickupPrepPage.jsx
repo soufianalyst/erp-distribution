@@ -12,8 +12,9 @@ export default function PrintPickupPrepPage() {
     [invoiceId]
   );
   const warehouses = useFetch(() => api.get("/inventory/warehouses"));
+  const company = useFetch(() => api.get("/settings/company"));
 
-  if (prep.loading || warehouses.loading) return <Loading />;
+  if (prep.loading || warehouses.loading || company.loading) return <Loading />;
   if (prep.error) {
     return <div className="p-10 text-center font-bold text-rose-700">{prep.error}</div>;
   }
@@ -46,8 +47,10 @@ export default function PrintPickupPrepPage() {
       <div className="mx-auto max-w-[210mm] bg-white p-10 shadow print:max-w-none print:p-0 print:shadow-none">
         <header className="flex items-start justify-between border-b-4 border-slate-800 pb-4">
           <div>
-            <h1 className="text-2xl font-extrabold text-slate-900">شركة التوزيع الغذائي</h1>
-            <div className="mt-1 text-sm text-slate-600">بيع وتوزيع المواد الغذائية بالجملة</div>
+            <h1 className="text-2xl font-extrabold text-slate-900">{company.data.name}</h1>
+            {company.data.tagline && (
+              <div className="mt-1 text-sm text-slate-600">{company.data.tagline}</div>
+            )}
           </div>
           <div className="rounded-lg border-2 border-slate-800 px-6 py-3 text-center">
             <div className="text-lg font-extrabold">قسيمة تجهيز — استلام من المستودع</div>

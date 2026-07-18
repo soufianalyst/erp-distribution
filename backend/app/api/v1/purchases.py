@@ -133,6 +133,34 @@ async def get_invoice(
     return APIResponse(data=PurchaseInvoiceOut.model_validate(invoice))
 
 
+@router.put("/invoices/{invoice_id}", response_model=APIResponse[PurchaseInvoiceOut])
+async def update_invoice(
+    invoice_id: int,
+    body: PurchaseInvoiceCreate,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(require_permissions("purchases.edit")),
+) -> APIResponse[PurchaseInvoiceOut]:
+    """تعديل فاتورة شراء (المدير): يُعاد احتساب المخزون والقيود المحاسبية بالكامل."""
+    invoice = await PurchaseService(db).update_invoice(
+        invoice_id, body, updated_by=current_user.id
+    )
+    return APIResponse(
+        data=PurchaseInvoiceOut.model_validate(invoice),
+        message="تم تعديل فاتورة الشراء وإعادة احتساب المخزون والقيود بنجاح.",
+    )
+
+
+@router.delete("/invoices/{invoice_id}", response_model=APIResponse[None])
+async def delete_invoice(
+    invoice_id: int,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(require_permissions("purchases.delete")),
+) -> APIResponse[None]:
+    """حذف فاتورة شراء نهائياً (المدير): يُعكس أثرها على المخزون وتُحذف قيودها."""
+    await PurchaseService(db).delete_invoice(invoice_id)
+    return APIResponse(data=None, message="تم حذف فاتورة الشراء وعكس أثرها على المخزون بنجاح.")
+
+
 # --- Supplier payments ---
 @router.post(
     "/payments",

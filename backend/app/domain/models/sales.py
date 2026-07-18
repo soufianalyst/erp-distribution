@@ -27,6 +27,7 @@ class PriceTier(str, enum.Enum):
 
 class SalesPaymentMethod(str, enum.Enum):
     CASH = "cash"  # نقدي
+    CARD = "card"  # بطاقة
     CREDIT = "credit"  # آجل — يخضع للحد الائتماني
 
 
@@ -95,6 +96,15 @@ class SalesInvoice(Base):
     )
     # Set when a pickup invoice is handed over at the counter.
     picked_up_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    # Cashier gate: cash/card invoices sit here until the cashier actually
+    # collects the money, only then are they released to delivery/pickup.
+    # Credit invoices are confirmed immediately (collected later via accounts).
+    payment_confirmed_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    payment_confirmed_by: Mapped[int | None] = mapped_column(
+        ForeignKey("users.id"), nullable=True
+    )
     subtotal: Mapped[Decimal] = mapped_column(Numeric(14, 2), nullable=False)
     vat_amount: Mapped[Decimal] = mapped_column(Numeric(12, 2), nullable=False)
     total: Mapped[Decimal] = mapped_column(Numeric(14, 2), nullable=False)
@@ -109,6 +119,9 @@ class SalesInvoice(Base):
 
     customer: Mapped[Customer] = relationship()
     lines: Mapped[list["SalesInvoiceLine"]] = relationship(
+        back_populates="invoice", cascade="all, delete-orphan"
+    )
+    taxes: Mapped[list["SalesInvoiceTax"]] = relationship(
         back_populates="invoice", cascade="all, delete-orphan"
     )
 
@@ -139,6 +152,29 @@ class SalesInvoiceLine(Base):
     line_total: Mapped[Decimal] = mapped_column(Numeric(14, 2), nullable=False)
 
     invoice: Mapped[SalesInvoice] = relationship(back_populates="lines")
+
+
+class SalesInvoiceTax(Base):
+    """One applied tax on an invoice — an invoice may carry several at once.
+
+    Name/rate/amount are snapshotted at invoice time so an invoice keeps showing
+    exactly what was charged even if the TaxRate is later edited or deleted.
+    """
+
+    __tablename__ = "sales_invoice_taxes"
+
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    invoice_id: Mapped[int] = mapped_column(
+        ForeignKey("sales_invoices.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    tax_rate_id: Mapped[int | None] = mapped_column(
+        ForeignKey("tax_rates.id", ondelete="SET NULL"), nullable=True
+    )
+    name: Mapped[str] = mapped_column(String(100), nullable=False)
+    rate: Mapped[Decimal] = mapped_column(Numeric(6, 3), nullable=False)
+    amount: Mapped[Decimal] = mapped_column(Numeric(12, 2), nullable=False)
+
+    invoice: Mapped[SalesInvoice] = relationship(back_populates="taxes")
 
 
 class SalesReturn(Base):

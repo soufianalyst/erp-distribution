@@ -5,6 +5,7 @@ from decimal import Decimal
 from httpx import AsyncClient
 
 from app.tests.conftest import (
+    DEFAULT_TAX_RATE_ID,
     TEST_ADMIN_PASSWORD,
     TEST_SALES_PASSWORD,
     TEST_STORE_PASSWORD,
@@ -69,7 +70,10 @@ async def post_invoice(
     quantity: str,
     payment_method: str = "cash",
     credit_override: bool = False,
+    tax_rate_ids: list[int] | None = None,
 ):
+    if tax_rate_ids is None:
+        tax_rate_ids = [DEFAULT_TAX_RATE_ID]
     return await client.post(
         "/api/v1/sales/invoices",
         headers=headers,
@@ -78,6 +82,7 @@ async def post_invoice(
             "warehouse_id": warehouse_id,
             "payment_method": payment_method,
             "credit_override": credit_override,
+            "tax_rate_ids": tax_rate_ids,
             "lines": [{"product_id": product_id, "quantity": quantity}],
         },
     )
@@ -107,7 +112,9 @@ class TestSalesInvoices:
         assert as_decimal(invoice["subtotal"]) == Decimal("262.50")
         assert as_decimal(invoice["vat_amount"]) == Decimal("42.00")
         assert as_decimal(invoice["total"]) == Decimal("304.50")
-        assert as_decimal(invoice["paid_amount"]) == Decimal("304.50")
+        # Cash invoices await cashier collection now — not paid until confirmed there.
+        assert as_decimal(invoice["paid_amount"]) == Decimal("0")
+        assert invoice["payment_confirmed_at"] is None
 
         # Stock is reduced: B-SOON drained, B-LATE has 25 left.
         batches = (

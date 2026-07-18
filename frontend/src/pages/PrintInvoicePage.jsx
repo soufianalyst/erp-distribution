@@ -11,8 +11,15 @@ export default function PrintInvoicePage() {
   const customers = useFetch(() => api.get("/sales/customers"));
   const products = useFetch(() => api.get("/inventory/products"));
   const warehouses = useFetch(() => api.get("/inventory/warehouses"));
+  const company = useFetch(() => api.get("/settings/company"));
 
-  if (invoice.loading || customers.loading || products.loading || warehouses.loading) {
+  if (
+    invoice.loading ||
+    customers.loading ||
+    products.loading ||
+    warehouses.loading ||
+    company.loading
+  ) {
     return <Loading />;
   }
   if (invoice.error) {
@@ -49,8 +56,10 @@ export default function PrintInvoicePage() {
         {/* Header */}
         <header className="flex items-start justify-between border-b-4 border-slate-800 pb-4">
           <div>
-            <h1 className="text-2xl font-extrabold text-slate-900">شركة التوزيع الغذائي</h1>
-            <div className="mt-1 text-sm text-slate-600">بيع وتوزيع المواد الغذائية بالجملة</div>
+            <h1 className="text-2xl font-extrabold text-slate-900">{company.data.name}</h1>
+            {company.data.tagline && (
+              <div className="mt-1 text-sm text-slate-600">{company.data.tagline}</div>
+            )}
           </div>
           <div className="rounded-lg border-2 border-slate-800 px-6 py-3 text-center">
             <div className="text-lg font-extrabold">فاتورة مبيعات</div>
@@ -138,12 +147,14 @@ export default function PrintInvoicePage() {
                 </td>
                 <td className="border border-slate-300 px-3 py-2">{money(inv.subtotal)}</td>
               </tr>
-              <tr>
-                <td className="border border-slate-300 bg-slate-50 px-3 py-2 font-bold print:bg-white">
-                  ضريبة القيمة المضافة
-                </td>
-                <td className="border border-slate-300 px-3 py-2">{money(inv.vat_amount)}</td>
-              </tr>
+              {inv.taxes.map((tax) => (
+                <tr key={tax.id}>
+                  <td className="border border-slate-300 bg-slate-50 px-3 py-2 font-bold print:bg-white">
+                    {tax.name} ({tax.rate}%)
+                  </td>
+                  <td className="border border-slate-300 px-3 py-2">{money(tax.amount)}</td>
+                </tr>
+              ))}
               <tr className="text-base font-extrabold">
                 <td className="border-2 border-slate-800 bg-slate-800 px-3 py-2 text-white">
                   الإجمالي المستحق

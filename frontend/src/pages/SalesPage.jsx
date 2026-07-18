@@ -27,6 +27,9 @@ export const REASON_LABELS = {
   damaged_transport: "تالف بسبب النقل",
 };
 
+const PAYMENT_METHOD_LABELS = { cash: "نقدي", card: "بطاقة", credit: "آجل" };
+const PAYMENT_METHOD_TONE = { cash: "green", card: "blue", credit: "amber" };
+
 // Aggregate an existing invoice's batch-level lines back into per-product form lines.
 function linesFromInvoice(invoice, products) {
   const byProduct = {};
@@ -45,22 +48,23 @@ function linesFromInvoice(invoice, products) {
   });
 }
 
-function InvoiceForm({ customers, warehouses, products, isAdmin, onCreated, invoice }) {
+function InvoiceForm({ customers, warehouses, products, taxRates, isAdmin, onCreated, invoice }) {
   const editing = !!invoice;
+  const defaultTaxRate = taxRates.find((t) => t.is_default);
   const [form, setForm] = useState(
     editing
       ? {
           customer_id: String(invoice.customer_id),
           payment_method: invoice.payment_method,
           fulfillment: invoice.fulfillment,
-          apply_vat: Number(invoice.vat_amount) > 0,
+          tax_rate_ids: invoice.taxes.map((t) => t.tax_rate_id).filter((id) => id != null),
           credit_override: false,
         }
       : {
           customer_id: "",
           payment_method: "cash",
           fulfillment: "delivery",
-          apply_vat: true,
+          tax_rate_ids: defaultTaxRate ? [defaultTaxRate.id] : [],
           credit_override: false,
         }
   );
@@ -69,6 +73,13 @@ function InvoiceForm({ customers, warehouses, products, isAdmin, onCreated, invo
   );
   const [error, setError] = useState(null);
   const set = (key) => (e) => setForm({ ...form, [key]: e.target.value });
+  const toggleTax = (taxId) =>
+    setForm((f) => ({
+      ...f,
+      tax_rate_ids: f.tax_rate_ids.includes(taxId)
+        ? f.tax_rate_ids.filter((id) => id !== taxId)
+        : [...f.tax_rate_ids, taxId],
+    }));
   const setLine = (index, key, value) =>
     setLines(lines.map((l, i) => (i === index ? { ...l, [key]: value } : l)));
 
@@ -126,6 +137,7 @@ function InvoiceForm({ customers, warehouses, products, isAdmin, onCreated, invo
         </Select>
         <Select label="طريقة الدفع" value={form.payment_method} onChange={set("payment_method")}>
           <option value="cash">نقدي</option>
+          <option value="card">بطاقة</option>
           <option value="credit">آجل</option>
         </Select>
         <Select label="طريقة الاستلام" value={form.fulfillment} onChange={set("fulfillment")}>
@@ -134,14 +146,28 @@ function InvoiceForm({ customers, warehouses, products, isAdmin, onCreated, invo
         </Select>
       </div>
 
-      <label className="flex items-center gap-2 text-sm font-bold text-slate-600">
-        <input
-          type="checkbox"
-          checked={form.apply_vat}
-          onChange={(e) => setForm({ ...form, apply_vat: e.target.checked })}
-        />
-        إصدار الفاتورة مع ضريبة القيمة المضافة
-      </label>
+      <div>
+        <span className="mb-1 block text-sm font-bold text-slate-600">
+          الضرائب المطبّقة (يمكن اختيار أكثر من ضريبة)
+        </span>
+        <div className="flex flex-wrap gap-3 rounded-lg border border-slate-300 bg-white p-3">
+          {taxRates.filter((t) => t.is_active).length === 0 && (
+            <span className="text-sm text-slate-400">لا توجد ضرائب مفعّلة.</span>
+          )}
+          {taxRates
+            .filter((t) => t.is_active)
+            .map((t) => (
+              <label key={t.id} className="flex items-center gap-2 text-sm font-bold text-slate-700">
+                <input
+                  type="checkbox"
+                  checked={form.tax_rate_ids.includes(t.id)}
+                  onChange={() => toggleTax(t.id)}
+                />
+                {t.name} ({t.rate}%)
+              </label>
+            ))}
+        </div>
+      </div>
 
       <datalist id="invoice-products">
         {products.map((p) => (
@@ -362,8 +388,11 @@ export default function SalesPage() {
   const customers = useFetch(() => api.get("/sales/customers"));
   const warehouses = useFetch(() => api.get("/inventory/warehouses"));
   const products = useFetch(() => api.get("/inventory/products"));
+  const taxRates = useFetch(() => api.get("/settings/tax-rates", { params: { active_only: true } }));
 
-  if (customers.loading || warehouses.loading || products.loading) return <Loading />;
+  if (customers.loading || warehouses.loading || products.loading || taxRates.loading) {
+    return <Loading />;
+  }
 
   const TABS = [
     { id: "list", label: "القائمة" },
@@ -396,6 +425,7 @@ export default function SalesPage() {
             customers={customers.data}
             warehouses={warehouses.data}
             products={products.data}
+            taxRates={taxRates.data || []}
             isAdmin={can("sales.credit_override")}
             onCreated={(invoice) => {
               setViewing(invoice);
@@ -425,8 +455,23 @@ export default function SalesPage() {
                 {
                   key: "payment_method",
                   label: "الدفع",
+                  render: (r) => (
+                    <Badge tone={PAYMENT_METHOD_TONE[r.payment_method]}>
+                      {PAYMENT_METHOD_LABELS[r.payment_method]}
+                    </Badge>
+                  ),
+                },
+                {
+                  key: "payment_confirmed_at",
+                  label: "حالة التحصيل",
                   render: (r) =>
-                    r.payment_method === "cash" ? <Badge tone="green">نقدي</Badge> : <Badge tone="amber">آجل</Badge>,
+                    r.payment_method === "credit" ? (
+                      <Badge tone="slate">آجل — عبر الحسابات</Badge>
+                    ) : r.payment_confirmed_at ? (
+                      <Badge tone="green">تم التحصيل</Badge>
+                    ) : (
+                      <Badge tone="amber">بانتظار الصندوق</Badge>
+                    ),
                 },
                 {
                   key: "fulfillment",
@@ -636,9 +681,20 @@ export default function SalesPage() {
                   </Button>
                 )}
               </div>
-              <div className="flex gap-6 text-sm font-bold">
+              <div className="flex flex-wrap items-center gap-6 text-sm font-bold">
+                {viewing.payment_method === "credit" ? (
+                  <Badge tone="slate">آجل — يُحصّل عبر الحسابات</Badge>
+                ) : viewing.payment_confirmed_at ? (
+                  <Badge tone="green">تم التحصيل من الصندوق</Badge>
+                ) : (
+                  <Badge tone="amber">بانتظار التحصيل من الصندوق</Badge>
+                )}
                 <span>قبل الضريبة: {money(viewing.subtotal)}</span>
-                <span>الضريبة: {money(viewing.vat_amount)}</span>
+                {viewing.taxes.map((t) => (
+                  <span key={t.id}>
+                    {t.name} ({t.rate}%): {money(t.amount)}
+                  </span>
+                ))}
                 <span className="text-emerald-700">الإجمالي: {money(viewing.total)}</span>
                 {Number(viewing.returned_total) > 0 && (
                   <span className="text-rose-700">
@@ -664,6 +720,7 @@ export default function SalesPage() {
             customers={customers.data}
             warehouses={warehouses.data}
             products={products.data}
+            taxRates={taxRates.data || []}
             isAdmin={can("sales.credit_override")}
             onCreated={(invoice) => {
               setEditing(null);

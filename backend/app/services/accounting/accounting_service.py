@@ -27,6 +27,7 @@ CAPITAL = "3010"
 SALES_REVENUE = "4010"
 SALES_RETURNS = "4020"
 COGS = "5010"
+GENERAL_EXPENSES = "5020"
 DAMAGE_LOSS = "5030"
 
 DEFAULT_ACCOUNTS: list[tuple[str, str, AccountType]] = [
@@ -34,12 +35,13 @@ DEFAULT_ACCOUNTS: list[tuple[str, str, AccountType]] = [
     (BANK, "البنك", AccountType.ASSET),
     (ACCOUNTS_RECEIVABLE, "ذمم العملاء", AccountType.ASSET),
     (INVENTORY, "المخزون", AccountType.ASSET),
-    (ACCOUNTS_PAYABLE, "ذمم الموردين", AccountType.LIABILITY),
-    (VAT, "ضريبة القيمة المضافة", AccountType.LIABILITY),
+    (ACCOUNTS_PAYABLE, "ذمم دائنة", AccountType.LIABILITY),
+    (VAT, "الضريبة المحصلة على المبيعات", AccountType.LIABILITY),
     (CAPITAL, "رأس المال", AccountType.EQUITY),
     (SALES_REVENUE, "إيرادات المبيعات", AccountType.REVENUE),
     (SALES_RETURNS, "مرتجعات المبيعات", AccountType.REVENUE),
     (COGS, "تكلفة البضاعة المباعة", AccountType.EXPENSE),
+    (GENERAL_EXPENSES, "مصاريف تشغيلية عامة", AccountType.EXPENSE),
     (DAMAGE_LOSS, "خسائر التالف والمرتجعات", AccountType.EXPENSE),
 ]
 

@@ -9,11 +9,14 @@ const NAV_ITEMS = [
   { to: "/stock", label: "حركة المخزون", icon: "🔄", perm: "stock.view" },
   { to: "/customers", label: "العملاء", icon: "🧑‍💼", perm: "customers.view" },
   { to: "/sales", label: "فواتير المبيعات", icon: "🧾", perm: "sales.view" },
+  { to: "/cashier", label: "الصندوق", icon: "💰", perm: "cashier.view" },
   { to: "/delivery", label: "التوزيع والتسليم", icon: "🚛", perm: "delivery.view" },
   { to: "/suppliers", label: "الموردون", icon: "🚚", perm: "suppliers.view" },
   { to: "/purchases", label: "فواتير المشتريات", icon: "🛒", perm: "purchases.view" },
+  { to: "/expenses", label: "المصاريف", icon: "💸", perm: "expenses.view" },
   { to: "/accounting", label: "الحسابات", icon: "📚", perm: "accounting.view" },
   { to: "/analytics", label: "التحليلات والتقارير", icon: "📈", perm: "analytics.view" },
+  { to: "/settings", label: "الإعدادات", icon: "⚙️", perm: "settings.view" },
   { to: "/users", label: "المستخدمون", icon: "👥", perm: "users.manage" },
 ];
 

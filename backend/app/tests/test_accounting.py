@@ -5,6 +5,7 @@ from decimal import Decimal
 from httpx import AsyncClient
 
 from app.tests.conftest import (
+    DEFAULT_TAX_RATE_ID,
     TEST_ACCOUNTANT_PASSWORD,
     TEST_ADMIN_PASSWORD,
     TEST_SALES_PASSWORD,
@@ -54,7 +55,7 @@ async def full_trade_cycle(
             "warehouse_id": warehouse_id,
             "payment_method": "credit",
             "shipping_cost": "20.00",
-            "vat_amount": "16.00",
+            "tax_rate_ids": [DEFAULT_TAX_RATE_ID],
             "lines": [
                 {
                     "product_id": product["id"],
@@ -86,6 +87,7 @@ async def full_trade_cycle(
             "customer_id": customer.json()["data"]["id"],
             "warehouse_id": warehouse_id,
             "payment_method": "credit",
+            "tax_rate_ids": [DEFAULT_TAX_RATE_ID],
             "lines": [{"product_id": product["id"], "quantity": "25"}],
         },
     )
@@ -124,10 +126,10 @@ class TestAutomaticPostings:
         )
         assert len(entries) == 1
         items = items_by_code(entries[0])
-        # Dr inventory 820 (goods 800 + shipping 20), Dr VAT 16, Cr payable 836.
+        # Dr inventory 820 (goods 800 + shipping 20), Dr VAT 128 (16% of 800), Cr payable 948.
         assert items["1030"] == (Decimal("820.00"), Decimal("0"))
-        assert items["2020"] == (Decimal("16.00"), Decimal("0"))
-        assert items["2010"] == (Decimal("0"), Decimal("836.00"))
+        assert items["2020"] == (Decimal("128.00"), Decimal("0"))
+        assert items["2010"] == (Decimal("0"), Decimal("948.00"))
 
     async def test_credit_sale_posting_with_cogs(self, client: AsyncClient) -> None:
         admin = await login(client, "admin", TEST_ADMIN_PASSWORD)

@@ -44,6 +44,22 @@ class TestPickupFulfillment:
         invoice = response.json()["data"]
         assert invoice["fulfillment"] == "pickup"
         assert invoice["picked_up_at"] is None
+        assert invoice["payment_confirmed_at"] is None
+
+        # Cash invoice: storekeeper cannot hand it over before the cashier collects it.
+        blocked = await client.post(
+            f"/api/v1/sales/invoices/{invoice['id']}/pickup", headers=store
+        )
+        assert blocked.status_code == 400
+        assert "الصندوق" in blocked.json()["message"]
+
+        confirmed = await client.post(
+            f"/api/v1/cashier/invoices/{invoice['id']}/collect",
+            headers=admin,
+            json={"amount": invoice["total"]},
+        )
+        assert confirmed.status_code == 200, confirmed.text
+        assert confirmed.json()["data"]["payment_confirmed_at"] is not None
 
         # Storekeeper hands the goods over at the counter.
         handover = await client.post(

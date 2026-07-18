@@ -1,6 +1,6 @@
 """Purchasing business logic: suppliers, purchase invoices, payments, and statements."""
 
-from datetime import date
+from datetime import date, datetime, timezone
 from decimal import ROUND_HALF_UP, Decimal
 
 from sqlalchemy import func, select
@@ -15,17 +15,19 @@ from app.api.schemas.purchases import (
     SupplierUpdate,
 )
 from app.core.exceptions import AppException
-from app.domain.models.inventory import Product
+from app.domain.models.accounting import JournalEntry
+from app.domain.models.inventory import Product, ProductBatch
 from app.domain.models.purchases import (
     PurchaseInvoice,
     PurchaseInvoiceLine,
+    PurchaseInvoiceTax,
     PurchasePaymentMethod,
     Supplier,
     SupplierPayment,
 )
+from app.domain.models.settings import TaxRate
 from app.services.accounting.accounting_service import (
     ACCOUNTS_PAYABLE,
-    CASH,
     INVENTORY,
     VAT,
     AccountingService,
@@ -94,32 +96,48 @@ class PurchaseService:
         return list(result.scalars().all())
 
     # --- Purchase invoices ---
-    async def create_invoice(
-        self, data: PurchaseInvoiceCreate, created_by: int | None = None
-    ) -> PurchaseInvoice:
-        """Post a purchase invoice and enter its goods into stock — all in ONE transaction.
+    async def _resolve_taxes(self, tax_rate_ids: list[int]) -> list[TaxRate]:
+        """Validate and fetch the configured taxes to apply; empty means tax-free.
 
-        If any line fails (unknown product, expired goods, batch conflict), nothing is saved.
+        Several taxes may be selected at once; duplicates in the input are ignored.
         """
-        supplier = await self.get_supplier(data.supplier_id)
-        if not supplier.is_active:
-            raise AppException(400, "هذا المورد موقوف ولا يمكن الشراء منه.")
-        await self.stock.get_active_warehouse(data.warehouse_id)
+        taxes: list[TaxRate] = []
+        seen: set[int] = set()
+        for tax_rate_id in tax_rate_ids:
+            if tax_rate_id in seen:
+                continue
+            seen.add(tax_rate_id)
+            tax_rate = await self.session.get(TaxRate, tax_rate_id)
+            if tax_rate is None or not tax_rate.is_active:
+                raise AppException(400, "إحدى الضرائب المحددة غير موجودة أو غير مفعّلة.")
+            taxes.append(tax_rate)
+        return taxes
 
-        invoice = PurchaseInvoice(
-            supplier_id=data.supplier_id,
-            warehouse_id=data.warehouse_id,
-            supplier_invoice_number=data.supplier_invoice_number,
-            invoice_date=data.invoice_date or date.today(),
-            payment_method=data.payment_method,
-            shipping_cost=data.shipping_cost,
-            vat_amount=data.vat_amount,
-            subtotal=Decimal("0"),
-            total=Decimal("0"),
-            created_by=created_by,
-        )
-        invoice.notes = data.notes
+    @staticmethod
+    def _apply_taxes(
+        invoice: PurchaseInvoice, tax_rates: list[TaxRate], subtotal: Decimal
+    ) -> Decimal:
+        """Snapshot each selected tax onto the invoice; returns their summed amount."""
+        total_tax = Decimal("0")
+        for tax_rate in tax_rates:
+            amount = (subtotal * tax_rate.rate / Decimal("100")).quantize(
+                TWO_PLACES, rounding=ROUND_HALF_UP
+            )
+            invoice.taxes.append(
+                PurchaseInvoiceTax(
+                    tax_rate_id=tax_rate.id,
+                    name=tax_rate.name,
+                    rate=tax_rate.rate,
+                    amount=amount,
+                )
+            )
+            total_tax += amount
+        return total_tax
 
+    async def _build_lines(
+        self, invoice: PurchaseInvoice, data: PurchaseInvoiceCreate
+    ) -> Decimal:
+        """Enter each line's goods into stock (upserting batches); returns the subtotal."""
         subtotal = Decimal("0")
         for line in data.lines:
             product = await self.session.execute(
@@ -173,46 +191,201 @@ class PurchaseService:
                 )
             )
             subtotal += line_total
+        return subtotal
+
+    async def create_invoice(
+        self, data: PurchaseInvoiceCreate, created_by: int | None = None
+    ) -> PurchaseInvoice:
+        """Post a purchase invoice and enter its goods into stock — all in ONE transaction.
+
+        If any line fails (unknown product, expired goods, batch conflict), nothing is saved.
+        """
+        supplier = await self.get_supplier(data.supplier_id)
+        if not supplier.is_active:
+            raise AppException(400, "هذا المورد موقوف ولا يمكن الشراء منه.")
+        await self.stock.get_active_warehouse(data.warehouse_id)
+        tax_rates = await self._resolve_taxes(data.tax_rate_ids)
+
+        invoice = PurchaseInvoice(
+            supplier_id=data.supplier_id,
+            warehouse_id=data.warehouse_id,
+            supplier_invoice_number=data.supplier_invoice_number,
+            invoice_date=data.invoice_date or date.today(),
+            payment_method=data.payment_method,
+            shipping_cost=data.shipping_cost,
+            vat_amount=Decimal("0"),
+            subtotal=Decimal("0"),
+            total=Decimal("0"),
+            created_by=created_by,
+        )
+        invoice.notes = data.notes
+
+        subtotal = await self._build_lines(invoice, data)
 
         invoice.subtotal = subtotal
-        invoice.total = subtotal + data.shipping_cost + data.vat_amount
-        # Cash invoices are settled on the spot; credit invoices add to the supplier balance.
-        invoice.paid_amount = (
-            invoice.total
-            if data.payment_method == PurchasePaymentMethod.CASH
-            else Decimal("0")
+        invoice.vat_amount = self._apply_taxes(invoice, tax_rates, subtotal)
+        invoice.total = subtotal + data.shipping_cost + invoice.vat_amount
+        # Cashier gate: cash/card invoices wait unpaid until the cashier actually
+        # pays the supplier (see CashierService.pay_purchase_invoice); credit
+        # invoices are confirmed immediately since they settle later via the
+        # supplier's account.
+        invoice.paid_amount = Decimal("0")
+        invoice.payment_confirmed_at = (
+            None
+            if data.payment_method
+            in (PurchasePaymentMethod.CASH, PurchasePaymentMethod.CARD)
+            else datetime.now(timezone.utc)
         )
 
         self.session.add(invoice)
         await self.session.flush()
+        await self._post_invoice_entries(invoice, supplier, subtotal, created_by)
 
-        # Automatic double-entry: goods (incl. shipping) into inventory, VAT recoverable,
-        # against cash or the supplier's payable account.
-        credit_account = (
-            CASH
-            if data.payment_method == PurchasePaymentMethod.CASH
-            else ACCOUNTS_PAYABLE
-        )
+        await self.session.commit()
+        return await self.get_invoice(invoice.id)
+
+    async def _post_invoice_entries(
+        self,
+        invoice: PurchaseInvoice,
+        supplier: Supplier,
+        subtotal: Decimal,
+        created_by: int | None,
+    ) -> None:
+        """Automatic double-entry: goods (incl. shipping) into inventory, VAT
+        recoverable, against the supplier's payable account.
+
+        Every invoice posts as a payable at creation regardless of payment method
+        — cash/card invoices only actually pay out once the cashier disburses it
+        (see CashierService.pay_purchase_invoice), which posts its own entry.
+        """
         await self.accounting.add_entry_no_commit(
             entry_date=invoice.invoice_date,
             description=f"فاتورة شراء رقم {invoice.id} من المورد ({supplier.name})",
             items=[
-                (INVENTORY, subtotal + data.shipping_cost, Decimal("0")),
-                (VAT, data.vat_amount, Decimal("0")),
-                (credit_account, Decimal("0"), invoice.total),
+                (INVENTORY, subtotal + invoice.shipping_cost, Decimal("0")),
+                (VAT, invoice.vat_amount, Decimal("0")),
+                (ACCOUNTS_PAYABLE, Decimal("0"), invoice.total),
             ],
             reference_type="purchase_invoice",
             reference_id=invoice.id,
             created_by=created_by,
         )
 
+    async def update_invoice(
+        self, invoice_id: int, data: PurchaseInvoiceCreate, updated_by: int | None = None
+    ) -> PurchaseInvoice:
+        """Manager-only rebuild of a posted purchase invoice, all in ONE transaction.
+
+        Reverses the previously received quantities from their batches, replaces the
+        automatic journal entries, then re-runs the normal receiving/posting pipeline
+        with the new data. Fails atomically — on any error the original invoice stays intact.
+        Blocked when any received quantity has already been sold, since reversing it
+        would drive stock negative.
+        """
+        invoice = await self.get_invoice(invoice_id)
+
+        supplier = await self.get_supplier(data.supplier_id)
+        if not supplier.is_active:
+            raise AppException(400, "هذا المورد موقوف ولا يمكن الشراء منه.")
+        await self.stock.get_active_warehouse(data.warehouse_id)
+        tax_rates = await self._resolve_taxes(data.tax_rate_ids)
+
+        # 1) Reverse the previously received quantities; block if some was already sold.
+        for line in invoice.lines:
+            batch = await self.session.get(ProductBatch, line.batch_id)
+            if batch is not None:
+                if batch.quantity < line.quantity:
+                    raise AppException(
+                        400,
+                        "لا يمكن تعديل الفاتورة؛ تم بيع جزء من هذه البضاعة بالفعل.",
+                    )
+                batch.quantity -= line.quantity
+
+        # 2) Remove the old automatic postings; fresh ones are recorded below.
+        old_entries = await self.session.execute(
+            select(JournalEntry).where(
+                JournalEntry.reference_type == "purchase_invoice",
+                JournalEntry.reference_id == invoice_id,
+            )
+        )
+        for entry in old_entries.scalars().all():
+            await self.session.delete(entry)
+
+        # 3) Reset the document, then rebuild it through the same pipeline as creation.
+        invoice.lines.clear()
+        invoice.taxes.clear()
+        invoice.supplier_id = data.supplier_id
+        invoice.warehouse_id = data.warehouse_id
+        invoice.supplier_invoice_number = data.supplier_invoice_number
+        invoice.invoice_date = data.invoice_date or date.today()
+        invoice.payment_method = data.payment_method
+        invoice.shipping_cost = data.shipping_cost
+        invoice.notes = data.notes
+        invoice.subtotal = Decimal("0")
+        invoice.vat_amount = Decimal("0")
+        invoice.total = Decimal("0")
+        invoice.paid_amount = Decimal("0")
+
+        subtotal = await self._build_lines(invoice, data)
+
+        invoice.subtotal = subtotal
+        invoice.vat_amount = self._apply_taxes(invoice, tax_rates, subtotal)
+        invoice.total = subtotal + data.shipping_cost + invoice.vat_amount
+        # Cashier gate resets on edit too: a changed total/method needs
+        # re-paying (or re-confirming) rather than trusting a stale confirmation.
+        invoice.paid_amount = Decimal("0")
+        invoice.payment_confirmed_at = (
+            None
+            if data.payment_method
+            in (PurchasePaymentMethod.CASH, PurchasePaymentMethod.CARD)
+            else datetime.now(timezone.utc)
+        )
+        invoice.payment_confirmed_by = None
+
+        await self.session.flush()
+        await self._post_invoice_entries(invoice, supplier, subtotal, updated_by)
+
         await self.session.commit()
         return await self.get_invoice(invoice.id)
+
+    async def delete_invoice(self, invoice_id: int) -> None:
+        """Hard-delete a purchase invoice: reverse its stock and drop its journal entries.
+
+        Blocked when any received quantity has already been sold, since reversing it
+        would drive stock negative.
+        """
+        invoice = await self.get_invoice(invoice_id)
+
+        for line in invoice.lines:
+            batch = await self.session.get(ProductBatch, line.batch_id)
+            if batch is not None and batch.quantity < line.quantity:
+                raise AppException(
+                    400, "لا يمكن حذف الفاتورة؛ تم بيع جزء من هذه البضاعة بالفعل."
+                )
+
+        for line in invoice.lines:
+            batch = await self.session.get(ProductBatch, line.batch_id)
+            if batch is not None:
+                batch.quantity -= line.quantity
+
+        old_entries = await self.session.execute(
+            select(JournalEntry).where(
+                JournalEntry.reference_type == "purchase_invoice",
+                JournalEntry.reference_id == invoice_id,
+            )
+        )
+        for entry in old_entries.scalars().all():
+            await self.session.delete(entry)
+
+        await self.session.delete(invoice)
+        await self.session.commit()
 
     async def get_invoice(self, invoice_id: int) -> PurchaseInvoice:
         result = await self.session.execute(
             select(PurchaseInvoice)
-            .options(selectinload(PurchaseInvoice.lines))
+            .options(
+                selectinload(PurchaseInvoice.lines), selectinload(PurchaseInvoice.taxes)
+            )
             .where(PurchaseInvoice.id == invoice_id)
         )
         invoice = result.scalar_one_or_none()
@@ -225,7 +398,9 @@ class PurchaseService:
     ) -> list[PurchaseInvoice]:
         stmt = (
             select(PurchaseInvoice)
-            .options(selectinload(PurchaseInvoice.lines))
+            .options(
+                selectinload(PurchaseInvoice.lines), selectinload(PurchaseInvoice.taxes)
+            )
             .order_by(PurchaseInvoice.id.desc())
         )
         if supplier_id is not None:

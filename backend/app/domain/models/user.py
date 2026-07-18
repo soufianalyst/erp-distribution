@@ -15,6 +15,7 @@ class UserRole(str, enum.Enum):
     SALES = "sales"  # موظف المبيعات / المندوب
     ACCOUNTANT = "accountant"  # المحاسب
     DRIVER = "driver"  # سائق التوصيل
+    CASHIER = "cashier"  # أمين الصندوق
 
 
 class User(Base):

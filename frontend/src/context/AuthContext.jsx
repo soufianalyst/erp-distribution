@@ -9,6 +9,7 @@ export const ROLE_LABELS = {
   sales: "مندوب مبيعات",
   accountant: "محاسب",
   driver: "سائق توصيل",
+  cashier: "أمين الصندوق",
 };
 
 export function AuthProvider({ children }) {
