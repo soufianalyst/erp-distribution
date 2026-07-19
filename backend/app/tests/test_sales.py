@@ -463,3 +463,77 @@ class TestCustomerPayments:
             json={"customer_id": customer_id, "amount": "150.00", "method": "cash"},
         )
         assert overpay.status_code == 400
+
+
+class TestCommissions:
+    async def test_report_nets_returns_against_the_commission_rate(
+        self, client: AsyncClient
+    ) -> None:
+        admin = await login(client, "admin", TEST_ADMIN_PASSWORD)
+        salesman_id = await get_salesman_id(client, admin)
+        rate_update = await client.patch(
+            f"/api/v1/auth/users/{salesman_id}",
+            headers=admin,
+            json={"commission_rate": "5"},
+        )
+        assert rate_update.status_code == 200
+
+        warehouse_id, product = await setup_stocked_catalog(client, admin)
+        customer_id = await create_customer(
+            client, admin, credit_limit="1000", salesman_id=salesman_id
+        )
+        invoice = await post_invoice(
+            client, admin, customer_id, warehouse_id, product["id"], "25", "credit"
+        )
+        assert invoice.status_code == 201, invoice.text
+        invoice_id = invoice.json()["data"]["id"]
+
+        ret = await client.post(
+            "/api/v1/sales/returns",
+            headers=admin,
+            json={
+                "invoice_id": invoice_id,
+                "reason": "resellable",
+                "lines": [{"product_id": product["id"], "quantity": "5"}],
+            },
+        )
+        assert ret.status_code == 201, ret.text
+
+        report = await client.get(
+            "/api/v1/sales/reports/commissions",
+            headers=admin,
+            params={"salesman_id": salesman_id},
+        )
+        assert report.status_code == 200, report.text
+        rows = report.json()["data"]["rows"]
+        assert len(rows) == 1
+        row = rows[0]
+        # 25 x 10.50 = 262.50 sold; 5 x 10.50 = 52.50 returned; net 210.00 x 5% = 10.50.
+        assert as_decimal(row["total_sales"]) == Decimal("262.50")
+        assert as_decimal(row["total_returns"]) == Decimal("52.50")
+        assert as_decimal(row["net_sales"]) == Decimal("210.00")
+        assert as_decimal(row["commission_rate"]) == Decimal("5.00")
+        assert as_decimal(row["commission_amount"]) == Decimal("10.50")
+
+    async def test_salesman_without_invoices_excluded_from_report(
+        self, client: AsyncClient
+    ) -> None:
+        admin = await login(client, "admin", TEST_ADMIN_PASSWORD)
+        salesman_id = await get_salesman_id(client, admin)
+
+        report = await client.get(
+            "/api/v1/sales/reports/commissions",
+            headers=admin,
+            params={"salesman_id": salesman_id},
+        )
+        assert report.status_code == 200
+        assert report.json()["data"]["rows"] == []
+
+    async def test_non_privileged_role_cannot_view_commission_report(
+        self, client: AsyncClient
+    ) -> None:
+        headers = await login(client, "salesman", TEST_SALES_PASSWORD)
+        response = await client.get(
+            "/api/v1/sales/reports/commissions", headers=headers
+        )
+        assert response.status_code == 403

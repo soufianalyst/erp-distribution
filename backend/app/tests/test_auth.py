@@ -178,3 +178,30 @@ class TestUserManagement:
             json={"username": "salesman", "password": TEST_SALES_PASSWORD},
         )
         assert blocked.status_code == 403
+
+    async def test_commission_rate_set_on_create_and_update(
+        self, client: AsyncClient
+    ) -> None:
+        headers = await login(client, "admin", TEST_ADMIN_PASSWORD)
+        response = await client.post(
+            "/api/v1/auth/users",
+            headers=headers,
+            json={
+                "username": "salesman2",
+                "full_name": "مندوب ثانٍ",
+                "password": "Sales@1234",
+                "role": "sales",
+                "commission_rate": "2.5",
+            },
+        )
+        assert response.status_code == 201, response.text
+        user_id = response.json()["data"]["id"]
+        assert response.json()["data"]["commission_rate"] == "2.50"
+
+        update = await client.patch(
+            f"/api/v1/auth/users/{user_id}",
+            headers=headers,
+            json={"commission_rate": "4"},
+        )
+        assert update.status_code == 200
+        assert update.json()["data"]["commission_rate"] == "4.00"

@@ -14,7 +14,57 @@ import { ROLE_LABELS } from "../context/AuthContext";
 import useFetch from "../hooks/useFetch";
 import api, { apiMessage } from "../services/api";
 
-const EMPTY_FORM = { username: "", full_name: "", password: "", role: "sales" };
+const EMPTY_FORM = {
+  username: "",
+  full_name: "",
+  password: "",
+  role: "sales",
+  commission_rate: "0",
+};
+
+// Inline commission-rate editor for a user row — auto-saves on blur.
+function CommissionRateCell({ user, canManage, onChanged }) {
+  const [value, setValue] = useState(user.commission_rate);
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState(null);
+
+  const save = async () => {
+    if (value === user.commission_rate) return;
+    setSaving(true);
+    setError(null);
+    try {
+      await api.patch(`/auth/users/${user.id}`, { commission_rate: value || "0" });
+      onChanged();
+    } catch (err) {
+      setError(apiMessage(err));
+      setValue(user.commission_rate);
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  if (!canManage) return `${user.commission_rate}%`;
+  return (
+    <div>
+      <div className="flex items-center gap-1">
+        <input
+          type="number"
+          step="0.01"
+          min="0"
+          max="100"
+          className="w-20 rounded border border-slate-300 px-2 py-1 text-sm"
+          value={value}
+          onChange={(e) => setValue(e.target.value)}
+          onBlur={save}
+          onKeyDown={(e) => e.key === "Enter" && e.target.blur()}
+          disabled={saving}
+        />
+        <span className="text-xs text-slate-500">%</span>
+      </div>
+      {error && <div className="mt-1 text-xs text-red-600">{error}</div>}
+    </div>
+  );
+}
 
 function PermissionsEditor({ user, catalog, onSaved, onClose }) {
   const [selected, setSelected] = useState(new Set(user.effective_permissions));
@@ -191,6 +241,13 @@ export default function UsersPage() {
                   ),
               },
               {
+                key: "commission_rate",
+                label: "نسبة العمولة",
+                render: (r) => (
+                  <CommissionRateCell user={r} canManage={true} onChanged={reload} />
+                ),
+              },
+              {
                 key: "is_active",
                 label: "الحالة",
                 render: (r) =>
@@ -233,6 +290,15 @@ export default function UsersPage() {
             <option value="accountant">محاسب</option>
             <option value="admin">مدير النظام</option>
           </Select>
+          <Input
+            label="نسبة العمولة % (تُطبّق فقط على مندوبي المبيعات)"
+            type="number"
+            step="0.01"
+            min="0"
+            max="100"
+            value={form.commission_rate}
+            onChange={set("commission_rate")}
+          />
           <div className="flex justify-end gap-2">
             <Button type="button" variant="secondary" onClick={() => setOpen(false)}>
               إلغاء

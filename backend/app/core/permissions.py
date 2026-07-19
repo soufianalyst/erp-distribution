@@ -45,6 +45,10 @@ PERMISSION_GROUPS: list[dict] = [
                 "code": "sales.credit_override",
                 "label": "الموافقة على تجاوز الحد الائتماني",
             },
+            {
+                "code": "sales.commission_view",
+                "label": "عرض تقرير عمولات المناديب",
+            },
         ],
     },
     {
@@ -200,6 +204,7 @@ ROLE_DEFAULT_PERMISSIONS: dict[str, frozenset[str]] = {
             "accounting.view",
             "accounting.manual_entry",
             "accounting.bank_reconciliation",
+            "sales.commission_view",
             "analytics.view",
             "expenses.view",
             "expenses.manage",

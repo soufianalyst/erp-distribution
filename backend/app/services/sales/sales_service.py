@@ -8,6 +8,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from app.api.schemas.sales import (
+    CommissionReportOut,
+    CommissionRow,
     CustomerCreate,
     CustomerPaymentCreate,
     CustomerStatementOut,
@@ -831,4 +833,93 @@ class SalesService:
             invoices=[SalesInvoiceOut.model_validate(i) for i in invoices],
             returns=[SalesReturnOut.model_validate(r) for r in returns],
             payments=[CustomerPaymentOut.model_validate(p) for p in payments],
+        )
+
+    async def commission_report(
+        self,
+        date_from: date | None = None,
+        date_to: date | None = None,
+        salesman_id: int | None = None,
+    ) -> CommissionReportOut:
+        """Net sales (invoices minus returns, both excluding VAT) per salesman,
+        multiplied by their configured commission_rate.
+        """
+        sales_query = (
+            select(
+                SalesInvoice.salesman_id,
+                func.sum(SalesInvoice.subtotal).label("total_sales"),
+            )
+            .where(SalesInvoice.salesman_id.is_not(None))
+            .group_by(SalesInvoice.salesman_id)
+        )
+        if date_from is not None:
+            sales_query = sales_query.where(SalesInvoice.invoice_date >= date_from)
+        if date_to is not None:
+            sales_query = sales_query.where(SalesInvoice.invoice_date <= date_to)
+        if salesman_id is not None:
+            sales_query = sales_query.where(SalesInvoice.salesman_id == salesman_id)
+        sales_rows = (await self.session.execute(sales_query)).all()
+        sales_by_salesman = {row.salesman_id: row.total_sales for row in sales_rows}
+
+        returns_query = (
+            select(
+                SalesInvoice.salesman_id,
+                func.sum(SalesReturn.subtotal).label("total_returns"),
+            )
+            .join(SalesInvoice, SalesReturn.invoice_id == SalesInvoice.id)
+            .where(SalesInvoice.salesman_id.is_not(None))
+            .group_by(SalesInvoice.salesman_id)
+        )
+        if date_from is not None:
+            returns_query = returns_query.where(
+                func.date(SalesReturn.created_at) >= date_from
+            )
+        if date_to is not None:
+            returns_query = returns_query.where(
+                func.date(SalesReturn.created_at) <= date_to
+            )
+        if salesman_id is not None:
+            returns_query = returns_query.where(
+                SalesInvoice.salesman_id == salesman_id
+            )
+        returns_rows = (await self.session.execute(returns_query)).all()
+        returns_by_salesman = {
+            row.salesman_id: row.total_returns for row in returns_rows
+        }
+
+        salesman_ids = set(sales_by_salesman) | set(returns_by_salesman)
+        rows: list[CommissionRow] = []
+        total_commission = Decimal("0")
+        if salesman_ids:
+            users_result = await self.session.execute(
+                select(User).where(User.id.in_(salesman_ids))
+            )
+            users_by_id = {u.id: u for u in users_result.scalars().all()}
+            for sid in sorted(salesman_ids):
+                salesman = users_by_id.get(sid)
+                if salesman is None:
+                    continue
+                total_sales = sales_by_salesman.get(sid, Decimal("0"))
+                total_returns = returns_by_salesman.get(sid, Decimal("0"))
+                net_sales = total_sales - total_returns
+                commission_amount = (
+                    net_sales * salesman.commission_rate / Decimal("100")
+                ).quantize(TWO_PLACES, rounding=ROUND_HALF_UP)
+                total_commission += commission_amount
+                rows.append(
+                    CommissionRow(
+                        salesman_id=sid,
+                        salesman_name=salesman.full_name,
+                        total_sales=total_sales,
+                        total_returns=total_returns,
+                        net_sales=net_sales,
+                        commission_rate=salesman.commission_rate,
+                        commission_amount=commission_amount,
+                    )
+                )
+        return CommissionReportOut(
+            date_from=date_from,
+            date_to=date_to,
+            rows=rows,
+            total_commission=total_commission,
         )

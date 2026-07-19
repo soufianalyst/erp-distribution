@@ -196,3 +196,22 @@ class CustomerStatementOut(BaseModel):
     invoices: list[SalesInvoiceOut]
     returns: list[SalesReturnOut]
     payments: list[CustomerPaymentOut]
+
+
+# --- Salesman commissions ---
+class CommissionRow(BaseModel):
+    salesman_id: int
+    salesman_name: str
+    total_sales: Decimal
+    total_returns: Decimal
+    # total_sales - total_returns, both excluding VAT.
+    net_sales: Decimal
+    commission_rate: Decimal
+    commission_amount: Decimal
+
+
+class CommissionReportOut(BaseModel):
+    date_from: date | None
+    date_to: date | None
+    rows: list[CommissionRow]
+    total_commission: Decimal

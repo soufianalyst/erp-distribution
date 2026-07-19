@@ -61,6 +61,7 @@ class AuthService:
             full_name=data.full_name,
             hashed_password=hash_password(data.password),
             role=data.role,
+            commission_rate=data.commission_rate,
         )
         self.session.add(user)
         await self.session.commit()
@@ -77,6 +78,8 @@ class AuthService:
             user.hashed_password = hash_password(data.password)
         if data.role is not None:
             user.role = data.role
+        if data.commission_rate is not None:
+            user.commission_rate = data.commission_rate
         if data.is_active is not None:
             user.is_active = data.is_active
         if data.reset_permissions:

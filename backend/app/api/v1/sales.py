@@ -1,11 +1,14 @@
 """Sales endpoints: customers, FEFO invoices, returns, receipts, and statements."""
 
+from datetime import date
+
 from fastapi import APIRouter, Depends, Query, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.deps import require_permissions
 from app.api.schemas.common import APIResponse
 from app.api.schemas.sales import (
+    CommissionReportOut,
     CustomerCreate,
     CustomerOut,
     CustomerPaymentCreate,
@@ -30,6 +33,7 @@ sales_view = require_permissions("sales.view")
 sellers = require_permissions("sales.create")
 returners = require_permissions("sales.returns")
 collectors = require_permissions("sales.payments")
+commission_viewers = require_permissions("sales.commission_view")
 
 
 # --- Customers ---
@@ -223,3 +227,17 @@ async def create_payment(
         data=CustomerPaymentOut.model_validate(payment),
         message="تم تسجيل سند القبض بنجاح.",
     )
+
+
+# --- Salesman commissions ---
+@router.get("/reports/commissions", response_model=APIResponse[CommissionReportOut])
+async def commission_report(
+    date_from: date | None = Query(default=None),
+    date_to: date | None = Query(default=None),
+    salesman_id: int | None = Query(default=None),
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(commission_viewers),
+) -> APIResponse[CommissionReportOut]:
+    """تقرير عمولات المناديب: صافي المبيعات (بعد خصم المرتجعات) × نسبة العمولة."""
+    report = await SalesService(db).commission_report(date_from, date_to, salesman_id)
+    return APIResponse(data=report)

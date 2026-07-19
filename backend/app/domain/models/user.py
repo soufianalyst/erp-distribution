@@ -2,8 +2,9 @@
 
 import enum
 from datetime import datetime
+from decimal import Decimal
 
-from sqlalchemy import JSON, Boolean, DateTime, Enum, String, func
+from sqlalchemy import JSON, Boolean, DateTime, Enum, Numeric, String, func
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.db.base import Base
@@ -34,6 +35,11 @@ class User(Base):
     )
     # Explicit permission codes; NULL means "use the role's default permissions".
     permissions: Mapped[list | None] = mapped_column(JSON, nullable=True)
+    # Percentage applied to a salesman's net sales (invoices minus returns) to
+    # compute their commission; meaningless for non-sales roles, so it defaults to 0.
+    commission_rate: Mapped[Decimal] = mapped_column(
+        Numeric(5, 2), nullable=False, default=Decimal("0")
+    )
     is_active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=func.now()

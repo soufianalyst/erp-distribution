@@ -375,6 +375,58 @@ function ReturnForm({ invoice, products, onDone }) {
   );
 }
 
+function CommissionsTab() {
+  const [dateFrom, setDateFrom] = useState("");
+  const [dateTo, setDateTo] = useState("");
+  const report = useFetch(
+    () =>
+      api.get("/sales/reports/commissions", {
+        params: {
+          date_from: dateFrom || undefined,
+          date_to: dateTo || undefined,
+        },
+      }),
+    [dateFrom, dateTo]
+  );
+
+  return (
+    <Card title="عمولات المناديب — صافي المبيعات (بعد خصم المرتجعات) × نسبة العمولة">
+      <div className="mb-4 flex flex-wrap items-end gap-3">
+        <Input label="من تاريخ" type="date" value={dateFrom} onChange={(e) => setDateFrom(e.target.value)} />
+        <Input label="إلى تاريخ" type="date" value={dateTo} onChange={(e) => setDateTo(e.target.value)} />
+      </div>
+      <Alert>{report.error}</Alert>
+      {report.loading ? (
+        <Loading />
+      ) : (
+        <>
+          <Table
+            columns={[
+              { key: "salesman_name", label: "المندوب" },
+              { key: "total_sales", label: "إجمالي المبيعات", render: (r) => money(r.total_sales) },
+              { key: "total_returns", label: "المرتجعات", render: (r) => money(r.total_returns) },
+              { key: "net_sales", label: "صافي المبيعات", render: (r) => money(r.net_sales) },
+              { key: "commission_rate", label: "نسبة العمولة", render: (r) => `${r.commission_rate}%` },
+              {
+                key: "commission_amount",
+                label: "قيمة العمولة",
+                render: (r) => <b>{money(r.commission_amount)}</b>,
+              },
+            ]}
+            rows={report.data?.rows}
+            empty="لا توجد مبيعات لمندوبين خلال هذه الفترة."
+          />
+          {!!report.data?.rows?.length && (
+            <div className="mt-3 text-left text-sm font-extrabold text-emerald-800">
+              إجمالي العمولات: {money(report.data.total_commission)}
+            </div>
+          )}
+        </>
+      )}
+    </Card>
+  );
+}
+
 export default function SalesPage() {
   const { can } = useAuth();
   const navigate = useNavigate();
@@ -396,10 +448,12 @@ export default function SalesPage() {
     return <Loading />;
   }
 
+  const canViewCommissions = can("sales.commission_view");
   const TABS = [
     { id: "list", label: "القائمة" },
     ...(canSell ? [{ id: "new", label: "+ فاتورة جديدة" }] : []),
     { id: "returns", label: "المرتجعات" },
+    ...(canViewCommissions ? [{ id: "commissions", label: "عمولات المناديب" }] : []),
   ];
 
   return (
@@ -553,6 +607,8 @@ export default function SalesPage() {
           )}
         </Card>
       )}
+
+      {tab === "commissions" && canViewCommissions && <CommissionsTab />}
 
       <Modal
         open={!!viewing}
