@@ -5,8 +5,10 @@ echo "Running Alembic migrations..."
 alembic upgrade head
 
 echo "Seeding default data..."
-python -c "
+SEED_ON_STARTUP=true python -c "
 import asyncio
+import os
+os.environ['SEED_ON_STARTUP'] = 'true'
 from app.db.session import AsyncSessionLocal
 from app.services.accounting.accounting_service import seed_chart_of_accounts
 from app.services.expenses.expense_service import seed_expense_accounts
@@ -20,6 +22,6 @@ asyncio.run(seed())
 print('Seeding complete.')
 "
 
+echo "Starting server..."
 PORT=${PORT:-10000}
-echo "Starting server on port $PORT..."
 exec uvicorn main:app --host 0.0.0.0 --port $PORT --workers 2

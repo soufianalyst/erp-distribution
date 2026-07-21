@@ -8,14 +8,15 @@ from app.core.config import get_settings
 
 settings = get_settings()
 
+# Serverless-friendly: small pool (Supabase free tier allows ~60 connections).
 engine = create_async_engine(
     settings.DATABASE_URL,
     echo=False,
     pool_pre_ping=True,
-    pool_size=20,
-    max_overflow=40,
+    pool_size=5,
+    max_overflow=10,
     pool_timeout=30,
-    pool_recycle=1800,
+    pool_recycle=600,
 )
 
 AsyncSessionLocal = async_sessionmaker(

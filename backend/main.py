@@ -2,13 +2,11 @@
 
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
-from pathlib import Path
 
 from fastapi import FastAPI, Request, status
 from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse, FileResponse
-from fastapi.staticfiles import StaticFiles
+from fastapi.responses import JSONResponse
 from sqlalchemy import select
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
@@ -46,10 +44,11 @@ async def lifespan(_: FastAPI) -> AsyncIterator[None]:
     if settings.AUTO_CREATE_TABLES:
         async with engine.begin() as conn:
             await conn.run_sync(Base.metadata.create_all)
-    await seed_first_admin()
-    async with AsyncSessionLocal() as session:
-        await seed_chart_of_accounts(session)
-        await seed_expense_accounts(session)
+    if settings.SEED_ON_STARTUP:
+        await seed_first_admin()
+        async with AsyncSessionLocal() as session:
+            await seed_chart_of_accounts(session)
+            await seed_expense_accounts(session)
     yield
 
 
@@ -110,17 +109,3 @@ async def health() -> dict[str, object]:
         "data": {"status": "ok"},
         "message": "النظام يعمل بشكل سليم.",
     }
-
-
-# Serve frontend static files in production (when static/ directory exists).
-STATIC_DIR = Path(__file__).parent / "static"
-if STATIC_DIR.is_dir():
-    app.mount("/assets", StaticFiles(directory=str(STATIC_DIR / "assets")), name="assets")
-
-    @app.get("/{full_path:path}", include_in_schema=False)
-    async def serve_spa(full_path: str) -> FileResponse:
-        """Serve SPA: return index.html for any non-API route."""
-        file_path = STATIC_DIR / full_path
-        if file_path.is_file():
-            return FileResponse(str(file_path))
-        return FileResponse(str(STATIC_DIR / "index.html"))

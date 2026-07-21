@@ -22,6 +22,8 @@ class Settings(BaseSettings):
     DATABASE_URL: str = "postgresql+asyncpg://postgres:postgres@localhost:5433/erp"
     # Production: schema changes ONLY via Alembic migrations.
     AUTO_CREATE_TABLES: bool = False
+    # Seed admin + chart of accounts on startup (disable in serverless after first run).
+    SEED_ON_STARTUP: bool = True
 
     # Security / JWT — SECRET_KEY is mandatory in production.
     SECRET_KEY: str = ""
