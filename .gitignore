@@ -14,7 +14,7 @@ venv/
 # Node / React
 node_modules/
 frontend/build/
-frontend/dist/
+# frontend/dist/ — included for Vercel deployment
 
 # Claude
 .claude/
@@ -25,3 +25,4 @@ frontend/dist/
 .vscode/
 node_modules/
 backend/supabase/
+.vercel
