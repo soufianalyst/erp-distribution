@@ -18,15 +18,18 @@ class Settings(BaseSettings):
     API_V1_PREFIX: str = "/api/v1"
     DEBUG: bool = False
 
-    # Database — must be set in .env for production.
-    DATABASE_URL: str = "postgresql+asyncpg://postgres:postgres@localhost:5433/erp"
+    # Database — reads DATABASE_URL env var; falls back to Supabase production DB.
+    DATABASE_URL: str = (
+        "postgresql+asyncpg://postgres:Wazvu3-ruwzej-wajsop"
+        "@db.bquxudmlyldlgbjfbmrr.supabase.co:5432/postgres"
+    )
     # Production: schema changes ONLY via Alembic migrations.
     AUTO_CREATE_TABLES: bool = False
     # Seed admin + chart of accounts on startup (disable in serverless after first run).
-    SEED_ON_STARTUP: bool = True
+    SEED_ON_STARTUP: bool = False
 
     # Security / JWT — SECRET_KEY is mandatory in production.
-    SECRET_KEY: str = ""
+    SECRET_KEY: str = "erp-prod-2026-xK9mPq3vLz7wRt5nBj8cFd2gHs4yUe0a"
     JWT_ALGORITHM: str = "HS256"
     ACCESS_TOKEN_EXPIRE_MINUTES: int = 15
     REFRESH_TOKEN_EXPIRE_DAYS: int = 7
@@ -36,11 +39,11 @@ class Settings(BaseSettings):
 
     # First admin account — seeded on startup when users table is empty.
     FIRST_ADMIN_USERNAME: str = "admin"
-    FIRST_ADMIN_PASSWORD: str = ""
+    FIRST_ADMIN_PASSWORD: str = "Adm1n@Erp2026!"
     FIRST_ADMIN_FULL_NAME: str = "مدير النظام"
 
     # Comma-separated list of allowed CORS origins.
-    CORS_ORIGINS: str = ""
+    CORS_ORIGINS: str = "*"
 
 
 @lru_cache
