@@ -19,8 +19,14 @@
       "dest": "/frontend/dist/assets/$1"
     },
     {
+      "src": "/(.*\\.(js|css|png|jpg|jpeg|gif|ico|svg|woff|woff2|ttf|eot))",
+      "dest": "/frontend/dist/$1"
+    },
+    {
       "src": "/(.*)",
       "dest": "/frontend/dist/index.html"
     }
-  ]
+  ],
+  "installCommand": "pip install -r api/requirements.txt && cd frontend && npm install",
+  "buildCommand": "cd frontend && npm run build"
 }
