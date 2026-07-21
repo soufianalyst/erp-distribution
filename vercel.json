@@ -1,7 +1,7 @@
 {
   "builds": [
     {
-      "src": "api/index.py",
+      "src": "serverless/index.py",
       "use": "@vercel/python",
       "config": {
         "maxDuration": 30
@@ -15,7 +15,7 @@
   "routes": [
     {
       "src": "/api/(.*)",
-      "dest": "/api/index.py?/$1"
+      "dest": "/serverless/index.py"
     },
     {
       "src": "/assets/(.*)",
