@@ -1,10 +1,10 @@
 #!/bin/sh
 set -e
 
-echo "Running Alembic migrations..."
+echo "Running database migrations..."
 alembic upgrade head
 
-echo "Seeding default data..."
+echo "Seeding accounting data..."
 python -c "
 import asyncio
 from app.db.session import AsyncSessionLocal
@@ -17,7 +17,6 @@ async def seed():
         await seed_expense_accounts(session)
 
 asyncio.run(seed())
-print('Seeding complete.')
 "
 
 PORT=${PORT:-10000}

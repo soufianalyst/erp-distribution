@@ -1,4 +1,4 @@
-"""Async database engine and session dependency (FastAPI DI)."""
+"""Async database engine and session dependency."""
 
 from collections.abc import AsyncIterator
 
@@ -8,7 +8,6 @@ from app.core.config import get_settings
 
 settings = get_settings()
 
-# Render free tier: small connection pool.
 engine = create_async_engine(
     settings.DATABASE_URL,
     echo=False,
@@ -25,6 +24,5 @@ AsyncSessionLocal = async_sessionmaker(
 
 
 async def get_db() -> AsyncIterator[AsyncSession]:
-    """Yield a database session per request; FastAPI closes it automatically."""
     async with AsyncSessionLocal() as session:
         yield session
