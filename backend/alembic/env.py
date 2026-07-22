@@ -17,7 +17,10 @@ if config.config_file_name is not None:
     fileConfig(config.config_file_name)
 
 # Single source of truth: the same DATABASE_URL the application uses.
-config.set_main_option("sqlalchemy.url", get_settings().DATABASE_URL)
+db_url = get_settings().DATABASE_URL
+if db_url.startswith("postgresql://"):
+    db_url = db_url.replace("postgresql://", "postgresql+asyncpg://", 1)
+config.set_main_option("sqlalchemy.url", db_url)
 
 target_metadata = Base.metadata
 
