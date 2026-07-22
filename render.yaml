@@ -24,6 +24,8 @@ services:
         value: Admin@1234
       - key: FIRST_ADMIN_FULL_NAME
         value: مدير النظام
+      - key: SEED_DEMO
+        value: "true"
 
 databases:
   - name: erp-db

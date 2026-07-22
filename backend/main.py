@@ -1,6 +1,7 @@
 """Application entry point: FastAPI app factory, startup seeding, and error envelopes."""
 
 import logging
+import os
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -54,6 +55,9 @@ async def lifespan(_: FastAPI) -> AsyncIterator[None]:
     await seed_first_admin()
     async with AsyncSessionLocal() as session:
         await seed_chart_of_accounts(session)
+    if os.getenv("SEED_DEMO", "").lower() in ("1", "true"):
+        from scripts.seed_demo_data import main as seed_demo
+        await seed_demo()
     yield
 
 

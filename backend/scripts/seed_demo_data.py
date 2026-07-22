@@ -35,6 +35,7 @@ from app.api.schemas.sales import (
 from app.core.exceptions import AppException
 from app.db.session import AsyncSessionLocal
 from app.domain.models.accounting import JournalEntry
+from app.domain.models.inventory import Product
 from app.domain.models.user import User, UserRole
 from app.services.auth.auth_service import AuthService
 from app.services.delivery.delivery_service import DeliveryService
@@ -323,17 +324,14 @@ async def main() -> None:
         delivery_service = DeliveryService(session)
         auth_service = AuthService(session)
 
-        # --- Warehouses ---
-        print("Creating warehouses...")
-        warehouse_ids: dict[str, int] = {}
-        for name in ["الرئيسي", "مستودع التبريد", "مستودع الفرعي"]:
-            w = await warehouse_service.create_warehouse(WarehouseCreate(name=name))
-            warehouse_ids[name] = w.id
-
         # --- Sales reps ---
         print("Creating sales reps...")
         rep_ids = []
         for i, name in enumerate(SALES_REPS):
+            existing = await auth_service._get_by_username(f"rep{i + 1}")
+            if existing:
+                rep_ids.append(existing.id)
+                continue
             user = await auth_service.create_user(
                 UserCreate(
                     username=f"rep{i + 1}",
@@ -343,6 +341,56 @@ async def main() -> None:
                 )
             )
             rep_ids.append(user.id)
+        print(f"  sales reps created")
+
+        # --- Users for every role ---
+        print("Creating role users...")
+        role_users = [
+            ("storekeeper", "أمين المستودع علي", UserRole.STOREKEEPER),
+            ("accountant", "المحاسب محمود", UserRole.ACCOUNTANT),
+            ("cashier", "أمين الصندوق كريم", UserRole.CASHIER),
+            ("driver", "سائق التوصيل سمير", UserRole.DRIVER),
+        ]
+        for username, full_name, role in role_users:
+            existing = await auth_service._get_by_username(username)
+            if not existing:
+                await auth_service.create_user(
+                    UserCreate(
+                        username=username,
+                        full_name=full_name,
+                        password="User@12345",
+                        role=role,
+                    )
+                )
+        print("  role users created")
+
+        # --- Skip demo data if already seeded ---
+        product_count = await session.scalar(select(Product).limit(1))
+        if product_count is not None:
+            print("Demo data already exists — skipping product/invoice generation.")
+            print("Done.")
+            return
+
+        # --- Users for every role ---
+        print("Creating role users...")
+        role_users = [
+            ("storekeeper", "أمين المستودع علي", UserRole.STOREKEEPER),
+            ("accountant", "المحاسب محمود", UserRole.ACCOUNTANT),
+            ("cashier", "أمين الصندوق كريم", UserRole.CASHIER),
+            ("driver", "سائق التوصيل سمير", UserRole.DRIVER),
+        ]
+        for username, full_name, role in role_users:
+            existing = await auth_service._get_by_username(username)
+            if not existing:
+                await auth_service.create_user(
+                    UserCreate(
+                        username=username,
+                        full_name=full_name,
+                        password="User@12345",
+                        role=role,
+                    )
+                )
+        print("  role users created")
 
         # --- Products ---
         print("Creating products...")
