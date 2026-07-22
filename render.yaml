@@ -22,7 +22,7 @@ services:
         value: admin
       - key: FIRST_ADMIN_FULL_NAME
         value: مدير النظام
-    healthCheckPath: /
+    healthCheckPath: /api/v1
     autoDeploy: true
 
 databases:
