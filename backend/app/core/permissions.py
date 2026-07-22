@@ -36,6 +36,7 @@ PERMISSION_GROUPS: list[dict] = [
             {"code": "sales.edit", "label": "تعديل فواتير المبيعات"},
             {"code": "sales.delete", "label": "حذف فواتير المبيعات"},
             {"code": "sales.returns", "label": "تسجيل مرتجعات المبيعات"},
+            {"code": "sales.quotations", "label": "عروض الأسعار وتحويلها لفواتير"},
             {"code": "sales.payments", "label": "سندات قبض من العملاء"},
             {
                 "code": "sales.all_customers",
@@ -162,6 +163,7 @@ ROLE_DEFAULT_PERMISSIONS: dict[str, frozenset[str]] = {
             "sales.view",
             "sales.create",
             "sales.returns",
+            "sales.quotations",
             "sales.payments",
             "delivery.view",
             "settings.view",

@@ -9,6 +9,7 @@ from pydantic import BaseModel, ConfigDict, Field
 from app.domain.models.sales import (
     FulfillmentType,
     PriceTier,
+    QuotationStatus,
     ReturnReason,
     SalesPaymentMethod,
 )
@@ -121,6 +122,67 @@ class SalesInvoiceOut(BaseModel):
     returned_total: Decimal = Decimal("0")
     lines: list[SalesLineOut]
     taxes: list[SalesInvoiceTaxOut]
+
+
+# --- Quotations ---
+class QuotationLineIn(BaseModel):
+    product_id: int
+    quantity: Decimal = Field(gt=0)
+    unit_id: int | None = None
+
+
+class SalesQuotationCreate(BaseModel):
+    customer_id: int
+    valid_until: date | None = None
+    tax_rate_ids: list[int] = Field(default_factory=list)
+    notes: str | None = Field(default=None, max_length=300)
+    lines: list[QuotationLineIn] = Field(min_length=1)
+
+
+class QuotationConvertIn(BaseModel):
+    payment_method: SalesPaymentMethod
+    fulfillment: FulfillmentType = FulfillmentType.DELIVERY
+    # Manager approval flag: lets an admin exceed the customer's credit limit.
+    credit_override: bool = False
+
+
+class QuotationLineOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: int
+    product_id: int
+    quantity: Decimal
+    unit_price: Decimal
+    line_total: Decimal
+
+
+class QuotationTaxOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: int
+    tax_rate_id: int | None
+    name: str
+    rate: Decimal
+    amount: Decimal
+
+
+class SalesQuotationOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: int
+    customer_id: int
+    salesman_id: int | None
+    quote_date: date
+    valid_until: date | None
+    status: QuotationStatus
+    subtotal: Decimal
+    vat_amount: Decimal
+    total: Decimal
+    notes: str | None
+    converted_invoice_id: int | None
+    created_at: datetime
+    lines: list[QuotationLineOut]
+    taxes: list[QuotationTaxOut]
 
 
 # --- Returns ---

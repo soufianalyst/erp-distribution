@@ -537,3 +537,194 @@ class TestCommissions:
             "/api/v1/sales/reports/commissions", headers=headers
         )
         assert response.status_code == 403
+
+
+async def post_quotation(
+    client: AsyncClient,
+    headers: dict[str, str],
+    customer_id: int,
+    product_id: int,
+    quantity: str,
+    valid_until: str | None = None,
+    tax_rate_ids: list[int] | None = None,
+):
+    if tax_rate_ids is None:
+        tax_rate_ids = [DEFAULT_TAX_RATE_ID]
+    return await client.post(
+        "/api/v1/sales/quotations",
+        headers=headers,
+        json={
+            "customer_id": customer_id,
+            "valid_until": valid_until,
+            "tax_rate_ids": tax_rate_ids,
+            "lines": [{"product_id": product_id, "quantity": quantity}],
+        },
+    )
+
+
+class TestQuotations:
+    async def test_quotation_prices_at_customer_tier_no_stock_effect(
+        self, client: AsyncClient
+    ) -> None:
+        admin = await login(client, "admin", TEST_ADMIN_PASSWORD)
+        warehouse_id, product = await setup_stocked_catalog(client, admin)
+        customer_id = await create_customer(client, admin, credit_limit="1000")
+
+        response = await post_quotation(client, admin, customer_id, product["id"], "10")
+        assert response.status_code == 201, response.text
+        quote = response.json()["data"]
+        # 10 x 10.50 = 105.00 + VAT 16.80 = 121.80.
+        assert as_decimal(quote["subtotal"]) == Decimal("105.00")
+        assert as_decimal(quote["total"]) == Decimal("121.80")
+        assert quote["status"] == "draft"
+
+        # Quoting never touches stock.
+        levels = (
+            await client.get("/api/v1/inventory/stock/levels", headers=admin)
+        ).json()["data"]
+        assert as_decimal(levels[0]["total_quantity"]) == Decimal("50")
+
+    async def test_convert_honors_quoted_price_even_after_price_change(
+        self, client: AsyncClient
+    ) -> None:
+        admin = await login(client, "admin", TEST_ADMIN_PASSWORD)
+        warehouse_id, product = await setup_stocked_catalog(client, admin)
+        customer_id = await create_customer(client, admin, credit_limit="1000")
+
+        quote = (
+            await post_quotation(client, admin, customer_id, product["id"], "10")
+        ).json()["data"]
+        assert as_decimal(quote["subtotal"]) == Decimal("105.00")
+
+        # Price rises after the quote was made.
+        bump = await client.patch(
+            f"/api/v1/inventory/products/{product['id']}",
+            headers=admin,
+            json={"wholesale_price": "50.00"},
+        )
+        assert bump.status_code == 200
+
+        convert = await client.post(
+            f"/api/v1/sales/quotations/{quote['id']}/convert",
+            headers=admin,
+            json={"payment_method": "credit"},
+        )
+        assert convert.status_code == 200, convert.text
+        invoice = convert.json()["data"]
+        # Still the OLD 10.50 price, not the new 50.00.
+        assert as_decimal(invoice["subtotal"]) == Decimal("105.00")
+        assert as_decimal(invoice["lines"][0]["unit_price"]) == Decimal("10.50")
+
+        # Stock was deducted only on conversion, via the normal FEFO path.
+        levels = (
+            await client.get("/api/v1/inventory/stock/levels", headers=admin)
+        ).json()["data"]
+        assert as_decimal(levels[0]["total_quantity"]) == Decimal("40")
+
+    async def test_cannot_convert_twice(self, client: AsyncClient) -> None:
+        admin = await login(client, "admin", TEST_ADMIN_PASSWORD)
+        warehouse_id, product = await setup_stocked_catalog(client, admin)
+        customer_id = await create_customer(client, admin, credit_limit="1000")
+        quote = (
+            await post_quotation(client, admin, customer_id, product["id"], "5")
+        ).json()["data"]
+
+        first = await client.post(
+            f"/api/v1/sales/quotations/{quote['id']}/convert",
+            headers=admin,
+            json={"payment_method": "credit"},
+        )
+        assert first.status_code == 200
+
+        second = await client.post(
+            f"/api/v1/sales/quotations/{quote['id']}/convert",
+            headers=admin,
+            json={"payment_method": "credit"},
+        )
+        assert second.status_code == 400
+        assert "تم تحويله أو إلغاؤه" in second.json()["message"]
+
+    async def test_cancelled_quotation_cannot_be_converted(
+        self, client: AsyncClient
+    ) -> None:
+        admin = await login(client, "admin", TEST_ADMIN_PASSWORD)
+        warehouse_id, product = await setup_stocked_catalog(client, admin)
+        customer_id = await create_customer(client, admin, credit_limit="1000")
+        quote = (
+            await post_quotation(client, admin, customer_id, product["id"], "5")
+        ).json()["data"]
+
+        cancel = await client.post(
+            f"/api/v1/sales/quotations/{quote['id']}/cancel", headers=admin
+        )
+        assert cancel.status_code == 200
+        assert cancel.json()["data"]["status"] == "cancelled"
+
+        convert = await client.post(
+            f"/api/v1/sales/quotations/{quote['id']}/convert",
+            headers=admin,
+            json={"payment_method": "credit"},
+        )
+        assert convert.status_code == 400
+
+    async def test_expired_quotation_cannot_be_converted(
+        self, client: AsyncClient
+    ) -> None:
+        admin = await login(client, "admin", TEST_ADMIN_PASSWORD)
+        warehouse_id, product = await setup_stocked_catalog(client, admin)
+        customer_id = await create_customer(client, admin, credit_limit="1000")
+        quote = (
+            await post_quotation(
+                client, admin, customer_id, product["id"], "5", valid_until="2020-01-01"
+            )
+        ).json()["data"]
+
+        convert = await client.post(
+            f"/api/v1/sales/quotations/{quote['id']}/convert",
+            headers=admin,
+            json={"payment_method": "credit"},
+        )
+        assert convert.status_code == 400
+        assert "انتهت صلاحية" in convert.json()["message"]
+
+    async def test_conversion_still_enforces_credit_limit(
+        self, client: AsyncClient
+    ) -> None:
+        admin = await login(client, "admin", TEST_ADMIN_PASSWORD)
+        warehouse_id, product = await setup_stocked_catalog(client, admin)
+        # Credit limit far below the quote's total.
+        customer_id = await create_customer(client, admin, credit_limit="10")
+
+        quote = (
+            await post_quotation(client, admin, customer_id, product["id"], "10")
+        ).json()["data"]
+
+        convert = await client.post(
+            f"/api/v1/sales/quotations/{quote['id']}/convert",
+            headers=admin,
+            json={"payment_method": "credit"},
+        )
+        assert convert.status_code == 400
+        assert "الحد الائتماني" in convert.json()["message"]
+
+    async def test_rep_cannot_quote_for_another_reps_customer(
+        self, client: AsyncClient
+    ) -> None:
+        admin = await login(client, "admin", TEST_ADMIN_PASSWORD)
+        sales = await login(client, "salesman", TEST_SALES_PASSWORD)
+        warehouse_id, product = await setup_stocked_catalog(client, admin)
+        other_customer = await create_customer(client, admin, name="عميل مندوب آخر")
+
+        response = await post_quotation(client, sales, other_customer, product["id"], "5")
+        assert response.status_code == 403
+
+    async def test_storekeeper_cannot_create_quotation(
+        self, client: AsyncClient
+    ) -> None:
+        admin = await login(client, "admin", TEST_ADMIN_PASSWORD)
+        store = await login(client, "storekeeper", TEST_STORE_PASSWORD)
+        warehouse_id, product = await setup_stocked_catalog(client, admin)
+        customer_id = await create_customer(client, admin)
+
+        response = await post_quotation(client, store, customer_id, product["id"], "5")
+        assert response.status_code == 403

@@ -427,6 +427,313 @@ function CommissionsTab() {
   );
 }
 
+const QUOTATION_STATUS_LABELS = { draft: "مسودة", converted: "تم التحويل", cancelled: "ملغاة" };
+const QUOTATION_STATUS_TONE = { draft: "amber", converted: "green", cancelled: "red" };
+
+function QuotationForm({ customers, products, taxRates, onCreated }) {
+  const defaultTaxRate = taxRates.find((t) => t.is_default);
+  const [form, setForm] = useState({
+    customer_id: "",
+    valid_until: "",
+    tax_rate_ids: defaultTaxRate ? [defaultTaxRate.id] : [],
+    notes: "",
+  });
+  const [lines, setLines] = useState([{ ...EMPTY_LINE }]);
+  const [error, setError] = useState(null);
+  const set = (key) => (e) => setForm({ ...form, [key]: e.target.value });
+  const toggleTax = (taxId) =>
+    setForm((f) => ({
+      ...f,
+      tax_rate_ids: f.tax_rate_ids.includes(taxId)
+        ? f.tax_rate_ids.filter((id) => id !== taxId)
+        : [...f.tax_rate_ids, taxId],
+    }));
+  const setLine = (index, key, value) =>
+    setLines(lines.map((l, i) => (i === index ? { ...l, [key]: value } : l)));
+  const setProductLine = (index, value) => {
+    const match = products.find((p) => productLabel(p) === value);
+    setLines(
+      lines.map((l, i) =>
+        i === index
+          ? { ...l, product_label: value, product_id: match ? String(match.id) : "" }
+          : l
+      )
+    );
+  };
+
+  const submit = async (event) => {
+    event.preventDefault();
+    setError(null);
+    if (lines.some((l) => l.product_label && !l.product_id)) {
+      setError("اختر الصنف من قائمة البحث لكل سطر (اكتب ثم اختر من الاقتراحات).");
+      return;
+    }
+    const payload = {
+      customer_id: form.customer_id,
+      valid_until: form.valid_until || null,
+      tax_rate_ids: form.tax_rate_ids,
+      notes: form.notes || null,
+      lines: lines
+        .filter((l) => l.product_id && l.quantity)
+        .map((l) => ({ product_id: l.product_id, quantity: l.quantity })),
+    };
+    try {
+      const { data } = await api.post("/sales/quotations", payload);
+      onCreated(data.data);
+    } catch (err) {
+      setError(apiMessage(err));
+    }
+  };
+
+  return (
+    <form onSubmit={submit} className="space-y-4">
+      <Alert>{error}</Alert>
+      <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
+        <Select label="العميل" value={form.customer_id} onChange={set("customer_id")} required>
+          <option value="">— اختر العميل —</option>
+          {customers.map((c) => (
+            <option key={c.id} value={c.id}>
+              {c.name}
+            </option>
+          ))}
+        </Select>
+        <Input label="صالح حتى (اختياري)" type="date" value={form.valid_until} onChange={set("valid_until")} />
+      </div>
+
+      <div>
+        <span className="mb-1 block text-sm font-bold text-slate-600">
+          الضرائب المطبّقة (يمكن اختيار أكثر من ضريبة)
+        </span>
+        <div className="flex flex-wrap gap-3 rounded-lg border border-slate-300 bg-white p-3">
+          {taxRates.filter((t) => t.is_active).length === 0 && (
+            <span className="text-sm text-slate-400">لا توجد ضرائب مفعّلة.</span>
+          )}
+          {taxRates
+            .filter((t) => t.is_active)
+            .map((t) => (
+              <label key={t.id} className="flex items-center gap-2 text-sm font-bold text-slate-700">
+                <input
+                  type="checkbox"
+                  checked={form.tax_rate_ids.includes(t.id)}
+                  onChange={() => toggleTax(t.id)}
+                />
+                {t.name} ({t.rate}%)
+              </label>
+            ))}
+        </div>
+      </div>
+
+      <datalist id="quotation-products">
+        {products
+          .filter((p) => p.is_active)
+          .map((p) => (
+            <option key={p.id} value={productLabel(p)} />
+          ))}
+      </datalist>
+
+      <div>
+        <div className="mb-2 flex items-center justify-between">
+          <span className="text-sm font-bold text-slate-600">أسطر العرض</span>
+          <Button type="button" variant="secondary" onClick={() => setLines([...lines, { ...EMPTY_LINE }])}>
+            + سطر
+          </Button>
+        </div>
+        {lines.map((line, index) => (
+          <div key={index} className="mb-2 grid grid-cols-12 items-end gap-2">
+            <div className="col-span-8">
+              <Input
+                label={index === 0 ? "الصنف (اكتب للبحث)" : undefined}
+                list="quotation-products"
+                placeholder="ابحث بالرمز أو الاسم..."
+                value={line.product_label ?? ""}
+                onChange={(e) => setProductLine(index, e.target.value)}
+                required
+              />
+            </div>
+            <div className="col-span-4">
+              <Input
+                label={index === 0 ? "الكمية" : undefined}
+                type="number"
+                step="any"
+                min="0.001"
+                value={line.quantity}
+                onChange={(e) => setLine(index, "quantity", e.target.value)}
+                required
+              />
+            </div>
+          </div>
+        ))}
+      </div>
+
+      <Input label="ملاحظات (اختياري)" value={form.notes} onChange={set("notes")} />
+
+      <div className="flex justify-end">
+        <Button type="submit">إنشاء عرض السعر</Button>
+      </div>
+    </form>
+  );
+}
+
+function ConvertQuotationForm({ quotation, isAdmin, onConverted, onClose }) {
+  const [form, setForm] = useState({
+    payment_method: "cash",
+    fulfillment: "delivery",
+    credit_override: false,
+  });
+  const [error, setError] = useState(null);
+  const set = (key) => (e) => setForm({ ...form, [key]: e.target.value });
+
+  const submit = async (event) => {
+    event.preventDefault();
+    setError(null);
+    try {
+      const { data } = await api.post(`/sales/quotations/${quotation.id}/convert`, form);
+      onConverted(data.data);
+    } catch (err) {
+      setError(apiMessage(err));
+    }
+  };
+
+  return (
+    <form onSubmit={submit} className="space-y-4">
+      <Alert>{error}</Alert>
+      <Select label="طريقة الدفع" value={form.payment_method} onChange={set("payment_method")}>
+        <option value="cash">نقدي</option>
+        <option value="card">بطاقة</option>
+        <option value="credit">آجل</option>
+      </Select>
+      <Select label="طريقة الاستلام" value={form.fulfillment} onChange={set("fulfillment")}>
+        <option value="delivery">توصيل إلى العميل (رحلة توزيع)</option>
+        <option value="pickup">استلام من المستودع (عند محلنا)</option>
+      </Select>
+      {isAdmin && (
+        <label className="flex items-center gap-2 text-sm font-bold text-slate-700">
+          <input
+            type="checkbox"
+            checked={form.credit_override}
+            onChange={(e) => setForm({ ...form, credit_override: e.target.checked })}
+          />
+          تجاوز الحد الائتماني (موافقة المدير)
+        </label>
+      )}
+      <div className="flex justify-end gap-2">
+        <Button type="button" variant="secondary" onClick={onClose}>
+          إلغاء
+        </Button>
+        <Button type="submit">تحويل إلى فاتورة</Button>
+      </div>
+    </form>
+  );
+}
+
+function QuotationsTab({ customers, products, taxRates, canQuote, isAdmin, onInvoiceCreated }) {
+  const quotations = useFetch(() => api.get("/sales/quotations"));
+  const [creating, setCreating] = useState(false);
+  const [converting, setConverting] = useState(null);
+  const [notice, setNotice] = useState(null);
+
+  const cancelQuotation = async (quotation) => {
+    if (!window.confirm(`إلغاء عرض السعر رقم ${quotation.id}؟`)) return;
+    try {
+      await api.post(`/sales/quotations/${quotation.id}/cancel`);
+      quotations.reload();
+    } catch (err) {
+      alert(apiMessage(err));
+    }
+  };
+
+  return (
+    <div className="space-y-4">
+      <div className="flex items-center justify-between">
+        <h2 className="text-lg font-extrabold">عروض الأسعار</h2>
+        {canQuote && <Button onClick={() => setCreating(true)}>+ عرض سعر جديد</Button>}
+      </div>
+      <Alert tone="success">{notice}</Alert>
+      <Card>
+        <Alert>{quotations.error}</Alert>
+        {quotations.loading ? (
+          <Loading />
+        ) : (
+          <Table
+            columns={[
+              { key: "id", label: "#" },
+              { key: "quote_date", label: "التاريخ" },
+              {
+                key: "customer_id",
+                label: "العميل",
+                render: (r) => customers.find((c) => c.id === r.customer_id)?.name ?? r.customer_id,
+              },
+              { key: "valid_until", label: "صالح حتى", render: (r) => r.valid_until ?? "—" },
+              { key: "total", label: "الإجمالي", render: (r) => money(r.total) },
+              {
+                key: "status",
+                label: "الحالة",
+                render: (r) => (
+                  <Badge tone={QUOTATION_STATUS_TONE[r.status]}>
+                    {QUOTATION_STATUS_LABELS[r.status]}
+                  </Badge>
+                ),
+              },
+              {
+                key: "actions",
+                label: "",
+                render: (r) =>
+                  r.status === "draft" && canQuote ? (
+                    <div className="flex gap-2">
+                      <Button variant="secondary" onClick={() => setConverting(r)}>
+                        تحويل إلى فاتورة
+                      </Button>
+                      <Button variant="danger" onClick={() => cancelQuotation(r)}>
+                        إلغاء
+                      </Button>
+                    </div>
+                  ) : r.converted_invoice_id ? (
+                    <span className="text-xs text-slate-500">فاتورة #{r.converted_invoice_id}</span>
+                  ) : null,
+              },
+            ]}
+            rows={quotations.data}
+            empty="لا توجد عروض أسعار بعد."
+          />
+        )}
+      </Card>
+
+      <Modal open={creating} title="عرض سعر جديد" onClose={() => setCreating(false)}>
+        <QuotationForm
+          customers={customers}
+          products={products}
+          taxRates={taxRates}
+          onCreated={() => {
+            setCreating(false);
+            setNotice("تم إنشاء عرض السعر بنجاح.");
+            quotations.reload();
+          }}
+        />
+      </Modal>
+
+      <Modal
+        open={!!converting}
+        title={converting ? `تحويل عرض السعر رقم ${converting.id} إلى فاتورة` : ""}
+        onClose={() => setConverting(null)}
+      >
+        {converting && (
+          <ConvertQuotationForm
+            quotation={converting}
+            isAdmin={isAdmin}
+            onConverted={(invoice) => {
+              setConverting(null);
+              setNotice(`تم التحويل بنجاح إلى الفاتورة رقم ${invoice.id}.`);
+              quotations.reload();
+              onInvoiceCreated();
+            }}
+            onClose={() => setConverting(null)}
+          />
+        )}
+      </Modal>
+    </div>
+  );
+}
+
 export default function SalesPage() {
   const { can } = useAuth();
   const navigate = useNavigate();

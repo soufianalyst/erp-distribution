@@ -1,0 +1,45 @@
+services:
+  - type: web
+    name: erp-backend
+    env: python
+    region: frankfurt
+    plan: starter
+    buildCommand: pip install -r backend/requirements.txt
+    startCommand: cd backend && uvicorn main:app --host 0.0.0.0 --port $PORT
+    healthCheckPath: /
+    envVars:
+      - key: DATABASE_URL
+        fromDatabase:
+          name: erp-db
+          property: connectionString
+      - key: SECRET_KEY
+        generateValue: true
+      - key: DEBUG
+        value: false
+      - key: AUTO_CREATE_TABLES
+        value: true
+      - key: CORS_ORIGINS
+        value: https://erp-frontend.onrender.com
+      - key: FIRST_ADMIN_USERNAME
+        value: admin
+      - key: FIRST_ADMIN_PASSWORD
+        value: Admin@1234
+      - key: FIRST_ADMIN_FULL_NAME
+        value: مدير النظام
+
+  - type: web
+    name: erp-frontend
+    env: static
+    region: frankfurt
+    buildCommand: cd frontend && npm install && npm run build
+    staticPublishPath: frontend/dist
+    envVars:
+      - key: VITE_API_URL
+        value: https://erp-backend.onrender.com
+
+databases:
+  - name: erp-db
+    region: frankfurt
+    plan: starter
+    databaseName: erp
+    user: erp_user

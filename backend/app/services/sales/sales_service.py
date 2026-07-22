@@ -14,7 +14,10 @@ from app.api.schemas.sales import (
     CustomerPaymentCreate,
     CustomerStatementOut,
     CustomerUpdate,
+    QuotationConvertIn,
     SalesInvoiceCreate,
+    SalesLineIn,
+    SalesQuotationCreate,
     SalesReturnCreate,
 )
 from app.core.exceptions import AppException
@@ -27,11 +30,15 @@ from app.domain.models.sales import (
     CustomerPayment,
     FulfillmentType,
     PriceTier,
+    QuotationStatus,
     ReturnReason,
     SalesInvoice,
     SalesInvoiceLine,
     SalesInvoiceTax,
     SalesPaymentMethod,
+    SalesQuotation,
+    SalesQuotationLine,
+    SalesQuotationTax,
     SalesReturn,
     SalesReturnLine,
 )
@@ -182,11 +189,17 @@ class SalesService:
 
     # --- Sales invoices ---
     async def _build_lines(
-        self, invoice: SalesInvoice, data: SalesInvoiceCreate, customer: Customer
+        self,
+        invoice: SalesInvoice,
+        data: SalesInvoiceCreate,
+        customer: Customer,
+        price_overrides: dict[int, Decimal] | None = None,
     ) -> tuple[Decimal, Decimal]:
         """FEFO-allocate the requested lines onto the invoice; returns (subtotal, cost_total).
 
-        One input line becomes one invoice line per allocated batch.
+        One input line becomes one invoice line per allocated batch. `price_overrides`
+        (keyed by product_id) is for internal use only — e.g. honoring a quotation's
+        frozen price on conversion — and is never accepted from the public API.
         """
         subtotal = Decimal("0")
         cost_total = Decimal("0")
@@ -202,7 +215,11 @@ class SalesService:
             base_quantity = self.stock.to_base_quantity(
                 product, line.quantity, line.unit_id
             )
-            unit_price = self.tier_price(product, customer.price_tier)
+            unit_price = (
+                price_overrides[product.id]
+                if price_overrides and product.id in price_overrides
+                else self.tier_price(product, customer.price_tier)
+            )
 
             allocations = await self.stock.fefo_allocate(
                 product.id, product.warehouse_id, base_quantity
@@ -334,7 +351,10 @@ class SalesService:
             )
 
     async def create_invoice(
-        self, data: SalesInvoiceCreate, user: User
+        self,
+        data: SalesInvoiceCreate,
+        user: User,
+        price_overrides: dict[int, Decimal] | None = None,
     ) -> SalesInvoice:
         """Post a sales invoice: FEFO stock deduction, credit-limit check, one transaction."""
         customer = await self.get_customer(data.customer_id)
@@ -356,7 +376,9 @@ class SalesService:
             created_by=user.id,
         )
 
-        subtotal, cost_total = await self._build_lines(invoice, data, customer)
+        subtotal, cost_total = await self._build_lines(
+            invoice, data, customer, price_overrides
+        )
         invoice.warehouse_id = self._resolve_invoice_warehouse(invoice)
 
         invoice.subtotal = subtotal
@@ -384,6 +406,163 @@ class SalesService:
         # Single commit: stock deduction, the invoice, and its postings succeed or fail together.
         await self.session.commit()
         return await self.get_invoice(invoice.id)
+
+    # --- Quotations ---
+    async def _build_quotation_lines(
+        self,
+        quotation: SalesQuotation,
+        data: SalesQuotationCreate,
+        customer: Customer,
+    ) -> Decimal:
+        """Price each requested line at the customer's tier — no stock/batch allocation."""
+        subtotal = Decimal("0")
+        for line in data.lines:
+            product = await self.stock.get_active_product(line.product_id)
+            base_quantity = self.stock.to_base_quantity(
+                product, line.quantity, line.unit_id
+            )
+            unit_price = self.tier_price(product, customer.price_tier)
+            line_total = (base_quantity * unit_price).quantize(
+                TWO_PLACES, rounding=ROUND_HALF_UP
+            )
+            quotation.lines.append(
+                SalesQuotationLine(
+                    product_id=product.id,
+                    quantity=base_quantity,
+                    unit_price=unit_price,
+                    line_total=line_total,
+                )
+            )
+            subtotal += line_total
+        return subtotal
+
+    @staticmethod
+    def _apply_quotation_taxes(
+        quotation: SalesQuotation, tax_rates: list[TaxRate], subtotal: Decimal
+    ) -> Decimal:
+        total_tax = Decimal("0")
+        for tax_rate in tax_rates:
+            amount = (subtotal * tax_rate.rate / Decimal("100")).quantize(
+                TWO_PLACES, rounding=ROUND_HALF_UP
+            )
+            quotation.taxes.append(
+                SalesQuotationTax(
+                    tax_rate_id=tax_rate.id,
+                    name=tax_rate.name,
+                    rate=tax_rate.rate,
+                    amount=amount,
+                )
+            )
+            total_tax += amount
+        return total_tax
+
+    async def create_quotation(
+        self, data: SalesQuotationCreate, user: User
+    ) -> SalesQuotation:
+        """Price a quote for a customer — no stock deduction or accounting effect."""
+        customer = await self.get_customer(data.customer_id)
+        if not customer.is_active:
+            raise AppException(400, "هذا العميل موقوف ولا يمكن إنشاء عرض سعر له.")
+        self.ensure_customer_access(user, customer)
+        tax_rates = await self._resolve_taxes(data.tax_rate_ids)
+
+        quotation = SalesQuotation(
+            customer_id=customer.id,
+            salesman_id=customer.salesman_id,
+            quote_date=date.today(),
+            valid_until=data.valid_until,
+            status=QuotationStatus.DRAFT,
+            subtotal=Decimal("0"),
+            vat_amount=Decimal("0"),
+            total=Decimal("0"),
+            notes=data.notes,
+            created_by=user.id,
+        )
+        subtotal = await self._build_quotation_lines(quotation, data, customer)
+        quotation.subtotal = subtotal
+        quotation.vat_amount = self._apply_quotation_taxes(quotation, tax_rates, subtotal)
+        quotation.total = subtotal + quotation.vat_amount
+
+        self.session.add(quotation)
+        await self.session.commit()
+        return await self.get_quotation(quotation.id)
+
+    async def get_quotation(self, quotation_id: int) -> SalesQuotation:
+        result = await self.session.execute(
+            select(SalesQuotation)
+            .options(
+                selectinload(SalesQuotation.lines), selectinload(SalesQuotation.taxes)
+            )
+            .where(SalesQuotation.id == quotation_id)
+        )
+        quotation = result.scalar_one_or_none()
+        if quotation is None:
+            raise AppException(404, "عرض السعر غير موجود.")
+        return quotation
+
+    async def list_quotations(
+        self, user: User, customer_id: int | None = None
+    ) -> list[SalesQuotation]:
+        stmt = (
+            select(SalesQuotation)
+            .options(
+                selectinload(SalesQuotation.lines), selectinload(SalesQuotation.taxes)
+            )
+            .order_by(SalesQuotation.id.desc())
+        )
+        if not has_permission(user, "sales.all_customers"):
+            stmt = stmt.where(SalesQuotation.salesman_id == user.id)
+        if customer_id is not None:
+            stmt = stmt.where(SalesQuotation.customer_id == customer_id)
+        result = await self.session.execute(stmt)
+        return list(result.scalars().all())
+
+    async def cancel_quotation(self, quotation_id: int, user: User) -> SalesQuotation:
+        quotation = await self.get_quotation(quotation_id)
+        customer = await self.get_customer(quotation.customer_id)
+        self.ensure_customer_access(user, customer)
+        if quotation.status != QuotationStatus.DRAFT:
+            raise AppException(400, "لا يمكن إلغاء عرض سعر تم تحويله أو إلغاؤه من قبل.")
+        quotation.status = QuotationStatus.CANCELLED
+        await self.session.commit()
+        return await self.get_quotation(quotation.id)
+
+    async def convert_quotation_to_invoice(
+        self, quotation_id: int, data: QuotationConvertIn, user: User
+    ) -> SalesInvoice:
+        """Turn an accepted quotation into a real invoice, honoring the quoted prices
+        exactly — the normal FEFO/credit-limit/accounting path in create_invoice runs
+        unchanged, just with each line's price frozen to what was quoted.
+        """
+        quotation = await self.get_quotation(quotation_id)
+        customer = await self.get_customer(quotation.customer_id)
+        self.ensure_customer_access(user, customer)
+        if quotation.status != QuotationStatus.DRAFT:
+            raise AppException(400, "لا يمكن تحويل عرض سعر تم تحويله أو إلغاؤه من قبل.")
+        if quotation.valid_until is not None and quotation.valid_until < date.today():
+            raise AppException(400, "انتهت صلاحية عرض السعر هذا؛ يرجى إنشاء عرض جديد.")
+
+        invoice_data = SalesInvoiceCreate(
+            customer_id=quotation.customer_id,
+            payment_method=data.payment_method,
+            fulfillment=data.fulfillment,
+            tax_rate_ids=[
+                t.tax_rate_id for t in quotation.taxes if t.tax_rate_id is not None
+            ],
+            notes=quotation.notes,
+            lines=[
+                SalesLineIn(product_id=line.product_id, quantity=line.quantity)
+                for line in quotation.lines
+            ],
+            credit_override=data.credit_override,
+        )
+        price_overrides = {line.product_id: line.unit_price for line in quotation.lines}
+        invoice = await self.create_invoice(invoice_data, user, price_overrides)
+
+        quotation.status = QuotationStatus.CONVERTED
+        quotation.converted_invoice_id = invoice.id
+        await self.session.commit()
+        return invoice
 
     async def update_invoice(
         self, invoice_id: int, data: SalesInvoiceCreate, user: User

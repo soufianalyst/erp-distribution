@@ -15,8 +15,11 @@ from app.api.schemas.sales import (
     CustomerPaymentOut,
     CustomerStatementOut,
     CustomerUpdate,
+    QuotationConvertIn,
     SalesInvoiceCreate,
     SalesInvoiceOut,
+    SalesQuotationCreate,
+    SalesQuotationOut,
     SalesReturnCreate,
     SalesReturnOut,
 )
@@ -34,6 +37,7 @@ sellers = require_permissions("sales.create")
 returners = require_permissions("sales.returns")
 collectors = require_permissions("sales.payments")
 commission_viewers = require_permissions("sales.commission_view")
+quoters = require_permissions("sales.quotations")
 
 
 # --- Customers ---
@@ -208,6 +212,82 @@ async def list_returns(
     """عرض مرتجعات المبيعات."""
     returns = await SalesService(db).list_returns(current_user, invoice_id)
     return APIResponse(data=[SalesReturnOut.model_validate(r) for r in returns])
+
+
+# --- Quotations ---
+@router.post(
+    "/quotations",
+    response_model=APIResponse[SalesQuotationOut],
+    status_code=status.HTTP_201_CREATED,
+)
+async def create_quotation(
+    body: SalesQuotationCreate,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(quoters),
+) -> APIResponse[SalesQuotationOut]:
+    """إنشاء عرض سعر — تسعير فقط، دون خصم مخزون أو أثر محاسبي."""
+    quotation = await SalesService(db).create_quotation(body, current_user)
+    return APIResponse(
+        data=SalesQuotationOut.model_validate(quotation),
+        message="تم إنشاء عرض السعر بنجاح.",
+    )
+
+
+@router.get("/quotations", response_model=APIResponse[list[SalesQuotationOut]])
+async def list_quotations(
+    customer_id: int | None = Query(default=None),
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(sales_view),
+) -> APIResponse[list[SalesQuotationOut]]:
+    """عرض عروض الأسعار."""
+    quotations = await SalesService(db).list_quotations(current_user, customer_id)
+    return APIResponse(data=[SalesQuotationOut.model_validate(q) for q in quotations])
+
+
+@router.get("/quotations/{quotation_id}", response_model=APIResponse[SalesQuotationOut])
+async def get_quotation(
+    quotation_id: int,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(sales_view),
+) -> APIResponse[SalesQuotationOut]:
+    """عرض تفاصيل عرض سعر."""
+    quotation = await SalesService(db).get_quotation(quotation_id)
+    return APIResponse(data=SalesQuotationOut.model_validate(quotation))
+
+
+@router.post(
+    "/quotations/{quotation_id}/convert", response_model=APIResponse[SalesInvoiceOut]
+)
+async def convert_quotation(
+    quotation_id: int,
+    body: QuotationConvertIn,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(quoters),
+) -> APIResponse[SalesInvoiceOut]:
+    """تحويل عرض سعر مقبول إلى فاتورة مبيعات فعلية، بنفس الأسعار المعروضة."""
+    invoice = await SalesService(db).convert_quotation_to_invoice(
+        quotation_id, body, current_user
+    )
+    return APIResponse(
+        data=SalesInvoiceOut.model_validate(invoice),
+        message="تم تحويل عرض السعر إلى فاتورة بنجاح.",
+    )
+
+
+@router.post(
+    "/quotations/{quotation_id}/cancel", response_model=APIResponse[SalesQuotationOut]
+)
+async def cancel_quotation(
+    quotation_id: int,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(quoters),
+) -> APIResponse[SalesQuotationOut]:
+    """إلغاء عرض سعر لم يُحوَّل بعد."""
+    quotation = await SalesService(db).cancel_quotation(quotation_id, current_user)
+    return APIResponse(
+        data=SalesQuotationOut.model_validate(quotation),
+        message="تم إلغاء عرض السعر.",
+    )
 
 
 # --- Customer payments ---

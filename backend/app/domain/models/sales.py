@@ -42,6 +42,12 @@ class ReturnReason(str, enum.Enum):
     DAMAGED_TRANSPORT = "damaged_transport"  # تالف بسبب النقل
 
 
+class QuotationStatus(str, enum.Enum):
+    DRAFT = "draft"  # مسودة — بانتظار قرار العميل
+    CONVERTED = "converted"  # تم تحويلها إلى فاتورة
+    CANCELLED = "cancelled"  # ملغاة
+
+
 class Customer(Base):
     __tablename__ = "customers"
 
@@ -175,6 +181,79 @@ class SalesInvoiceTax(Base):
     amount: Mapped[Decimal] = mapped_column(Numeric(12, 2), nullable=False)
 
     invoice: Mapped[SalesInvoice] = relationship(back_populates="taxes")
+
+
+class SalesQuotation(Base):
+    """عرض سعر — a price commitment for a customer; converts to a real invoice on
+    acceptance, at which point the normal FEFO/credit-limit/accounting path runs.
+    Carries no stock or accounting effect on its own.
+    """
+
+    __tablename__ = "sales_quotations"
+
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    customer_id: Mapped[int] = mapped_column(
+        ForeignKey("customers.id"), nullable=False, index=True
+    )
+    salesman_id: Mapped[int | None] = mapped_column(ForeignKey("users.id"), index=True)
+    quote_date: Mapped[date] = mapped_column(Date, nullable=False)
+    valid_until: Mapped[date | None] = mapped_column(Date, nullable=True)
+    status: Mapped[QuotationStatus] = mapped_column(
+        Enum(QuotationStatus, values_callable=lambda e: [m.value for m in e]),
+        nullable=False,
+        default=QuotationStatus.DRAFT,
+    )
+    subtotal: Mapped[Decimal] = mapped_column(Numeric(14, 2), nullable=False)
+    vat_amount: Mapped[Decimal] = mapped_column(Numeric(12, 2), nullable=False)
+    total: Mapped[Decimal] = mapped_column(Numeric(14, 2), nullable=False)
+    notes: Mapped[str | None] = mapped_column(String(300))
+    converted_invoice_id: Mapped[int | None] = mapped_column(
+        ForeignKey("sales_invoices.id"), nullable=True
+    )
+    created_by: Mapped[int | None] = mapped_column(ForeignKey("users.id"))
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+
+    lines: Mapped[list["SalesQuotationLine"]] = relationship(
+        back_populates="quotation", cascade="all, delete-orphan"
+    )
+    taxes: Mapped[list["SalesQuotationTax"]] = relationship(
+        back_populates="quotation", cascade="all, delete-orphan"
+    )
+
+
+class SalesQuotationLine(Base):
+    __tablename__ = "sales_quotation_lines"
+
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    quotation_id: Mapped[int] = mapped_column(
+        ForeignKey("sales_quotations.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    product_id: Mapped[int] = mapped_column(ForeignKey("products.id"), nullable=False)
+    # Base-unit quantity and price snapshot — same convention as SalesInvoiceLine.
+    quantity: Mapped[Decimal] = mapped_column(Numeric(14, 3), nullable=False)
+    unit_price: Mapped[Decimal] = mapped_column(Numeric(12, 4), nullable=False)
+    line_total: Mapped[Decimal] = mapped_column(Numeric(14, 2), nullable=False)
+
+    quotation: Mapped[SalesQuotation] = relationship(back_populates="lines")
+
+
+class SalesQuotationTax(Base):
+    __tablename__ = "sales_quotation_taxes"
+
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    quotation_id: Mapped[int] = mapped_column(
+        ForeignKey("sales_quotations.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    tax_rate_id: Mapped[int | None] = mapped_column(
+        ForeignKey("tax_rates.id", ondelete="SET NULL"), nullable=True
+    )
+    name: Mapped[str] = mapped_column(String(100), nullable=False)
+    rate: Mapped[Decimal] = mapped_column(Numeric(6, 3), nullable=False)
+    amount: Mapped[Decimal] = mapped_column(Numeric(12, 2), nullable=False)
+
+    quotation: Mapped[SalesQuotation] = relationship(back_populates="taxes")
 
 
 class SalesReturn(Base):

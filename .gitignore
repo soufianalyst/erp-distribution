@@ -15,6 +15,9 @@ node_modules/
 frontend/build/
 frontend/dist/
 
+# SQLite dev database (never commit)
+*.db
+
 # OS / Editor
 .DS_Store
 .idea/
