@@ -146,16 +146,14 @@ frontend_dist = Path(__file__).resolve().parent / "frontend" / "dist"
 
 @app.get("/{full_path:path}")
 async def serve_frontend(full_path: str = "") -> JSONResponse:
-    """Serve the React SPA for non-API routes, or health check for root."""
-    if not full_path:
-        return JSONResponse(
-            status_code=200,
-            content={"success": True, "data": {"status": "ok"}, "message": "النظام يعمل بشكل سليم."},
-        )
+    """Serve the React SPA for non-API routes — root serves index.html as well."""
     if full_path.startswith("api/"):
         return JSONResponse(status_code=404, content={"success": False, "data": None, "message": "غير موجود"})
     if frontend_dist.is_dir():
-        file_path = frontend_dist / full_path
+        if not full_path:
+            file_path = frontend_dist / "index.html"
+        else:
+            file_path = frontend_dist / full_path
         if file_path.is_file():
             from fastapi.responses import FileResponse
             return FileResponse(str(file_path))
