@@ -28,7 +28,6 @@ services:
   - type: web
     name: erp-frontend
     env: static
-    region: frankfurt
     buildCommand: cd frontend && npm install && npm run build
     staticPublishPath: frontend/dist
     envVars:
