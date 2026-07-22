@@ -371,26 +371,12 @@ async def main() -> None:
             print("Done.")
             return
 
-        # --- Users for every role ---
-        print("Creating role users...")
-        role_users = [
-            ("storekeeper", "أمين المستودع علي", UserRole.STOREKEEPER),
-            ("accountant", "المحاسب محمود", UserRole.ACCOUNTANT),
-            ("cashier", "أمين الصندوق كريم", UserRole.CASHIER),
-            ("driver", "سائق التوصيل سمير", UserRole.DRIVER),
-        ]
-        for username, full_name, role in role_users:
-            existing = await auth_service._get_by_username(username)
-            if not existing:
-                await auth_service.create_user(
-                    UserCreate(
-                        username=username,
-                        full_name=full_name,
-                        password="User@12345",
-                        role=role,
-                    )
-                )
-        print("  role users created")
+        # --- Warehouses ---
+        print("Creating warehouses...")
+        warehouse_ids: dict[str, int] = {}
+        for name in ["الرئيسي", "مستودع التبريد", "مستودع الفرعي"]:
+            w = await warehouse_service.create_warehouse(WarehouseCreate(name=name))
+            warehouse_ids[name] = w.id
 
         # --- Products ---
         print("Creating products...")
