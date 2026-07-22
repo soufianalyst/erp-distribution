@@ -15,7 +15,6 @@ if config.config_file_name is not None:
     fileConfig(config.config_file_name)
 
 # Single source of truth: the same DATABASE_URL the application uses.
-# Alembic runs synchronously via psycopg2; force the psycopg2 dialect.
 _url = get_settings().DATABASE_URL
 if _url.startswith("postgresql+asyncpg://"):
     _url = _url.replace("postgresql+asyncpg://", "postgresql://", 1)

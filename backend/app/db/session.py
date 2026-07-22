@@ -8,7 +8,7 @@ from app.core.config import get_settings
 
 settings = get_settings()
 
-# Serverless-friendly: small pool (Supabase free tier allows ~60 connections).
+# Render free tier: small connection pool.
 engine = create_async_engine(
     settings.DATABASE_URL,
     echo=False,

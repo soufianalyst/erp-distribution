@@ -44,7 +44,7 @@ class Settings(BaseSettings):
 @lru_cache
 def get_settings() -> Settings:
     settings = Settings()
-    # Render / Supabase provide postgresql:// — asyncpg needs +asyncpg.
+    # Render provides postgresql:// — asyncpg needs +asyncpg.
     if settings.DATABASE_URL.startswith("postgresql://"):
         settings.DATABASE_URL = settings.DATABASE_URL.replace(
             "postgresql://", "postgresql+asyncpg://", 1
