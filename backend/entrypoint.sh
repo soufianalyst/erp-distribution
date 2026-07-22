@@ -1,8 +1,7 @@
 #!/bin/sh
 set -e
 
-echo "Running Alembic migrations..."
-alembic upgrade head
+echo "Skipping Alembic migrations (schema managed by Supabase CLI)..."
 
 echo "Seeding default data..."
 python -c "

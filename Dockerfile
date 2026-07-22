@@ -14,4 +14,7 @@ RUN mkdir -p static
 COPY --from=frontend-build /app/dist static/
 RUN chmod +x entrypoint.sh
 EXPOSE 10000
-CMD ["sh", "entrypoint.sh"]
+
+# Render: skip alembic migrations — Supabase schema already deployed via CLI.
+ENV ALEMBIC_SKIP="true"
+CMD ["sh", "-c", "uvicorn main:app --host 0.0.0.0 --port ${PORT:-10000}"]
