@@ -37,6 +37,6 @@ services:
 databases:
   - name: erp-db
     region: frankfurt
-    plan: starter
+    plan: basic-256mb
     databaseName: erp
     user: erp_user
