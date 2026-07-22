@@ -8,17 +8,9 @@ from app.core.config import get_settings
 
 settings = get_settings()
 
-# Render provides postgresql:// — force asyncpg driver.
-_db_url = settings.DATABASE_URL
-if _db_url and _db_url.startswith("postgresql://"):
-    _db_url = _db_url.replace("postgresql://", "postgresql+asyncpg://", 1)
-# asyncpg uses ssl=, not sslmode= (Supabase requires SSL for external connections).
-if "sslmode=" in _db_url:
-    _db_url = _db_url.replace("sslmode=require", "ssl=require")
-
 # Serverless-friendly: small pool (Supabase free tier allows ~60 connections).
 engine = create_async_engine(
-    _db_url,
+    settings.DATABASE_URL,
     echo=False,
     pool_pre_ping=True,
     pool_size=5,

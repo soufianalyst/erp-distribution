@@ -44,6 +44,11 @@ class Settings(BaseSettings):
 @lru_cache
 def get_settings() -> Settings:
     settings = Settings()
+    # Render / Supabase provide postgresql:// — asyncpg needs +asyncpg.
+    if settings.DATABASE_URL.startswith("postgresql://"):
+        settings.DATABASE_URL = settings.DATABASE_URL.replace(
+            "postgresql://", "postgresql+asyncpg://", 1
+        )
     # Generate a random SECRET_KEY if not provided (dev convenience).
     if not settings.SECRET_KEY:
         settings.SECRET_KEY = secrets.token_hex(32)

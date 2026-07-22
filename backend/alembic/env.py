@@ -1,12 +1,10 @@
-"""Alembic migration environment (async engine, URL taken from app settings)."""
+"""Alembic migration environment (sync engine via psycopg2 for reliable migrations)."""
 
-import asyncio
 from logging.config import fileConfig
 
 from alembic import context
-from sqlalchemy import pool
+from sqlalchemy import engine_from_config, pool
 from sqlalchemy.engine import Connection
-from sqlalchemy.ext.asyncio import async_engine_from_config, create_async_engine
 
 import app.domain.models  # noqa: F401  # register every table on Base.metadata
 from app.core.config import get_settings
@@ -17,7 +15,11 @@ if config.config_file_name is not None:
     fileConfig(config.config_file_name)
 
 # Single source of truth: the same DATABASE_URL the application uses.
-config.set_main_option("sqlalchemy.url", get_settings().DATABASE_URL)
+# Alembic runs synchronously via psycopg2; force the psycopg2 dialect.
+_url = get_settings().DATABASE_URL
+if _url.startswith("postgresql+asyncpg://"):
+    _url = _url.replace("postgresql+asyncpg://", "postgresql://", 1)
+config.set_main_option("sqlalchemy.url", _url)
 
 target_metadata = Base.metadata
 
@@ -41,19 +43,16 @@ def do_run_migrations(connection: Connection) -> None:
         context.run_migrations()
 
 
-async def run_async_migrations() -> None:
-    url = config.get_main_option("sqlalchemy.url")
-    # Render provides postgresql:// — force asyncpg driver.
-    if url and url.startswith("postgresql://"):
-        url = url.replace("postgresql://", "postgresql+asyncpg://", 1)
-    connectable = create_async_engine(url, poolclass=pool.NullPool)
-    async with connectable.connect() as connection:
-        await connection.run_sync(do_run_migrations)
-    await connectable.dispose()
-
-
 def run_migrations_online() -> None:
-    asyncio.run(run_async_migrations())
+    """Run migrations using a synchronous psycopg2 engine."""
+    connectable = engine_from_config(
+        config.get_section(config.config_ini_section, {}),
+        prefix="sqlalchemy.",
+        poolclass=pool.NullPool,
+    )
+    with connectable.connect() as connection:
+        do_run_migrations(connection)
+    connectable.dispose()
 
 
 if context.is_offline_mode():

@@ -15,10 +15,8 @@ depends_on = None
 
 
 def upgrade() -> None:
-    op.add_column("customers", sa.Column("tax_exempt", sa.Boolean(), nullable=False, server_default=sa.text("false")))
     op.add_column("customers", sa.Column("is_active", sa.Boolean(), nullable=False, server_default=sa.text("true")))
 
 
 def downgrade() -> None:
     op.drop_column("customers", "is_active")
-    op.drop_column("customers", "tax_exempt")

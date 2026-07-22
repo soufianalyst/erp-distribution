@@ -1,7 +1,8 @@
 #!/bin/sh
 set -e
 
-echo "Skipping Alembic migrations (schema managed by Supabase CLI)..."
+echo "Running Alembic migrations..."
+alembic upgrade head
 
 echo "Seeding default data..."
 python -c "
@@ -21,4 +22,4 @@ print('Seeding complete.')
 
 PORT=${PORT:-10000}
 echo "Starting server on port $PORT..."
-exec uvicorn main:app --host 0.0.0.0 --port $PORT --workers 2
+exec uvicorn main:app --host 0.0.0.0 --port $PORT

@@ -5,7 +5,9 @@ services:
     dockerfilePath: ./Dockerfile
     envVars:
       - key: DATABASE_URL
-        value: postgresql://postgres:Wazvu3-ruwzej-wajsop@db.bquxudmlyldlgbjfbmrr.supabase.co:5432/postgres?sslmode=require
+        fromDatabase:
+          name: erp-db
+          property: connectionString
       - key: SECRET_KEY
         generateValue: true
       - key: AUTO_CREATE_TABLES
@@ -22,3 +24,9 @@ services:
         value: مدير النظام
     healthCheckPath: /
     autoDeploy: true
+
+databases:
+  - name: erp-db
+    plan: free
+    databaseName: erp
+    user: erp
