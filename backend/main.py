@@ -2,13 +2,15 @@
 
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
+from pathlib import Path
 
 from fastapi import FastAPI, Request, status
 from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse
+from fastapi.responses import HTMLResponse, JSONResponse
 from sqlalchemy import select
 from starlette.exceptions import HTTPException as StarletteHTTPException
+from starlette.staticfiles import StaticFiles
 
 from app.api.v1.router import api_router
 from app.core.config import get_settings
@@ -109,3 +111,16 @@ async def health() -> dict[str, object]:
         "data": {"status": "ok"},
         "message": "النظام يعمل بشكل سليم.",
     }
+
+
+# --- Serve the React SPA when a static/ directory exists (Docker / Render) ---
+_static = Path(__file__).resolve().parent / "static"
+if _static.is_dir():
+    # Serve JS, CSS, images etc. under /assets
+    app.mount("/assets", StaticFiles(directory=str(_static / "assets")), name="static-assets")
+
+    @app.get("/{full_path:path}", include_in_schema=False)
+    async def _serve_spa(full_path: str) -> HTMLResponse:
+        """Catch-all: serve index.html for all non-API routes (SPA client-side routing)."""
+        index = _static / "index.html"
+        return HTMLResponse(content=index.read_text(encoding="utf-8"))
