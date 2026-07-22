@@ -1,6 +1,6 @@
 services:
   - type: web
-    name: erp-backend
+    name: erp
     env: docker
     region: frankfurt
     plan: starter
@@ -17,22 +17,13 @@ services:
       - key: AUTO_CREATE_TABLES
         value: true
       - key: CORS_ORIGINS
-        value: https://erp-frontend.onrender.com
+        value: ""
       - key: FIRST_ADMIN_USERNAME
         value: admin
       - key: FIRST_ADMIN_PASSWORD
         value: Admin@1234
       - key: FIRST_ADMIN_FULL_NAME
         value: مدير النظام
-
-  - type: web
-    name: erp-frontend
-    env: static
-    buildCommand: cd frontend && npm install && npm run build
-    staticPublishPath: frontend/dist
-    envVars:
-      - key: VITE_API_URL
-        value: https://erp-backend.onrender.com
 
 databases:
   - name: erp-db

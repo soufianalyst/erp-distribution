@@ -3,6 +3,7 @@
 import logging
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
+from pathlib import Path
 
 from fastapi import FastAPI, Request, status
 from fastapi.encoders import jsonable_encoder
@@ -139,11 +140,27 @@ async def unhandled_exception_handler(_: Request, exc: Exception) -> JSONRespons
 app.include_router(api_router, prefix=settings.API_V1_PREFIX)
 
 
-@app.get("/", tags=["Health"])
-async def health() -> dict[str, object]:
-    """فحص جاهزية النظام."""
-    return {
-        "success": True,
-        "data": {"status": "ok"},
-        "message": "النظام يعمل بشكل سليم.",
-    }
+# Serve the built React frontend.
+frontend_dist = Path(__file__).resolve().parent / "frontend" / "dist"
+
+
+@app.get("/{full_path:path}")
+async def serve_frontend(full_path: str = "") -> JSONResponse:
+    """Serve the React SPA for non-API routes, or health check for root."""
+    if not full_path:
+        return JSONResponse(
+            status_code=200,
+            content={"success": True, "data": {"status": "ok"}, "message": "النظام يعمل بشكل سليم."},
+        )
+    if full_path.startswith("api/"):
+        return JSONResponse(status_code=404, content={"success": False, "data": None, "message": "غير موجود"})
+    if frontend_dist.is_dir():
+        file_path = frontend_dist / full_path
+        if file_path.is_file():
+            from fastapi.responses import FileResponse
+            return FileResponse(str(file_path))
+        index = frontend_dist / "index.html"
+        if index.exists():
+            from fastapi.responses import HTMLResponse
+            return HTMLResponse(content=index.read_text(encoding="utf-8"), status_code=200)
+    return JSONResponse(status_code=404, content={"success": False, "data": None, "message": "غير موجود"})
