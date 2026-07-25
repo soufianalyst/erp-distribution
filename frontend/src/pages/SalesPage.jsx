@@ -756,9 +756,11 @@ export default function SalesPage() {
   }
 
   const canViewCommissions = can("sales.commission_view");
+  const canQuote = can("sales.quotations");
   const TABS = [
     { id: "list", label: "القائمة" },
     ...(canSell ? [{ id: "new", label: "+ فاتورة جديدة" }] : []),
+    { id: "quotations", label: "عروض الأسعار" },
     { id: "returns", label: "المرتجعات" },
     ...(canViewCommissions ? [{ id: "commissions", label: "عمولات المناديب" }] : []),
   ];
@@ -913,6 +915,17 @@ export default function SalesPage() {
             />
           )}
         </Card>
+      )}
+
+      {tab === "quotations" && (
+        <QuotationsTab
+          customers={customers.data}
+          products={products.data}
+          taxRates={taxRates.data || []}
+          canQuote={canQuote}
+          isAdmin={can("sales.credit_override")}
+          onInvoiceCreated={() => invoices.reload()}
+        />
       )}
 
       {tab === "commissions" && canViewCommissions && <CommissionsTab />}
