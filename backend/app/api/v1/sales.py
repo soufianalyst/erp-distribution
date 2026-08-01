@@ -8,6 +8,9 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.api.deps import require_permissions
 from app.api.schemas.common import APIResponse
 from app.api.schemas.sales import (
+    FieldSyncIn,
+    FieldSyncOut,
+    FieldVanOut,
     CommissionReportOut,
     CustomerCreate,
     CustomerOut,
@@ -25,6 +28,7 @@ from app.api.schemas.sales import (
 )
 from app.db.session import get_db
 from app.domain.models.user import User
+from app.services.sales.field_sync_service import FieldSyncService
 from app.services.sales.sales_service import SalesService
 
 router = APIRouter(prefix="/sales", tags=["Sales"])
@@ -321,3 +325,37 @@ async def commission_report(
     """تقرير عمولات المناديب: صافي المبيعات (بعد خصم المرتجعات) × نسبة العمولة."""
     report = await SalesService(db).commission_report(date_from, date_to, salesman_id)
     return APIResponse(data=report)
+
+
+# --- Field app (offline salesman round) ---
+@router.get("/field/van", response_model=APIResponse[FieldVanOut])
+async def get_my_van(
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(require_permissions("sales.field_sync")),
+) -> APIResponse[FieldVanOut]:
+    """المركبة المسندة للمندوب وما تحمله حالياً — يخزّنها التطبيق للعمل دون اتصال."""
+    van = await FieldSyncService(db).van_snapshot(current_user)
+    return APIResponse(data=van)
+
+
+@router.post("/field/sync", response_model=APIResponse[FieldSyncOut])
+async def sync_field_round(
+    body: FieldSyncIn,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(require_permissions("sales.field_sync")),
+) -> APIResponse[FieldSyncOut]:
+    """رفع جولة المندوب: العملاء الجدد ثم المبيعات والطلبات.
+
+    آمنة للإعادة: كل عنصر يحمل معرّفاً من التطبيق، فما سبق حفظه يُبلَّغ عنه ولا
+    يُكرر. فشل مستند واحد لا يمنع بقية الجولة من الحفظ.
+    """
+    result = await FieldSyncService(db).sync(body, current_user)
+    return APIResponse(
+        data=result,
+        message=(
+            f"تمت مزامنة {result.created_count} عنصراً"
+            + (f"، و{result.duplicate_count} مسجّل مسبقاً" if result.duplicate_count else "")
+            + (f"، وتعذّر حفظ {result.failed_count}" if result.failed_count else "")
+            + "."
+        ),
+    )

@@ -288,3 +288,76 @@ class CommissionReportOut(BaseModel):
     date_to: date | None
     rows: list[CommissionRow]
     total_commission: Decimal
+
+
+# --- Field sync (offline salesman app) ---
+class FieldCustomerIn(BaseModel):
+    """A shop registered on the round, before the server has ever seen it."""
+
+    client_uuid: str = Field(min_length=8, max_length=36)
+    name: str = Field(min_length=2, max_length=150)
+    phone: str | None = Field(default=None, max_length=30)
+    address: str | None = Field(default=None, max_length=200)
+    price_tier: PriceTier = PriceTier.WHOLESALE
+
+
+class FieldDocumentIn(BaseModel):
+    """One visit's outcome: goods sold off the van, or an order to fulfil later."""
+
+    client_uuid: str = Field(min_length=8, max_length=36)
+    # Exactly one of these identifies the buyer: an existing customer, or one
+    # created in this same batch and not yet holding a server id.
+    customer_id: int | None = None
+    customer_uuid: str | None = None
+    kind: Literal["van_sale", "order"]
+    payment_method: SalesPaymentMethod = SalesPaymentMethod.CASH
+    tax_rate_ids: list[int] = Field(default_factory=list)
+    notes: str | None = Field(default=None, max_length=300)
+    lines: list[SalesLineIn] = Field(min_length=1)
+    # Mirrors the counter's rounding-down of the collectable amount.
+    collectable_amount: Decimal | None = Field(default=None, ge=0)
+
+
+class FieldSyncIn(BaseModel):
+    """A whole round uploaded at once. Safe to resend: every item is identified
+    by its client_uuid, so anything already stored is reported, not repeated."""
+
+    customers: list[FieldCustomerIn] = Field(default_factory=list)
+    documents: list[FieldDocumentIn] = Field(default_factory=list)
+
+
+class FieldSyncItemOut(BaseModel):
+    client_uuid: str
+    kind: Literal["customer", "van_sale", "order"]
+    # created = stored now; duplicate = already stored by an earlier attempt;
+    # failed = rejected, with the reason, and the field app keeps it queued.
+    status: Literal["created", "duplicate", "failed"]
+    server_id: int | None = None
+    # The real invoice number, replacing the provisional field reference.
+    message: str | None = None
+
+
+class FieldSyncOut(BaseModel):
+    created_count: int
+    duplicate_count: int
+    failed_count: int
+    results: list[FieldSyncItemOut]
+
+
+class FieldVanStockLineOut(BaseModel):
+    product_id: int
+    sku: str
+    name: str
+    base_unit_name: str
+    quantity: Decimal
+
+
+class FieldVanOut(BaseModel):
+    """The salesman's own vehicle and what it is currently carrying.
+
+    The field app caches this so it can check quantities while offline.
+    """
+
+    warehouse_id: int
+    warehouse_name: str
+    lines: list[FieldVanStockLineOut]

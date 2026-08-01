@@ -195,12 +195,16 @@ class SalesService:
         data: SalesInvoiceCreate,
         customer: Customer,
         price_overrides: dict[int, Decimal] | None = None,
+        source_warehouse_id: int | None = None,
     ) -> tuple[Decimal, Decimal]:
         """FEFO-allocate the requested lines onto the invoice; returns (subtotal, cost_total).
 
         One input line becomes one invoice line per allocated batch. `price_overrides`
         (keyed by product_id) is for internal use only — e.g. honoring a quotation's
         frozen price on conversion — and is never accepted from the public API.
+
+        `source_warehouse_id` overrides where the goods come from: a van sale draws
+        on the salesman's own vehicle rather than the product's home warehouse.
         """
         subtotal = Decimal("0")
         cost_total = Decimal("0")
@@ -223,7 +227,7 @@ class SalesService:
             )
 
             allocations = await self.stock.fefo_allocate(
-                product.id, product.warehouse_id, base_quantity
+                product.id, source_warehouse_id or product.warehouse_id, base_quantity
             )
             for batch, take in allocations:
                 batch.quantity -= take
@@ -382,8 +386,15 @@ class SalesService:
         data: SalesInvoiceCreate,
         user: User,
         price_overrides: dict[int, Decimal] | None = None,
+        source_warehouse_id: int | None = None,
+        client_uuid: str | None = None,
     ) -> SalesInvoice:
-        """Post a sales invoice: FEFO stock deduction, credit-limit check, one transaction."""
+        """Post a sales invoice: FEFO stock deduction, credit-limit check, one transaction.
+
+        `source_warehouse_id` sells from a specific warehouse (a salesman's van);
+        `client_uuid` carries the field app's own identifier so replaying a sync
+        cannot create the invoice twice.
+        """
         customer = await self.get_customer(data.customer_id)
         if not customer.is_active:
             raise AppException(400, "هذا العميل موقوف ولا يمكن البيع له.")
@@ -402,10 +413,11 @@ class SalesService:
             total=Decimal("0"),
             notes=data.notes,
             created_by=user.id,
+            client_uuid=client_uuid,
         )
 
         subtotal, cost_total = await self._build_lines(
-            invoice, data, customer, price_overrides
+            invoice, data, customer, price_overrides, source_warehouse_id
         )
         invoice.warehouse_id = self._resolve_invoice_warehouse(invoice)
 
@@ -489,9 +501,13 @@ class SalesService:
         return total_tax
 
     async def create_quotation(
-        self, data: SalesQuotationCreate, user: User
+        self, data: SalesQuotationCreate, user: User, client_uuid: str | None = None
     ) -> SalesQuotation:
-        """Price a quote for a customer — no stock deduction or accounting effect."""
+        """Price a quote for a customer — no stock deduction or accounting effect.
+
+        `client_uuid` is set when the quote is an order captured offline in the
+        field, so replaying the sync returns the existing one.
+        """
         customer = await self.get_customer(data.customer_id)
         if not customer.is_active:
             raise AppException(400, "هذا العميل موقوف ولا يمكن إنشاء عرض سعر له.")
@@ -509,6 +525,7 @@ class SalesService:
             total=Decimal("0"),
             notes=data.notes,
             created_by=user.id,
+            client_uuid=client_uuid,
         )
         subtotal = await self._build_quotation_lines(quotation, data, customer)
         quotation.subtotal = subtotal
