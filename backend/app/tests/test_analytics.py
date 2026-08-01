@@ -364,3 +364,95 @@ class TestDeliveryAndRepAnalytics:
         assert as_decimal(row["revenue"]) == invoice_total
         assert row["invoice_count"] == 1
         assert row["customer_count"] == 1
+
+
+class TestDiscountReport:
+    async def _sell_with_discount(
+        self,
+        client: AsyncClient,
+        admin: dict[str, str],
+        collectable: str | None,
+        quantity: str = "10",
+        salesman_id: int | None = None,
+        customer_name: str = "سوبرماركت الخصم",
+    ) -> dict:
+        warehouse_id = await create_warehouse(client, admin, f"مخزن {customer_name}")
+        product = await create_product(
+            client, admin, sku=f"SKU-{customer_name}", warehouse_id=warehouse_id
+        )
+        await receive(client, admin, product["id"], warehouse_id, "B-D", 180, "100")
+        customer_id = await create_customer(
+            client, admin, name=customer_name, credit_limit="99999", salesman_id=salesman_id
+        )
+        body = {
+            "customer_id": customer_id,
+            "payment_method": "credit",
+            "tax_rate_ids": [],
+            "lines": [{"product_id": product["id"], "quantity": quantity}],
+        }
+        if collectable is not None:
+            body["collectable_amount"] = collectable
+        response = await client.post("/api/v1/sales/invoices", headers=admin, json=body)
+        assert response.status_code == 201, response.text
+        return response.json()["data"]
+
+    async def test_report_lists_only_discounted_invoices(
+        self, client: AsyncClient
+    ) -> None:
+        admin = await login(client, "admin", TEST_ADMIN_PASSWORD)
+        # 10 x 10.50 = 105.00, no tax. Collect 100 -> 5.00 discount.
+        discounted = await self._sell_with_discount(
+            client, admin, "100.00", customer_name="عميل مخصوم"
+        )
+        # A second invoice at full price must not appear in the report.
+        await self._sell_with_discount(client, admin, None, customer_name="عميل كامل")
+
+        report = (
+            await client.get("/api/v1/analytics/sales/discount-report", headers=admin)
+        ).json()["data"]
+
+        assert report["invoice_count"] == 1
+        assert as_decimal(report["total_discount"]) == Decimal("5.00")
+        assert as_decimal(report["total_gross"]) == Decimal("105.00")
+        assert as_decimal(report["total_net"]) == Decimal("100.00")
+        assert [i["invoice_id"] for i in report["invoices"]] == [discounted["id"]]
+        assert [c["customer_name"] for c in report["by_customer"]] == ["عميل مخصوم"]
+
+    async def test_report_groups_by_salesman(self, client: AsyncClient) -> None:
+        admin = await login(client, "admin", TEST_ADMIN_PASSWORD)
+        users = (await client.get("/api/v1/auth/users", headers=admin)).json()["data"]
+        rep_id = next(u["id"] for u in users if u["username"] == "salesman")
+
+        await self._sell_with_discount(
+            client, admin, "100.00", salesman_id=rep_id, customer_name="عميل المندوب"
+        )
+        report = (
+            await client.get("/api/v1/analytics/sales/discount-report", headers=admin)
+        ).json()["data"]
+
+        row = next(r for r in report["by_salesman"] if r["salesman_id"] == rep_id)
+        assert as_decimal(row["discount_amount"]) == Decimal("5.00")
+        assert row["invoice_count"] == 1
+
+    async def test_report_respects_the_period(self, client: AsyncClient) -> None:
+        admin = await login(client, "admin", TEST_ADMIN_PASSWORD)
+        await self._sell_with_discount(client, admin, "100.00", customer_name="عميل الفترة")
+
+        inside = (
+            await client.get(
+                "/api/v1/analytics/sales/discount-report",
+                headers=admin,
+                params={"date_from": str(date.today()), "date_to": str(date.today())},
+            )
+        ).json()["data"]
+        assert inside["invoice_count"] == 1
+
+        outside = (
+            await client.get(
+                "/api/v1/analytics/sales/discount-report",
+                headers=admin,
+                params={"date_from": "2020-01-01", "date_to": "2020-12-31"},
+            )
+        ).json()["data"]
+        assert outside["invoice_count"] == 0
+        assert as_decimal(outside["total_discount"]) == Decimal("0.00")

@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { Alert, Badge, Button, Card, Input, Modal, Table, money } from "../components/Ui";
+import { Alert, Badge, Button, CancelButton, Card, Input, Modal, Table, money } from "../components/Ui";
 import { useAuth } from "../context/AuthContext";
 import useFetch from "../hooks/useFetch";
 import api, { apiMessage } from "../services/api";
@@ -70,9 +70,7 @@ function TaxRateForm({ onSaved, onClose }) {
         الضريبة الافتراضية المقترحة عند إصدار فاتورة جديدة
       </label>
       <div className="flex justify-end gap-2">
-        <Button type="button" variant="secondary" onClick={onClose}>
-          إلغاء
-        </Button>
+        <CancelButton onClose={onClose} />
         <Button type="submit">حفظ الضريبة</Button>
       </div>
     </form>

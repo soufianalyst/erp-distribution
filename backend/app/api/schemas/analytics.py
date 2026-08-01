@@ -140,3 +140,69 @@ class DashboardSummaryOut(BaseModel):
     waste_risk_value_30d: Decimal
     avg_order_value: Decimal
     return_rate_pct_12m: Decimal
+
+
+# --- Damaged / written-off stock report ---
+class DamageByReasonOut(BaseModel):
+    reason: str
+    adjustment_count: int
+    total_quantity: Decimal
+    total_cost: Decimal
+
+
+class DamageByProductOut(BaseModel):
+    product_id: int
+    product_name: str
+    base_unit_name: str
+    total_quantity: Decimal
+    total_cost: Decimal
+
+
+class DamageReportOut(BaseModel):
+    date_from: date | None
+    date_to: date | None
+    # Cancelled write-offs are excluded — the goods went back to stock.
+    adjustment_count: int
+    total_quantity: Decimal
+    total_cost: Decimal
+    by_reason: list[DamageByReasonOut]
+    by_product: list[DamageByProductOut]
+
+
+# --- Invoice discounts granted ---
+class DiscountInvoiceOut(BaseModel):
+    invoice_id: int
+    invoice_date: date
+    customer_name: str
+    salesman_name: str | None
+    # Goods + tax before the discount was applied.
+    gross_amount: Decimal
+    discount_amount: Decimal
+    total: Decimal
+
+
+class DiscountByCustomerOut(BaseModel):
+    customer_id: int
+    customer_name: str
+    invoice_count: int
+    discount_amount: Decimal
+
+
+class DiscountBySalesmanOut(BaseModel):
+    salesman_id: int | None
+    salesman_name: str
+    invoice_count: int
+    discount_amount: Decimal
+
+
+class DiscountReportOut(BaseModel):
+    date_from: date | None
+    date_to: date | None
+    invoice_count: int
+    total_discount: Decimal
+    # Gross and net across the discounted invoices, so the share is visible.
+    total_gross: Decimal
+    total_net: Decimal
+    by_customer: list[DiscountByCustomerOut]
+    by_salesman: list[DiscountBySalesmanOut]
+    invoices: list[DiscountInvoiceOut]

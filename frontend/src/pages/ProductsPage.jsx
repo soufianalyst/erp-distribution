@@ -1,5 +1,6 @@
 import { useState } from "react";
 import {
+  CancelButton,
   Alert,
   Badge,
   Button,
@@ -164,9 +165,7 @@ function EditProductForm({ product, warehouses, onSaved, onClose }) {
         نشط — يظهر عند إنشاء فواتير أو حركات مخزون جديدة
       </label>
       <div className="flex justify-end gap-2">
-        <Button type="button" variant="secondary" onClick={onClose}>
-          إلغاء
-        </Button>
+        <CancelButton onClose={onClose} />
         <Button type="submit">حفظ التعديلات</Button>
       </div>
     </form>
@@ -412,9 +411,7 @@ export default function ProductsPage() {
           </div>
 
           <div className="flex justify-end gap-2">
-            <Button type="button" variant="secondary" onClick={() => setOpen(false)}>
-              إلغاء
-            </Button>
+            <CancelButton onClose={() => setOpen(false)} />
             <Button type="submit">حفظ الصنف</Button>
           </div>
         </form>

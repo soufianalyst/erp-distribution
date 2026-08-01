@@ -5,7 +5,7 @@ from decimal import Decimal
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from app.domain.models.inventory import StockAdjustmentReason
+from app.domain.models.inventory import AdjustmentStatus, StockAdjustmentReason
 
 
 # --- Warehouses ---
@@ -158,13 +158,23 @@ class StockAdjustmentCreate(BaseModel):
     lines: list[StockAdjustmentLineIn] = Field(min_length=1)
 
 
+class StockAdjustmentCancel(BaseModel):
+    # Why the write-off is being cancelled; kept on the record for audit.
+    cancel_reason: str | None = Field(default=None, max_length=300)
+
+
 class StockAdjustmentLineOut(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
     id: int
     product_id: int
+    product_name: str
+    base_unit_name: str
     batch_id: int
+    batch_number: str
+    expiry_date: date
     warehouse_id: int
+    warehouse_name: str
     quantity: Decimal
     unit_cost: Decimal
     line_total: Decimal
@@ -175,7 +185,14 @@ class StockAdjustmentOut(BaseModel):
 
     id: int
     reason: StockAdjustmentReason
+    status: AdjustmentStatus
+    total_quantity: Decimal
     total_cost: Decimal
+    # False when no line's batch carried a purchase cost — total_cost is then 0
+    # because the cost is unknown, not because the loss was worthless.
+    cost_known: bool
     notes: str | None
+    cancelled_at: datetime | None
+    cancel_reason: str | None
     created_at: datetime
     lines: list[StockAdjustmentLineOut]

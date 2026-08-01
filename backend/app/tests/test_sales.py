@@ -539,6 +539,172 @@ class TestCommissions:
         assert response.status_code == 403
 
 
+class TestInvoiceDiscount:
+    """Adjusting the collectable amount down records the shortfall as a discount."""
+
+    async def _sell_with_collectable(
+        self,
+        client: AsyncClient,
+        admin: dict[str, str],
+        collectable: str | None,
+        quantity: str = "10",
+        payment_method: str = "credit",
+        credit_limit: str = "5000",
+    ):
+        warehouse_id, product = await setup_stocked_catalog(client, admin)
+        customer_id = await create_customer(client, admin, credit_limit=credit_limit)
+        body = {
+            "customer_id": customer_id,
+            "payment_method": payment_method,
+            "tax_rate_ids": [DEFAULT_TAX_RATE_ID],
+            "lines": [{"product_id": product["id"], "quantity": quantity}],
+        }
+        if collectable is not None:
+            body["collectable_amount"] = collectable
+        response = await client.post("/api/v1/sales/invoices", headers=admin, json=body)
+        return response, customer_id
+
+    async def test_rounding_down_records_the_difference_as_discount(
+        self, client: AsyncClient
+    ) -> None:
+        admin = await login(client, "admin", TEST_ADMIN_PASSWORD)
+        # 10 x 10.50 = 105.00 + VAT 16.80 = 121.80 gross; collect 120.00.
+        response, _ = await self._sell_with_collectable(client, admin, "120.00")
+        assert response.status_code == 201, response.text
+        invoice = response.json()["data"]
+
+        assert as_decimal(invoice["subtotal"]) == Decimal("105.00")
+        assert as_decimal(invoice["vat_amount"]) == Decimal("16.80")
+        assert as_decimal(invoice["discount_amount"]) == Decimal("1.80")
+        assert as_decimal(invoice["total"]) == Decimal("120.00")
+
+    async def test_omitting_collectable_charges_full_amount(
+        self, client: AsyncClient
+    ) -> None:
+        admin = await login(client, "admin", TEST_ADMIN_PASSWORD)
+        response, _ = await self._sell_with_collectable(client, admin, None)
+        assert response.status_code == 201, response.text
+        invoice = response.json()["data"]
+        assert as_decimal(invoice["discount_amount"]) == Decimal("0.00")
+        assert as_decimal(invoice["total"]) == Decimal("121.80")
+
+    async def test_discount_does_not_change_the_taxable_base(
+        self, client: AsyncClient
+    ) -> None:
+        admin = await login(client, "admin", TEST_ADMIN_PASSWORD)
+        response, _ = await self._sell_with_collectable(client, admin, "100.00")
+        invoice = response.json()["data"]
+        # VAT is still 16% of the goods value, untouched by the discount.
+        assert as_decimal(invoice["vat_amount"]) == Decimal("16.80")
+        assert as_decimal(invoice["subtotal"]) == Decimal("105.00")
+        assert as_decimal(invoice["discount_amount"]) == Decimal("21.80")
+
+    async def test_collectable_above_total_rejected(self, client: AsyncClient) -> None:
+        admin = await login(client, "admin", TEST_ADMIN_PASSWORD)
+        response, _ = await self._sell_with_collectable(client, admin, "200.00")
+        assert response.status_code == 400
+        assert "أكبر من إجمالي الفاتورة" in response.json()["message"]
+
+    async def test_negative_collectable_rejected(self, client: AsyncClient) -> None:
+        admin = await login(client, "admin", TEST_ADMIN_PASSWORD)
+        response, _ = await self._sell_with_collectable(client, admin, "-5.00")
+        assert response.status_code == 422
+
+    async def test_journal_posts_discount_as_contra_revenue_and_balances(
+        self, client: AsyncClient
+    ) -> None:
+        admin = await login(client, "admin", TEST_ADMIN_PASSWORD)
+        response, _ = await self._sell_with_collectable(client, admin, "120.00")
+        invoice_id = response.json()["data"]["id"]
+
+        entries = await client.get(
+            "/api/v1/accounting/journal-entries",
+            headers=admin,
+            params={"reference_type": "sales_invoice", "reference_id": invoice_id},
+        )
+        assert entries.status_code == 200, entries.text
+        by_code: dict[str, tuple[Decimal, Decimal]] = {}
+        for entry in entries.json()["data"]:
+            for item in entry["items"]:
+                code = item["account"]["code"]
+                debit, credit = as_decimal(item["debit"]), as_decimal(item["credit"])
+                prev = by_code.get(code, (Decimal("0"), Decimal("0")))
+                by_code[code] = (prev[0] + debit, prev[1] + credit)
+
+        # Receivable is the net collectable; the 1.80 sits in contra-revenue 4030.
+        assert by_code["1020"][0] == Decimal("120.00")
+        assert by_code["4030"][0] == Decimal("1.80")
+        assert by_code["4010"][1] == Decimal("105.00")
+        assert by_code["2020"][1] == Decimal("16.80")
+
+        total_debit = sum(d for d, _ in by_code.values())
+        total_credit = sum(c for _, c in by_code.values())
+        assert total_debit == total_credit
+
+    async def test_customer_balance_uses_the_discounted_total(
+        self, client: AsyncClient
+    ) -> None:
+        admin = await login(client, "admin", TEST_ADMIN_PASSWORD)
+        response, customer_id = await self._sell_with_collectable(client, admin, "120.00")
+        assert response.status_code == 201
+
+        statement = (
+            await client.get(
+                f"/api/v1/sales/customers/{customer_id}/statement", headers=admin
+            )
+        ).json()["data"]
+        assert as_decimal(statement["balance"]) == Decimal("120.00")
+
+    async def test_cashier_collects_the_discounted_total(
+        self, client: AsyncClient
+    ) -> None:
+        admin = await login(client, "admin", TEST_ADMIN_PASSWORD)
+        response, _ = await self._sell_with_collectable(
+            client, admin, "120.00", payment_method="cash"
+        )
+        invoice_id = response.json()["data"]["id"]
+
+        collected = await client.post(
+            f"/api/v1/cashier/invoices/{invoice_id}/collect",
+            headers=admin,
+            json={"amount": "120.00"},
+        )
+        assert collected.status_code == 200, collected.text
+        assert collected.json()["data"]["payment_confirmed_at"] is not None
+
+    async def test_edit_can_change_the_discount(self, client: AsyncClient) -> None:
+        admin = await login(client, "admin", TEST_ADMIN_PASSWORD)
+        warehouse_id, product = await setup_stocked_catalog(client, admin)
+        customer_id = await create_customer(client, admin, credit_limit="5000")
+        created = await client.post(
+            "/api/v1/sales/invoices",
+            headers=admin,
+            json={
+                "customer_id": customer_id,
+                "payment_method": "credit",
+                "tax_rate_ids": [DEFAULT_TAX_RATE_ID],
+                "lines": [{"product_id": product["id"], "quantity": "10"}],
+                "collectable_amount": "120.00",
+            },
+        )
+        invoice_id = created.json()["data"]["id"]
+
+        edited = await client.put(
+            f"/api/v1/sales/invoices/{invoice_id}",
+            headers=admin,
+            json={
+                "customer_id": customer_id,
+                "payment_method": "credit",
+                "tax_rate_ids": [DEFAULT_TAX_RATE_ID],
+                "lines": [{"product_id": product["id"], "quantity": "10"}],
+                "collectable_amount": "121.80",
+            },
+        )
+        assert edited.status_code == 200, edited.text
+        assert as_decimal(edited.json()["data"]["discount_amount"]) == Decimal("0.00")
+        assert as_decimal(edited.json()["data"]["total"]) == Decimal("121.80")
+
+
 async def post_quotation(
     client: AsyncClient,
     headers: dict[str, str],

@@ -1,5 +1,83 @@
 // Shared UI primitives used across all pages (Arabic RTL, Tailwind).
-import { useEffect, useState } from "react";
+import { createContext, useCallback, useContext, useEffect, useRef, useState } from "react";
+
+const DISCARD_CONFIRM =
+  "لديك بيانات غير محفوظة في هذا النموذج. هل تريد الخروج وإلغاء ما أدخلته؟";
+
+// Serialise every form control inside a subtree, so a snapshot taken when the
+// form opens can be compared against its current state to detect edits. Using
+// the live DOM keeps this generic: no form has to report its own dirty state.
+const snapshotFields = (root) => {
+  if (!root) return null;
+  return JSON.stringify(
+    Array.from(root.querySelectorAll("input, select, textarea")).map((el) =>
+      el.type === "checkbox" || el.type === "radio" ? String(el.checked) : el.value
+    )
+  );
+};
+
+// Lets a Cancel button inside a modal reuse the modal's own guarded close, so
+// discarding a half-filled form always asks first, however it is dismissed.
+const ModalCloseContext = createContext(null);
+
+export const useModalClose = () => useContext(ModalCloseContext);
+
+/**
+ * Guards a form against losing unsaved input. Attach `ref` to the element
+ * wrapping the fields; while `active`, leaving is only allowed if nothing
+ * changed or the user confirms.
+ *
+ * Used by Modal for dialogs, and directly by the tab-hosted invoice forms,
+ * which are not dialogs and so were previously abandoned without warning.
+ */
+export function useUnsavedGuard(active = true) {
+  const ref = useRef(null);
+  // Baseline of the fields as they first appeared; null until captured.
+  const baselineRef = useRef(null);
+
+  useEffect(() => {
+    if (!active) {
+      baselineRef.current = null;
+      return undefined;
+    }
+    // Snapshot after the first paint so values pre-filled from an existing
+    // record count as clean rather than as user input.
+    const timer = setTimeout(() => {
+      baselineRef.current = snapshotFields(ref.current);
+    }, 0);
+    return () => clearTimeout(timer);
+  }, [active]);
+
+  const isDirty = useCallback(() => {
+    if (!active || baselineRef.current === null) return false;
+    return snapshotFields(ref.current) !== baselineRef.current;
+  }, [active]);
+
+  /** True when it is safe to leave — either nothing changed or the user agreed. */
+  const confirmLeave = useCallback(
+    () => !isDirty() || window.confirm(DISCARD_CONFIRM),
+    [isDirty]
+  );
+
+  /** Treat the current values as the new clean baseline (e.g. after saving). */
+  const markClean = useCallback(() => {
+    baselineRef.current = snapshotFields(ref.current);
+  }, []);
+
+  useEffect(() => {
+    if (!active) return undefined;
+    // Reloading or closing the tab mid-entry gets the browser's own warning.
+    const onBeforeUnload = (event) => {
+      if (!isDirty()) return;
+      event.preventDefault();
+      event.returnValue = "";
+    };
+    window.addEventListener("beforeunload", onBeforeUnload);
+    return () => window.removeEventListener("beforeunload", onBeforeUnload);
+  }, [active, isDirty]);
+
+  return { ref, isDirty, confirmLeave, markClean };
+}
 
 export const money = (value) =>
   Number(value ?? 0).toLocaleString("en-US", {
@@ -87,6 +165,10 @@ export function Stat({ label, value, hint, tone = "emerald" }) {
 //   col.sortValue(row) -> value used for sorting (default: row[col.key])
 //   col.sortable = false to disable sorting for one column (columns with no
 //   label — typically action/button columns — are non-sortable by default).
+//
+// keyField is a field name, or a function (row) -> key for rows whose identity
+// spans several columns (e.g. stock levels are unique per product+warehouse,
+// not per product alone).
 export function Table({
   columns,
   rows,
@@ -182,7 +264,7 @@ export function Table({
             <tbody>
               {pageRows.map((row, index) => (
                 <tr
-                  key={row[keyField] ?? index}
+                  key={(typeof keyField === "function" ? keyField(row) : row[keyField]) ?? index}
                   className="border-b border-slate-100 last:border-0 hover:bg-slate-50"
                 >
                   {columns.map((col) => (
@@ -232,26 +314,71 @@ export function Table({
   );
 }
 
-export function Modal({ open, title, onClose, children, wide = false }) {
+export function Modal({
+  open,
+  title,
+  onClose,
+  children,
+  wide = false,
+  // Confirmation dialogs hold no record to preserve, so they opt out of the
+  // unsaved-changes prompt that data-entry dialogs get.
+  guardUnsaved = true,
+}) {
+  const { ref: contentRef, confirmLeave } = useUnsavedGuard(open && guardUnsaved);
+
+  // Every dismissal route funnels through here: backdrop, ×, Escape, Cancel.
+  const requestClose = useCallback(() => {
+    if (!confirmLeave()) return;
+    onClose();
+  }, [confirmLeave, onClose]);
+
+  useEffect(() => {
+    if (!open) return undefined;
+    const onKeyDown = (event) => {
+      if (event.key === "Escape") {
+        event.preventDefault();
+        requestClose();
+      }
+    };
+    document.addEventListener("keydown", onKeyDown);
+    return () => document.removeEventListener("keydown", onKeyDown);
+  }, [open, requestClose]);
+
   if (!open) return null;
   return (
     <div
       className="fixed inset-0 z-50 flex items-start justify-center overflow-y-auto bg-slate-900/50 p-4 pt-14"
-      onClick={onClose}
+      onClick={requestClose}
     >
       <div
+        ref={contentRef}
         className={`w-full ${wide ? "max-w-4xl" : "max-w-lg"} rounded-xl bg-white p-6 shadow-xl`}
         onClick={(event) => event.stopPropagation()}
       >
         <header className="mb-4 flex items-center justify-between">
           <h3 className="text-lg font-extrabold">{title}</h3>
-          <button onClick={onClose} className="text-2xl leading-none text-slate-400 hover:text-slate-600">
+          <button onClick={requestClose} className="text-2xl leading-none text-slate-400 hover:text-slate-600">
             ×
           </button>
         </header>
-        {children}
+        <ModalCloseContext.Provider value={requestClose}>{children}</ModalCloseContext.Provider>
       </div>
     </div>
+  );
+}
+
+/** Cancel button for a form inside a Modal — confirms first if data was entered. */
+export function CancelButton({ onClose, children = "إلغاء", ...props }) {
+  const guardedClose = useModalClose();
+  return (
+    <Button
+      type="button"
+      variant="secondary"
+      onClick={guardedClose ?? onClose}
+      {...props}
+    >
+      {children}
+    </Button>
   );
 }
 

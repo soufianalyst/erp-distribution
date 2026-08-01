@@ -49,6 +49,7 @@ from app.services.accounting.accounting_service import (
     COGS,
     DAMAGE_LOSS,
     INVENTORY,
+    SALES_DISCOUNT,
     SALES_RETURNS,
     SALES_REVENUE,
     VAT,
@@ -291,6 +292,27 @@ class SalesService:
             total_tax += amount
         return total_tax
 
+    @staticmethod
+    def _resolve_discount(
+        gross: Decimal, collectable_amount: Decimal | None
+    ) -> Decimal:
+        """Turn a requested collectable amount into a discount off the gross.
+
+        `gross` is goods + tax. Charging less than that records the shortfall as
+        a discount; charging more is rejected, since an invoice cannot collect
+        more than it bills.
+        """
+        if collectable_amount is None:
+            return Decimal("0")
+        collectable = collectable_amount.quantize(TWO_PLACES, rounding=ROUND_HALF_UP)
+        if collectable > gross:
+            raise AppException(
+                400,
+                "المبلغ المطلوب تحصيله أكبر من إجمالي الفاتورة "
+                f"({gross}); لا يمكن تحصيل أكثر من قيمة الفاتورة.",
+            )
+        return (gross - collectable).quantize(TWO_PLACES, rounding=ROUND_HALF_UP)
+
     def _check_credit_limit(
         self,
         customer: Customer,
@@ -325,14 +347,19 @@ class SalesService:
         method — cash/card invoices only actually collect the money once the cashier
         confirms it (see CashierService), which posts its own reclassifying entry.
         """
+        # A discount is a debit to contra-revenue, so the entry still balances:
+        # receivable + discount == goods + tax.
+        items = [
+            (ACCOUNTS_RECEIVABLE, invoice.total, Decimal("0")),
+            (SALES_REVENUE, Decimal("0"), subtotal),
+            (VAT, Decimal("0"), invoice.vat_amount),
+        ]
+        if invoice.discount_amount > 0:
+            items.insert(1, (SALES_DISCOUNT, invoice.discount_amount, Decimal("0")))
         await self.accounting.add_entry_no_commit(
             entry_date=invoice.invoice_date,
             description=f"فاتورة مبيعات رقم {invoice.id} للعميل ({customer.name})",
-            items=[
-                (ACCOUNTS_RECEIVABLE, invoice.total, Decimal("0")),
-                (SALES_REVENUE, Decimal("0"), subtotal),
-                (VAT, Decimal("0"), invoice.vat_amount),
-            ],
+            items=items,
             reference_type="sales_invoice",
             reference_id=invoice.id,
             created_by=user.id,
@@ -371,6 +398,7 @@ class SalesService:
             fulfillment=data.fulfillment,
             subtotal=Decimal("0"),
             vat_amount=Decimal("0"),
+            discount_amount=Decimal("0"),
             total=Decimal("0"),
             notes=data.notes,
             created_by=user.id,
@@ -383,7 +411,11 @@ class SalesService:
 
         invoice.subtotal = subtotal
         invoice.vat_amount = self._apply_taxes(invoice, tax_rates, subtotal)
-        invoice.total = subtotal + invoice.vat_amount
+        gross = subtotal + invoice.vat_amount
+        invoice.discount_amount = self._resolve_discount(
+            gross, data.collectable_amount
+        )
+        invoice.total = gross - invoice.discount_amount
 
         if data.payment_method == SalesPaymentMethod.CREDIT:
             balance = await self.customer_balance(customer.id)
@@ -619,13 +651,16 @@ class SalesService:
         invoice.notes = data.notes
         invoice.subtotal = Decimal("0")
         invoice.vat_amount = Decimal("0")
+        invoice.discount_amount = Decimal("0")
         invoice.total = Decimal("0")
         invoice.paid_amount = Decimal("0")
 
         subtotal, cost_total = await self._build_lines(invoice, data, customer)
         invoice.warehouse_id = self._resolve_invoice_warehouse(invoice)
         vat_amount = self._apply_taxes(invoice, tax_rates, subtotal)
-        total = subtotal + vat_amount
+        gross = subtotal + vat_amount
+        discount = self._resolve_discount(gross, data.collectable_amount)
+        total = gross - discount
 
         if data.payment_method == SalesPaymentMethod.CREDIT:
             # The zeroed totals were flushed, so the balance excludes this invoice.
@@ -634,6 +669,7 @@ class SalesService:
 
         invoice.subtotal = subtotal
         invoice.vat_amount = vat_amount
+        invoice.discount_amount = discount
         invoice.total = total
         # Cashier gate resets on edit too: a changed total/method needs re-collecting
         # (or re-confirming) rather than trusting a stale prior confirmation.

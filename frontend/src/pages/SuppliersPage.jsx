@@ -1,5 +1,6 @@
 import { useState } from "react";
 import {
+  CancelButton,
   Alert,
   Badge,
   Button,
@@ -137,9 +138,7 @@ export default function SuppliersPage() {
           </div>
           <Input label="العنوان" value={form.address} onChange={set("address")} />
           <div className="flex justify-end gap-2">
-            <Button type="button" variant="secondary" onClick={() => setOpen(false)}>
-              إلغاء
-            </Button>
+            <CancelButton onClose={() => setOpen(false)} />
             <Button type="submit">حفظ</Button>
           </div>
         </form>

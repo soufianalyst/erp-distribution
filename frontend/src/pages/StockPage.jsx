@@ -1,4 +1,5 @@
 import { useState } from "react";
+import { useNavigate } from "react-router-dom";
 import {
   Alert,
   Badge,
@@ -34,72 +35,6 @@ function UnitOptions({ product }) {
         </option>
       ))}
     </>
-  );
-}
-
-function ReceiveForm({ products, warehouses, onDone }) {
-  const [form, setForm] = useState({
-    product_id: "",
-    warehouse_id: "",
-    batch_number: "",
-    expiry_date: "",
-    quantity: "",
-    unit_id: "",
-  });
-  const [error, setError] = useState(null);
-  const [success, setSuccess] = useState(null);
-  const set = (key) => (e) => setForm({ ...form, [key]: e.target.value });
-  const product = products.find((p) => String(p.id) === form.product_id);
-
-  const submit = async (event) => {
-    event.preventDefault();
-    setError(null);
-    setSuccess(null);
-    try {
-      const { data } = await api.post("/inventory/stock/receive", {
-        ...form,
-        unit_id: form.unit_id || null,
-      });
-      setSuccess(data.message);
-      setForm({ ...form, batch_number: "", expiry_date: "", quantity: "" });
-      onDone();
-    } catch (err) {
-      setError(apiMessage(err));
-    }
-  };
-
-  return (
-    <form onSubmit={submit} className="space-y-4">
-      <Alert>{error}</Alert>
-      <Alert tone="success">{success}</Alert>
-      <div className="grid grid-cols-1 gap-4 sm:grid-cols-3">
-        <Select label="الصنف" value={form.product_id} onChange={set("product_id")} required>
-          <option value="">— اختر الصنف —</option>
-          {products
-            .filter((p) => p.is_active)
-            .map((p) => (
-              <option key={p.id} value={p.id}>
-                {p.sku} — {p.name}
-              </option>
-            ))}
-        </Select>
-        <Select label="المستودع" value={form.warehouse_id} onChange={set("warehouse_id")} required>
-          <option value="">— اختر المستودع —</option>
-          {warehouses.map((w) => (
-            <option key={w.id} value={w.id}>
-              {w.name}
-            </option>
-          ))}
-        </Select>
-        <Input label="رقم التشغيلة (إلزامي)" value={form.batch_number} onChange={set("batch_number")} required />
-        <Input label="تاريخ الانتهاء (إلزامي)" type="date" value={form.expiry_date} onChange={set("expiry_date")} required />
-        <Input label="الكمية" type="number" step="any" min="0.001" value={form.quantity} onChange={set("quantity")} required />
-        <Select label="وحدة القياس" value={form.unit_id} onChange={set("unit_id")}>
-          <UnitOptions product={product} />
-        </Select>
-      </div>
-      <Button type="submit">استلام البضاعة</Button>
-    </form>
   );
 }
 
@@ -178,7 +113,7 @@ function TransferForm({ products, warehouses, onDone }) {
   );
 }
 
-function AdjustmentForm({ products, onDone }) {
+function AdjustmentForm({ products, warehouses, onDone }) {
   const [reason, setReason] = useState("damaged");
   const [notes, setNotes] = useState("");
   const [productId, setProductId] = useState("");
@@ -257,7 +192,12 @@ function AdjustmentForm({ products, onDone }) {
       {batches.map((b) => (
         <div key={b.id} className="grid grid-cols-2 items-end gap-4">
           <div className="text-sm font-bold">
-            {b.batch_number}
+            {b.batch_number}{" "}
+            {/* A batch is warehouse-specific, and the same product may sit in
+                several warehouses — show which one is being written off. */}
+            <Badge tone="blue">
+              {warehouses.find((w) => w.id === b.warehouse_id)?.name ?? "مستودع غير معروف"}
+            </Badge>
             <div className="text-xs font-normal text-slate-500">
               المتوفر: {qty(b.quantity)} — الانتهاء: {b.expiry_date}
             </div>
@@ -282,9 +222,10 @@ function AdjustmentForm({ products, onDone }) {
 
 export default function StockPage() {
   const { can } = useAuth();
-  const canReceive = can("stock.receive");
   const canTransfer = can("stock.transfer");
   const canAdjust = can("stock.adjust");
+  const canCancelAdjust = can("stock.adjust_cancel");
+  const navigate = useNavigate();
   const [tab, setTab] = useState("levels");
   const [notice, setNotice] = useState(null);
 
@@ -299,9 +240,27 @@ export default function StockPage() {
     nearExpiry.reload();
   };
 
+  const cancelAdjustment = async (adjustment) => {
+    const reason = window.prompt(
+      `إلغاء سجل الإتلاف رقم ${adjustment.id}؟ ستعود الكمية للمخزون.\nسبب الإلغاء (اختياري):`
+    );
+    // prompt returns null on Cancel, "" when confirmed with no text typed.
+    if (reason === null) return;
+    try {
+      const { data } = await api.post(
+        `/inventory/stock/adjustments/${adjustment.id}/cancel`,
+        { cancel_reason: reason || null }
+      );
+      setNotice(data.message);
+      reloadAll();
+      adjustments.reload();
+    } catch (err) {
+      alert(apiMessage(err));
+    }
+  };
+
   const TABS = [
     { id: "levels", label: "الأرصدة" },
-    ...(canReceive ? [{ id: "receive", label: "استلام بضاعة" }] : []),
     ...(canTransfer ? [{ id: "transfer", label: "تحويل بين المستودعات" }] : []),
     ...(canAdjust ? [{ id: "adjust", label: "تعديل/إتلاف المخزون" }] : []),
     { id: "expiry", label: "قرب الانتهاء" },
@@ -345,15 +304,9 @@ export default function StockPage() {
                 },
               ]}
               rows={levels.data}
-              keyField="product_id"
+              keyField={(r) => `${r.product_id}-${r.warehouse_id}`}
             />
           )}
-        </Card>
-      )}
-
-      {tab === "receive" && canReceive && (
-        <Card title="استلام بضاعة — لا استلام دون رقم تشغيلة وتاريخ انتهاء">
-          <ReceiveForm products={products.data} warehouses={warehouses.data} onDone={reloadAll} />
         </Card>
       )}
 
@@ -368,6 +321,7 @@ export default function StockPage() {
           <Card title="تعديل/إتلاف المخزون — يخرج نهائياً من المخزون خارج أي عملية بيع">
             <AdjustmentForm
               products={products.data}
+              warehouses={warehouses.data}
               onDone={(message) => {
                 setNotice(message);
                 reloadAll();
@@ -393,9 +347,62 @@ export default function StockPage() {
                     label: "عدد الأصناف",
                     render: (r) => r.lines.length,
                   },
-                  { key: "total_cost", label: "قيمة الخسارة", render: (r) => money(r.total_cost) },
+                  {
+                    key: "total_quantity",
+                    label: "الكمية المُتلَفة",
+                    render: (r) => (
+                      <span>
+                        {qty(r.total_quantity)}
+                        <div className="text-xs font-normal text-slate-500">
+                          {r.lines
+                            .map((l) => `${l.product_name} (${qty(l.quantity)} ${l.base_unit_name})`)
+                            .join("، ")}
+                        </div>
+                      </span>
+                    ),
+                  },
+                  {
+                    key: "total_cost",
+                    label: "قيمة الخسارة",
+                    // A 0.00 with no known batch cost means "unknown", not "worthless".
+                    render: (r) =>
+                      r.cost_known ? (
+                        money(r.total_cost)
+                      ) : (
+                        <span className="text-xs text-amber-700">لا توجد تكلفة مسجلة</span>
+                      ),
+                  },
+                  {
+                    key: "status",
+                    label: "الحالة",
+                    render: (r) =>
+                      r.status === "cancelled" ? (
+                        <Badge tone="slate">ملغى</Badge>
+                      ) : (
+                        <Badge tone="green">مُثبّت</Badge>
+                      ),
+                  },
                   { key: "notes", label: "ملاحظات", render: (r) => r.notes || "—" },
                   { key: "created_at", label: "التاريخ", render: (r) => r.created_at?.slice(0, 10) },
+                  {
+                    key: "actions",
+                    label: "",
+                    render: (r) => (
+                      <div className="flex gap-2">
+                        <Button
+                          variant="secondary"
+                          onClick={() => navigate(`/print/adjustment/${r.id}`)}
+                        >
+                          🖨️ طباعة
+                        </Button>
+                        {r.status !== "cancelled" && canCancelAdjust && (
+                          <Button variant="danger" onClick={() => cancelAdjustment(r)}>
+                            إلغاء
+                          </Button>
+                        )}
+                      </div>
+                    ),
+                  },
                 ]}
                 rows={adjustments.data}
                 empty="لا توجد تعديلات مخزون بعد."

@@ -19,7 +19,8 @@ import {
   YAxis,
   ZAxis,
 } from "recharts";
-import { Alert, Badge, Button, Card, Loading, Table, money, qty } from "../components/Ui";
+import { useNavigate } from "react-router-dom";
+import { Alert, Badge, Button, Card, Input, Loading, Table, money, qty } from "../components/Ui";
 import useFetch from "../hooks/useFetch";
 import api from "../services/api";
 
@@ -108,6 +109,7 @@ const TABS = [
   { id: "customers", label: "🧑‍💼 تحليل العملاء (RFM)" },
   { id: "products", label: "📦 تحليل الأصناف (RFM)" },
   { id: "inventory", label: "🗑️ المخزون والهدر" },
+  { id: "discounts", label: "🏷️ الخصومات" },
   { id: "credit", label: "💳 الذمم والمخاطر الائتمانية" },
   { id: "delivery", label: "🚛 التوزيع والاستلام" },
   { id: "reps", label: "🏅 أداء المناديب" },
@@ -177,6 +179,8 @@ export default function AnalyticsPage() {
           loading={expiryRisk.loading || turnover.loading}
         />
       )}
+
+      {tab === "discounts" && <DiscountReportCard />}
 
       {tab === "credit" && (
         <CreditTab
@@ -543,10 +547,237 @@ function ProductRfmTab({ rows, loading }) {
   );
 }
 
+const DAMAGE_REASON_LABELS = {
+  expired: "منتهي الصلاحية",
+  damaged: "تالف",
+  spoiled: "فاسد",
+  count_shortfall: "نقص عند الجرد",
+  other: "أخرى",
+};
+
+function DiscountReportCard() {
+  const navigate = useNavigate();
+  const [dateFrom, setDateFrom] = useState("");
+  const [dateTo, setDateTo] = useState("");
+  const report = useFetch(
+    () =>
+      api.get("/analytics/sales/discount-report", {
+        params: { date_from: dateFrom || undefined, date_to: dateTo || undefined },
+      }),
+    [dateFrom, dateTo]
+  );
+
+  const printReport = () => {
+    const params = new URLSearchParams();
+    if (dateFrom) params.set("from", dateFrom);
+    if (dateTo) params.set("to", dateTo);
+    navigate(`/print/discount-report?${params.toString()}`);
+  };
+
+  const data = report.data;
+  return (
+    <Card title="🏷️ تقرير الخصومات الممنوحة — لفترة محددة">
+      <div className="mb-4 flex flex-wrap items-end gap-3">
+        <Input label="من تاريخ" type="date" value={dateFrom} onChange={(e) => setDateFrom(e.target.value)} />
+        <Input label="إلى تاريخ" type="date" value={dateTo} onChange={(e) => setDateTo(e.target.value)} />
+        <Button variant="secondary" onClick={printReport}>
+          🖨️ طباعة التقرير
+        </Button>
+      </div>
+      <Alert>{report.error}</Alert>
+      {report.loading ? (
+        <Loading />
+      ) : (
+        <div className="space-y-5">
+          <div className="grid grid-cols-1 gap-3 sm:grid-cols-4">
+            <div className="rounded-lg bg-slate-50 p-3 text-sm">
+              <div className="font-extrabold text-slate-500">عدد الفواتير المخصومة</div>
+              <div className="text-lg font-extrabold">{data?.invoice_count ?? 0}</div>
+            </div>
+            <div className="rounded-lg bg-slate-50 p-3 text-sm">
+              <div className="font-extrabold text-slate-500">إجمالي الخصومات</div>
+              <div className="text-lg font-extrabold text-amber-700">{money(data?.total_discount)}</div>
+            </div>
+            <div className="rounded-lg bg-slate-50 p-3 text-sm">
+              <div className="font-extrabold text-slate-500">قبل الخصم</div>
+              <div className="text-lg font-extrabold">{money(data?.total_gross)}</div>
+            </div>
+            <div className="rounded-lg bg-slate-50 p-3 text-sm">
+              <div className="font-extrabold text-slate-500">صافي المحصّل</div>
+              <div className="text-lg font-extrabold text-emerald-700">{money(data?.total_net)}</div>
+            </div>
+          </div>
+
+          <div>
+            <h3 className="mb-2 text-sm font-extrabold text-slate-600">حسب العميل</h3>
+            <Table
+              columns={[
+                { key: "customer_name", label: "العميل" },
+                { key: "invoice_count", label: "عدد الفواتير" },
+                {
+                  key: "discount_amount",
+                  label: "إجمالي الخصم",
+                  render: (r) => <b className="text-amber-700">{money(r.discount_amount)}</b>,
+                },
+              ]}
+              rows={data?.by_customer}
+              keyField="customer_id"
+              empty="لا توجد خصومات في هذه الفترة."
+            />
+          </div>
+
+          <div>
+            <h3 className="mb-2 text-sm font-extrabold text-slate-600">حسب المندوب</h3>
+            <Table
+              columns={[
+                { key: "salesman_name", label: "المندوب" },
+                { key: "invoice_count", label: "عدد الفواتير" },
+                {
+                  key: "discount_amount",
+                  label: "إجمالي الخصم",
+                  render: (r) => <b className="text-amber-700">{money(r.discount_amount)}</b>,
+                },
+              ]}
+              rows={data?.by_salesman}
+              keyField={(r) => String(r.salesman_id)}
+              empty="لا توجد خصومات في هذه الفترة."
+            />
+          </div>
+
+          <div>
+            <h3 className="mb-2 text-sm font-extrabold text-slate-600">الفواتير المخصومة</h3>
+            <Table
+              columns={[
+                { key: "invoice_id", label: "#", render: (r) => `#${r.invoice_id}` },
+                { key: "invoice_date", label: "التاريخ" },
+                { key: "customer_name", label: "العميل" },
+                { key: "salesman_name", label: "المندوب", render: (r) => r.salesman_name ?? "—" },
+                { key: "gross_amount", label: "قبل الخصم", render: (r) => money(r.gross_amount) },
+                {
+                  key: "discount_amount",
+                  label: "الخصم",
+                  render: (r) => <b className="text-amber-700">{money(r.discount_amount)}</b>,
+                },
+                { key: "total", label: "المستحق", render: (r) => <b>{money(r.total)}</b> },
+              ]}
+              rows={data?.invoices}
+              keyField="invoice_id"
+              empty="لا توجد خصومات في هذه الفترة."
+            />
+          </div>
+        </div>
+      )}
+    </Card>
+  );
+}
+
+function DamageReportCard() {
+  const navigate = useNavigate();
+  const [dateFrom, setDateFrom] = useState("");
+  const [dateTo, setDateTo] = useState("");
+  const report = useFetch(
+    () =>
+      api.get("/analytics/inventory/damage-report", {
+        params: { date_from: dateFrom || undefined, date_to: dateTo || undefined },
+      }),
+    [dateFrom, dateTo]
+  );
+
+  const printReport = () => {
+    const params = new URLSearchParams();
+    if (dateFrom) params.set("from", dateFrom);
+    if (dateTo) params.set("to", dateTo);
+    navigate(`/print/damage-report?${params.toString()}`);
+  };
+
+  return (
+    <Card title="🗑️ تقرير التالف/الهالك — لفترة محددة">
+      <div className="mb-4 flex flex-wrap items-end gap-3">
+        <Input label="من تاريخ" type="date" value={dateFrom} onChange={(e) => setDateFrom(e.target.value)} />
+        <Input label="إلى تاريخ" type="date" value={dateTo} onChange={(e) => setDateTo(e.target.value)} />
+        <Button variant="secondary" onClick={printReport}>
+          🖨️ طباعة التقرير
+        </Button>
+      </div>
+      <Alert>{report.error}</Alert>
+      {report.loading ? (
+        <Loading />
+      ) : (
+        <div className="space-y-5">
+          <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
+            <div className="rounded-lg bg-slate-50 p-3 text-sm">
+              <div className="font-extrabold text-slate-500">عدد عمليات الإتلاف</div>
+              <div className="text-lg font-extrabold">{report.data?.adjustment_count ?? 0}</div>
+            </div>
+            <div className="rounded-lg bg-slate-50 p-3 text-sm">
+              <div className="font-extrabold text-slate-500">إجمالي الكمية</div>
+              <div className="text-lg font-extrabold">{qty(report.data?.total_quantity ?? 0)}</div>
+            </div>
+            <div className="rounded-lg bg-slate-50 p-3 text-sm">
+              <div className="font-extrabold text-slate-500">إجمالي قيمة الخسارة</div>
+              <div className="text-lg font-extrabold text-rose-700">
+                {money(report.data?.total_cost ?? 0)}
+              </div>
+            </div>
+          </div>
+
+          <div>
+            <div className="mb-2 text-sm font-extrabold text-slate-600">حسب السبب</div>
+            <Table
+              columns={[
+                {
+                  key: "reason",
+                  label: "السبب",
+                  render: (r) => (
+                    <Badge tone="red">{DAMAGE_REASON_LABELS[r.reason] ?? r.reason}</Badge>
+                  ),
+                },
+                { key: "adjustment_count", label: "عدد العمليات" },
+                { key: "total_quantity", label: "الكمية", render: (r) => qty(r.total_quantity) },
+                {
+                  key: "total_cost",
+                  label: "قيمة الخسارة",
+                  render: (r) => <b className="text-rose-700">{money(r.total_cost)}</b>,
+                },
+              ]}
+              rows={report.data?.by_reason}
+              keyField="reason"
+              empty="لا يوجد تالف في هذه الفترة."
+            />
+          </div>
+
+          <div>
+            <div className="mb-2 text-sm font-extrabold text-slate-600">حسب الصنف</div>
+            <Table
+              columns={[
+                { key: "product_name", label: "الصنف" },
+                {
+                  key: "total_quantity",
+                  label: "الكمية",
+                  render: (r) => `${qty(r.total_quantity)} ${r.base_unit_name}`,
+                },
+                {
+                  key: "total_cost",
+                  label: "قيمة الخسارة",
+                  render: (r) => <b className="text-rose-700">{money(r.total_cost)}</b>,
+                },
+              ]}
+              rows={report.data?.by_product}
+              keyField="product_id"
+              empty="لا يوجد تالف في هذه الفترة."
+            />
+          </div>
+        </div>
+      )}
+    </Card>
+  );
+}
+
 function InventoryTab({ expiryRisk, turnover, loading }) {
   if (loading) return <Loading />;
   return (
     <div className="space-y-6">
+      <DamageReportCard />
       <Card title="⚠️ تشغيلات قريبة من انتهاء الصلاحية (30 يوماً) — القيمة المعرضة للخطر">
         <Table
           columns={[

@@ -70,6 +70,10 @@ class SalesInvoiceCreate(BaseModel):
     lines: list[SalesLineIn] = Field(min_length=1)
     # Manager approval flag: lets an admin exceed the customer's credit limit.
     credit_override: bool = False
+    # What the customer will actually be charged. When it is below the computed
+    # gross (goods + tax), the difference is recorded as a discount — this is how
+    # the counter rounds 12,005 down to 12,000. Omit to charge the full amount.
+    collectable_amount: Decimal | None = Field(default=None, ge=0)
 
 
 class SalesLineOut(BaseModel):
@@ -114,6 +118,9 @@ class SalesInvoiceOut(BaseModel):
     subtotal: Decimal
     # Sum of all applied taxes' amounts (see `taxes` for the per-tax breakdown).
     vat_amount: Decimal
+    # Granted at issue time by lowering the collectable amount; applied after VAT.
+    discount_amount: Decimal
+    # What the customer owes: subtotal + vat_amount - discount_amount.
     total: Decimal
     paid_amount: Decimal
     notes: str | None

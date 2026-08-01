@@ -66,7 +66,7 @@ export default function DashboardPage() {
             },
           ]}
           rows={levels.data}
-          keyField="product_id"
+          keyField={(r) => `${r.product_id}-${r.warehouse_id}`}
           empty="المخزون فارغ حالياً."
         />
       </Card>

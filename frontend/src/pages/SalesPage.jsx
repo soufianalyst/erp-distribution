@@ -1,9 +1,10 @@
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import {
   Alert,
   Badge,
   Button,
+  CancelButton,
   Card,
   Input,
   Loading,
@@ -12,6 +13,7 @@ import {
   Table,
   money,
   qty,
+  useUnsavedGuard,
 } from "../components/Ui";
 import { useAuth } from "../context/AuthContext";
 import useFetch from "../hooks/useFetch";
@@ -29,6 +31,137 @@ export const REASON_LABELS = {
 
 const PAYMENT_METHOD_LABELS = { cash: "نقدي", card: "بطاقة", credit: "آجل" };
 const PAYMENT_METHOD_TONE = { cash: "green", card: "blue", credit: "amber" };
+
+const TIER_PRICE_FIELD = {
+  wholesale: "wholesale_price",
+  half_wholesale: "half_wholesale_price",
+  retail: "retail_price",
+};
+
+const round2 = (n) => Math.round((Number(n) + Number.EPSILON) * 100) / 100;
+
+/**
+ * Preview of what the invoice will bill, using the same tier pricing the server
+ * applies. Only a preview: the amount the user confirms is sent as-is and the
+ * server stays authoritative for the final figures.
+ */
+function previewTotals({ lines, products, customer, taxRates, taxRateIds }) {
+  const priceField = TIER_PRICE_FIELD[customer?.price_tier] ?? "wholesale_price";
+  let subtotal = 0;
+  for (const line of lines) {
+    const product = products.find((p) => String(p.id) === String(line.product_id));
+    if (!product || !line.quantity) continue;
+    const unit = product.units?.find((u) => String(u.id) === String(line.unit_id));
+    const baseQty = Number(line.quantity) * (unit ? Number(unit.factor) : 1);
+    subtotal += baseQty * Number(product[priceField] ?? 0);
+  }
+  subtotal = round2(subtotal);
+
+  const applied = taxRates.filter((t) => taxRateIds.includes(t.id));
+  const taxes = applied.map((t) => ({
+    name: t.name,
+    rate: t.rate,
+    amount: round2((subtotal * Number(t.rate)) / 100),
+  }));
+  const vat = round2(taxes.reduce((sum, t) => sum + t.amount, 0));
+  return { subtotal, taxes, vat, gross: round2(subtotal + vat) };
+}
+
+/**
+ * Finalize step: shows what the invoice comes to and lets the user set the
+ * amount actually collected. Charging less records the difference as a discount
+ * — this is how 12,005 gets rounded down to 12,000 at the counter.
+ */
+function FinalizeInvoice({ totals, initialCollectable, onConfirm, onCancel, busy }) {
+  const [collectable, setCollectable] = useState(
+    initialCollectable != null ? String(initialCollectable) : String(totals.gross)
+  );
+  const entered = collectable === "" ? null : Number(collectable);
+  const invalid = entered === null || Number.isNaN(entered) || entered < 0 || entered > totals.gross;
+  const discount = invalid ? 0 : round2(totals.gross - entered);
+
+  // Offer the obvious "drop the odd change" targets, skipping any that would
+  // raise the amount or duplicate the exact total.
+  const roundTargets = [1, 5, 10, 50, 100]
+    .map((step) => Math.floor(totals.gross / step) * step)
+    .filter((v, i, arr) => v > 0 && v < totals.gross && arr.indexOf(v) === i);
+
+  return (
+    <div className="space-y-4">
+      <div className="rounded-lg border border-slate-200 bg-slate-50 p-3 text-sm">
+        <div className="flex justify-between py-0.5">
+          <span className="font-bold text-slate-600">قبل الضريبة</span>
+          <span>{money(totals.subtotal)}</span>
+        </div>
+        {totals.taxes.map((t) => (
+          <div key={t.name} className="flex justify-between py-0.5">
+            <span className="font-bold text-slate-600">
+              {t.name} ({t.rate}%)
+            </span>
+            <span>{money(t.amount)}</span>
+          </div>
+        ))}
+        <div className="mt-1 flex justify-between border-t border-slate-300 pt-1 text-base">
+          <span className="font-extrabold">إجمالي الفاتورة</span>
+          <span className="font-extrabold">{money(totals.gross)}</span>
+        </div>
+      </div>
+
+      <Input
+        label="المبلغ المطلوب تحصيله (يمكن تعديله للتدوير)"
+        type="number"
+        step="any"
+        min="0"
+        max={totals.gross}
+        value={collectable}
+        onChange={(e) => setCollectable(e.target.value)}
+        autoFocus
+      />
+
+      {roundTargets.length > 0 && (
+        <div className="flex flex-wrap items-center gap-2">
+          <span className="text-xs font-bold text-slate-500">تدوير سريع:</span>
+          {roundTargets.map((v) => (
+            <Button
+              key={v}
+              type="button"
+              variant="secondary"
+              onClick={() => setCollectable(String(v))}
+            >
+              {money(v)}
+            </Button>
+          ))}
+          <Button type="button" variant="secondary" onClick={() => setCollectable(String(totals.gross))}>
+            بدون خصم
+          </Button>
+        </div>
+      )}
+
+      {invalid ? (
+        <Alert>أدخل مبلغاً بين 0 و {money(totals.gross)}.</Alert>
+      ) : discount > 0 ? (
+        <Alert tone="success">
+          سيتم تسجيل خصم بقيمة {money(discount)} — المبلغ المستحق على العميل {money(entered)}.
+        </Alert>
+      ) : (
+        <p className="text-sm font-bold text-slate-500">بدون خصم — سيُحصّل كامل المبلغ.</p>
+      )}
+
+      <div className="flex justify-end gap-2">
+        <Button type="button" variant="secondary" onClick={onCancel} disabled={busy}>
+          رجوع للتعديل
+        </Button>
+        <Button
+          type="button"
+          onClick={() => onConfirm(entered)}
+          disabled={invalid || busy}
+        >
+          {busy ? "جارٍ التثبيت..." : "تثبيت الفاتورة"}
+        </Button>
+      </div>
+    </div>
+  );
+}
 
 // Aggregate an existing invoice's batch-level lines back into per-product form lines.
 function linesFromInvoice(invoice, products) {
@@ -48,8 +181,21 @@ function linesFromInvoice(invoice, products) {
   });
 }
 
-function InvoiceForm({ customers, warehouses, products, taxRates, isAdmin, onCreated, invoice }) {
+function InvoiceForm({
+  customers,
+  warehouses,
+  products,
+  taxRates,
+  isAdmin,
+  onCreated,
+  invoice,
+  // Several invoice forms can be mounted at once (draft tabs), so the datalist
+  // id and the "focus the new line" lookup must be scoped to this instance.
+  formId = "invoice",
+}) {
   const editing = !!invoice;
+  const productListId = `${formId}-products`;
+  const rootRef = useRef(null);
   const defaultTaxRate = taxRates.find((t) => t.is_default);
   const [form, setForm] = useState(
     editing
@@ -72,6 +218,8 @@ function InvoiceForm({ customers, warehouses, products, taxRates, isAdmin, onCre
     editing ? linesFromInvoice(invoice, products) : [{ ...EMPTY_LINE }]
   );
   const [error, setError] = useState(null);
+  const [finalizing, setFinalizing] = useState(false);
+  const [busy, setBusy] = useState(false);
   const set = (key) => (e) => setForm({ ...form, [key]: e.target.value });
   const toggleTax = (taxId) =>
     setForm((f) => ({
@@ -100,31 +248,52 @@ function InvoiceForm({ customers, warehouses, products, taxRates, isAdmin, onCre
     );
   };
 
-  const submit = async (event) => {
+  const readyLines = () =>
+    lines
+      .filter((l) => l.product_id && l.quantity)
+      .map((l) => ({ ...l, unit_id: l.unit_id || null }));
+
+  // Submitting opens the finalize step rather than posting straight away, so the
+  // collectable amount can be adjusted before the invoice exists.
+  const submit = (event) => {
     event.preventDefault();
     setError(null);
     if (lines.some((l) => l.product_label && !l.product_id)) {
       setError("اختر الصنف من قائمة البحث لكل سطر (اكتب ثم اختر من الاقتراحات).");
       return;
     }
+    if (!readyLines().length) {
+      setError("أضف سطراً واحداً على الأقل بصنف وكمية.");
+      return;
+    }
+    setFinalizing(true);
+  };
+
+  const post = async (collectableAmount) => {
+    setError(null);
+    setBusy(true);
     const payload = {
       ...form,
-      lines: lines
-        .filter((l) => l.product_id && l.quantity)
-        .map((l) => ({ ...l, unit_id: l.unit_id || null })),
+      lines: readyLines(),
+      collectable_amount: collectableAmount,
     };
     try {
       const { data } = editing
         ? await api.put(`/sales/invoices/${invoice.id}`, payload)
         : await api.post("/sales/invoices", payload);
+      setFinalizing(false);
       onCreated(data.data);
     } catch (err) {
       setError(apiMessage(err));
+      setFinalizing(false);
+    } finally {
+      setBusy(false);
     }
   };
 
   return (
-    <form onSubmit={submit} className="space-y-4">
+    <>
+    <form ref={rootRef} onSubmit={submit} className="space-y-4">
       <Alert>{error}</Alert>
       <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
         <Select label="العميل" value={form.customer_id} onChange={set("customer_id")} required>
@@ -169,7 +338,7 @@ function InvoiceForm({ customers, warehouses, products, taxRates, isAdmin, onCre
         </div>
       </div>
 
-      <datalist id="invoice-products">
+      <datalist id={productListId}>
         {products
           .filter((p) => p.is_active)
           .map((p) => (
@@ -196,7 +365,7 @@ function InvoiceForm({ customers, warehouses, products, taxRates, isAdmin, onCre
               <div className="col-span-6">
                 <Input
                   label={index === 0 ? "الصنف (اكتب للبحث)" : undefined}
-                  list="invoice-products"
+                  list={productListId}
                   placeholder="ابحث بالرمز أو الاسم..."
                   value={line.product_label ?? ""}
                   onChange={(e) => setProductLine(index, e.target.value)}
@@ -238,8 +407,9 @@ function InvoiceForm({ customers, warehouses, products, taxRates, isAdmin, onCre
                       e.preventDefault();
                       setLines([...lines, { ...EMPTY_LINE }]);
                       setTimeout(() => {
-                        const inputs = document.querySelectorAll(
-                          `input[list="invoice-products"]`
+                        // Scoped to this form so other open drafts are ignored.
+                        const inputs = (rootRef.current ?? document).querySelectorAll(
+                          `input[list="${productListId}"]`
                         );
                         const newInput = inputs[inputs.length - 1];
                         if (newInput) newInput.focus();
@@ -290,6 +460,30 @@ function InvoiceForm({ customers, warehouses, products, taxRates, isAdmin, onCre
 
       <Button type="submit">{editing ? "حفظ التعديلات" : "إصدار الفاتورة"}</Button>
     </form>
+
+    {/* Kept outside the form: a nested form would let Enter in the amount field
+        re-trigger submit, and this step has nothing to preserve on close. */}
+    <Modal
+      open={finalizing}
+      title={editing ? "تأكيد التعديل والمبلغ المحصّل" : "تأكيد الفاتورة والمبلغ المحصّل"}
+      onClose={() => setFinalizing(false)}
+      guardUnsaved={false}
+    >
+      <FinalizeInvoice
+        totals={previewTotals({
+          lines,
+          products,
+          customer: customers.find((c) => String(c.id) === String(form.customer_id)),
+          taxRates,
+          taxRateIds: form.tax_rate_ids,
+        })}
+        initialCollectable={editing ? invoice.total : null}
+        busy={busy}
+        onCancel={() => setFinalizing(false)}
+        onConfirm={post}
+      />
+    </Modal>
+    </>
   );
 }
 
@@ -424,6 +618,31 @@ function CommissionsTab() {
         </>
       )}
     </Card>
+  );
+}
+
+/**
+ * One open sales-invoice draft. Every draft stays mounted while the drafts area
+ * is showing — only the active one is visible — so switching between them keeps
+ * each form's half-entered state intact.
+ *
+ * Each draft owns its own unsaved-changes guard and registers it with the page,
+ * so closing a draft (or leaving the area) can ask about that specific one.
+ */
+function InvoiceDraft({ draft, active, registry, ...formProps }) {
+  const guard = useUnsavedGuard(true);
+
+  useEffect(() => {
+    registry.current.set(draft.id, guard);
+    return () => {
+      registry.current.delete(draft.id);
+    };
+  }, [draft.id, guard, registry]);
+
+  return (
+    <div ref={guard.ref} hidden={!active}>
+      <InvoiceForm formId={`draft-${draft.id}`} {...formProps} />
+    </div>
   );
 }
 
@@ -617,9 +836,7 @@ function ConvertQuotationForm({ quotation, isAdmin, onConverted, onClose }) {
         </label>
       )}
       <div className="flex justify-end gap-2">
-        <Button type="button" variant="secondary" onClick={onClose}>
-          إلغاء
-        </Button>
+        <CancelButton onClose={onClose} />
         <Button type="submit">تحويل إلى فاتورة</Button>
       </div>
     </form>
@@ -744,6 +961,63 @@ export default function SalesPage() {
   const [returnFor, setReturnFor] = useState(null);
   const [notice, setNotice] = useState(null);
 
+  // Several invoices can be entered side by side — one draft per tab, so a
+  // salesman serving a queue can park a half-finished invoice and pick it up
+  // again without losing anything. Drafts live only while the page is open.
+  const [drafts, setDrafts] = useState([]);
+  const [activeDraftId, setActiveDraftId] = useState(null);
+  const nextDraftId = useRef(1);
+  // Each mounted draft registers its unsaved-changes guard here, keyed by id.
+  const draftGuards = useRef(new Map());
+
+  const openDraft = () => {
+    const id = nextDraftId.current++;
+    setDrafts((current) => [...current, { id }]);
+    setActiveDraftId(id);
+    setTab("drafts");
+  };
+
+  const closeDraft = (id) => {
+    const guard = draftGuards.current.get(id);
+    if (guard && !guard.confirmLeave()) return;
+    setDrafts((current) => {
+      const remaining = current.filter((d) => d.id !== id);
+      if (id === activeDraftId) {
+        setActiveDraftId(remaining.length ? remaining[remaining.length - 1].id : null);
+        if (!remaining.length) setTab("list");
+      }
+      return remaining;
+    });
+  };
+
+  // A submitted draft is no longer unsaved work, so drop its guard before
+  // closing it — otherwise it would ask to discard what was just saved.
+  const finishDraft = (id) => {
+    draftGuards.current.delete(id);
+    setDrafts((current) => {
+      const remaining = current.filter((d) => d.id !== id);
+      setActiveDraftId(remaining.length ? remaining[remaining.length - 1].id : null);
+      if (!remaining.length) setTab("list");
+      return remaining;
+    });
+  };
+
+  const anyDraftDirty = () =>
+    [...draftGuards.current.values()].some((g) => g.isDirty());
+
+  // Leaving the drafts area keeps the drafts alive, but warn once if any hold
+  // unsaved input so it is never a silent loss.
+  const switchTab = (next) => {
+    if (next === tab) return;
+    if (tab === "drafts" && anyDraftDirty()) {
+      const ok = window.confirm(
+        "لديك فواتير مسودة تحتوي بيانات غير محفوظة. ستبقى المسودات مفتوحة — هل تريد المتابعة؟"
+      );
+      if (!ok) return;
+    }
+    setTab(next);
+  };
+
   const invoices = useFetch(() => api.get("/sales/invoices"));
   const returns = useFetch(() => api.get("/sales/returns"));
   const customers = useFetch(() => api.get("/sales/customers"));
@@ -759,7 +1033,7 @@ export default function SalesPage() {
   const canQuote = can("sales.quotations");
   const TABS = [
     { id: "list", label: "القائمة" },
-    ...(canSell ? [{ id: "new", label: "+ فاتورة جديدة" }] : []),
+    ...(canSell && drafts.length ? [{ id: "drafts", label: `المسودات (${drafts.length})` }] : []),
     { id: "quotations", label: "عروض الأسعار" },
     { id: "returns", label: "المرتجعات" },
     ...(canViewCommissions ? [{ id: "commissions", label: "عمولات المناديب" }] : []),
@@ -769,36 +1043,80 @@ export default function SalesPage() {
     <div className="space-y-6">
       <div className="flex items-center justify-between">
         <h1 className="text-2xl font-extrabold">فواتير المبيعات</h1>
-        <div className="flex gap-2">
+        <div className="flex flex-wrap gap-2">
           {TABS.map((t) => (
             <Button
               key={t.id}
               variant={tab === t.id ? "primary" : "secondary"}
-              onClick={() => setTab(t.id)}
+              onClick={() => switchTab(t.id)}
             >
               {t.label}
             </Button>
           ))}
+          {canSell && <Button onClick={openDraft}>+ فاتورة جديدة</Button>}
         </div>
       </div>
 
       <Alert tone="success">{notice}</Alert>
 
-      {tab === "new" && canSell && (
-        <Card title="فاتورة مبيعات جديدة — يتم خصم المخزون تلقائياً حسب FEFO">
-          <InvoiceForm
-            customers={customers.data}
-            warehouses={warehouses.data}
-            products={products.data}
-            taxRates={taxRates.data || []}
-            isAdmin={can("sales.credit_override")}
-            onCreated={(invoice) => {
-              setViewing(invoice);
-              setTab("list");
-              setNotice(null);
-              invoices.reload();
-            }}
-          />
+      {tab === "drafts" && canSell && drafts.length > 0 && (
+        <Card>
+          {/* One row of draft tabs — click to switch, × to close that draft. */}
+          <div className="mb-4 flex flex-wrap items-center gap-2 border-b border-slate-200 pb-3">
+            {drafts.map((d, index) => (
+              <div
+                key={d.id}
+                className={`flex items-center gap-1 rounded-lg px-1 ${
+                  d.id === activeDraftId ? "bg-emerald-700 text-white" : "bg-white text-slate-700 border border-slate-300"
+                }`}
+              >
+                <button
+                  type="button"
+                  onClick={() => setActiveDraftId(d.id)}
+                  className="px-2 py-1.5 text-sm font-bold"
+                >
+                  فاتورة {index + 1}
+                </button>
+                <button
+                  type="button"
+                  onClick={() => closeDraft(d.id)}
+                  title="إغلاق هذه المسودة"
+                  className={`px-1.5 text-lg leading-none ${
+                    d.id === activeDraftId ? "text-white/80 hover:text-white" : "text-slate-400 hover:text-slate-700"
+                  }`}
+                >
+                  ×
+                </button>
+              </div>
+            ))}
+            <Button variant="secondary" onClick={openDraft}>
+              + مسودة
+            </Button>
+          </div>
+
+          <p className="mb-4 text-sm font-bold text-slate-600">
+            فاتورة مبيعات جديدة — يتم خصم المخزون تلقائياً حسب FEFO
+          </p>
+
+          {drafts.map((d) => (
+            <InvoiceDraft
+              key={d.id}
+              draft={d}
+              active={d.id === activeDraftId}
+              registry={draftGuards}
+              customers={customers.data}
+              warehouses={warehouses.data}
+              products={products.data}
+              taxRates={taxRates.data || []}
+              isAdmin={can("sales.credit_override")}
+              onCreated={(invoice) => {
+                finishDraft(d.id);
+                setViewing(invoice);
+                setNotice(`تم إصدار الفاتورة رقم ${invoice.id} بنجاح.`);
+                invoices.reload();
+              }}
+            />
+          ))}
         </Card>
       )}
 
@@ -854,6 +1172,16 @@ export default function SalesPage() {
                 },
                 { key: "subtotal", label: "قبل الضريبة", render: (r) => money(r.subtotal) },
                 { key: "vat_amount", label: "الضريبة", render: (r) => money(r.vat_amount) },
+                {
+                  key: "discount_amount",
+                  label: "الخصم",
+                  render: (r) =>
+                    Number(r.discount_amount) > 0 ? (
+                      <span className="font-bold text-amber-700">{money(r.discount_amount)}</span>
+                    ) : (
+                      "—"
+                    ),
+                },
                 {
                   key: "total",
                   label: "الإجمالي",
@@ -1073,6 +1401,11 @@ export default function SalesPage() {
                     {t.name} ({t.rate}%): {money(t.amount)}
                   </span>
                 ))}
+                {Number(viewing.discount_amount) > 0 && (
+                  <span className="text-amber-700">
+                    الخصم: {money(viewing.discount_amount)}
+                  </span>
+                )}
                 <span className="text-emerald-700">الإجمالي: {money(viewing.total)}</span>
                 {Number(viewing.returned_total) > 0 && (
                   <span className="text-rose-700">

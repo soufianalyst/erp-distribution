@@ -11,6 +11,7 @@ from app.api.schemas.inventory import (
     ProductCreate,
     ProductOut,
     ProductUpdate,
+    StockAdjustmentCancel,
     StockAdjustmentCreate,
     StockAdjustmentOut,
     StockLevelOut,
@@ -275,3 +276,36 @@ async def list_adjustments(
     """عرض تعديلات/إتلاف المخزون."""
     adjustments = await StockService(db).list_adjustments()
     return APIResponse(data=[StockAdjustmentOut.model_validate(a) for a in adjustments])
+
+
+@router.get(
+    "/stock/adjustments/{adjustment_id}",
+    response_model=APIResponse[StockAdjustmentOut],
+    dependencies=[stock_view],
+)
+async def get_adjustment(
+    adjustment_id: int, db: AsyncSession = Depends(get_db)
+) -> APIResponse[StockAdjustmentOut]:
+    """عرض تفاصيل سجل تعديل/إتلاف مخزون واحد (للطباعة)."""
+    adjustment = await StockService(db).get_adjustment(adjustment_id)
+    return APIResponse(data=StockAdjustmentOut.model_validate(adjustment))
+
+
+@router.post(
+    "/stock/adjustments/{adjustment_id}/cancel",
+    response_model=APIResponse[StockAdjustmentOut],
+)
+async def cancel_adjustment(
+    adjustment_id: int,
+    body: StockAdjustmentCancel,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(require_permissions("stock.adjust_cancel")),
+) -> APIResponse[StockAdjustmentOut]:
+    """إلغاء تعديل/إتلاف سُجّل بالخطأ؛ تعود الكمية للمخزون ويُعكس القيد المحاسبي."""
+    adjustment = await StockService(db).cancel_adjustment(
+        adjustment_id, body.cancel_reason, cancelled_by=current_user.id
+    )
+    return APIResponse(
+        data=StockAdjustmentOut.model_validate(adjustment),
+        message="تم إلغاء السجل وإرجاع الكمية للمخزون.",
+    )

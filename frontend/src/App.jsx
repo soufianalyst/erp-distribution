@@ -14,6 +14,9 @@ import ExpensesPage from "./pages/ExpensesPage";
 import LoginPage from "./pages/LoginPage";
 import PrintInvoicePage from "./pages/PrintInvoicePage";
 import PrintPickingPage from "./pages/PrintPickingPage";
+import PrintAdjustmentPage from "./pages/PrintAdjustmentPage";
+import PrintDamageReportPage from "./pages/PrintDamageReportPage";
+import PrintDiscountReportPage from "./pages/PrintDiscountReportPage";
 import PrintPickupPrepPage from "./pages/PrintPickupPrepPage";
 import ProductsPage from "./pages/ProductsPage";
 import PurchasesPage from "./pages/PurchasesPage";
@@ -62,6 +65,30 @@ export default function App() {
             element={
               <RequireAuth>
                 <PrintPickupPrepPage />
+              </RequireAuth>
+            }
+          />
+          <Route
+            path="/print/adjustment/:adjustmentId"
+            element={
+              <RequireAuth>
+                <PrintAdjustmentPage />
+              </RequireAuth>
+            }
+          />
+          <Route
+            path="/print/damage-report"
+            element={
+              <RequireAuth>
+                <PrintDamageReportPage />
+              </RequireAuth>
+            }
+          />
+          <Route
+            path="/print/discount-report"
+            element={
+              <RequireAuth>
+                <PrintDiscountReportPage />
               </RequireAuth>
             }
           />

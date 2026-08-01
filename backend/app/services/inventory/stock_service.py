@@ -1,6 +1,6 @@
 """Stock movements: receiving, FEFO allocation, transfers, levels, expiry alerts, and write-offs."""
 
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta, timezone
 from decimal import ROUND_HALF_UP, Decimal
 
 from sqlalchemy import func, select
@@ -17,6 +17,7 @@ from app.api.schemas.inventory import (
 )
 from app.core.exceptions import AppException
 from app.domain.models.inventory import (
+    AdjustmentStatus,
     Product,
     ProductBatch,
     StockAdjustment,
@@ -372,17 +373,82 @@ class StockService:
             )
 
         await self.session.commit()
+        return await self.get_adjustment(adjustment.id)
+
+    @staticmethod
+    def _adjustment_loads():
+        """Eager-load everything the log and the printed report read, so the
+        line label properties never trigger a lazy load on a closed session.
+        """
+        return selectinload(StockAdjustment.lines).options(
+            selectinload(StockAdjustmentLine.product),
+            selectinload(StockAdjustmentLine.batch),
+            selectinload(StockAdjustmentLine.warehouse),
+        )
+
+    async def get_adjustment(self, adjustment_id: int) -> StockAdjustment:
         result = await self.session.execute(
             select(StockAdjustment)
-            .options(selectinload(StockAdjustment.lines))
-            .where(StockAdjustment.id == adjustment.id)
+            .options(self._adjustment_loads())
+            .where(StockAdjustment.id == adjustment_id)
         )
-        return result.scalar_one()
+        adjustment = result.scalar_one_or_none()
+        if adjustment is None:
+            raise AppException(404, "سجل تعديل/إتلاف المخزون غير موجود.")
+        return adjustment
 
     async def list_adjustments(self) -> list[StockAdjustment]:
         result = await self.session.execute(
             select(StockAdjustment)
-            .options(selectinload(StockAdjustment.lines))
+            .options(self._adjustment_loads())
             .order_by(StockAdjustment.id.desc())
         )
         return list(result.scalars().all())
+
+    async def cancel_adjustment(
+        self,
+        adjustment_id: int,
+        cancel_reason: str | None = None,
+        cancelled_by: int | None = None,
+    ) -> StockAdjustment:
+        """Undo a write-off entered by mistake: the goods go back to their original
+        batch and the loss posting is reversed, in one transaction.
+
+        The record is kept and marked cancelled rather than deleted, so the
+        original mistake stays auditable.
+        """
+        adjustment = await self.get_adjustment(adjustment_id)
+        if adjustment.status == AdjustmentStatus.CANCELLED:
+            raise AppException(400, "هذا السجل ملغى من قبل.")
+
+        for line in adjustment.lines:
+            batch = await self.session.get(ProductBatch, line.batch_id)
+            if batch is None:
+                raise AppException(
+                    400,
+                    "لا يمكن الإلغاء لأن إحدى التشغيلات الأصلية غير موجودة.",
+                )
+            batch.quantity += line.quantity
+
+        # Mirror image of the original posting: the loss is undone and the
+        # inventory value is restored.
+        if adjustment.total_cost > 0:
+            await self.accounting.add_entry_no_commit(
+                entry_date=date.today(),
+                description=f"إلغاء تعديل/إتلاف مخزون رقم {adjustment.id}",
+                items=[
+                    (INVENTORY, adjustment.total_cost, Decimal("0")),
+                    (DAMAGE_LOSS, Decimal("0"), adjustment.total_cost),
+                ],
+                reference_type="stock_adjustment_cancel",
+                reference_id=adjustment.id,
+                created_by=cancelled_by,
+            )
+
+        adjustment.status = AdjustmentStatus.CANCELLED
+        adjustment.cancelled_at = datetime.now(timezone.utc)
+        adjustment.cancelled_by = cancelled_by
+        adjustment.cancel_reason = cancel_reason
+
+        await self.session.commit()
+        return await self.get_adjustment(adjustment.id)

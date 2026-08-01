@@ -1,6 +1,7 @@
 import { useState } from "react";
 import { useNavigate } from "react-router-dom";
 import {
+  CancelButton,
   Alert,
   Badge,
   Button,
@@ -384,9 +385,7 @@ export default function DeliveryPage() {
             ))}
           </Select>
           <div className="flex justify-end gap-2">
-            <Button type="button" variant="secondary" onClick={() => setOpen(false)}>
-              إلغاء
-            </Button>
+            <CancelButton onClose={() => setOpen(false)} />
             <Button type="submit">إنشاء الرحلة</Button>
           </div>
         </form>

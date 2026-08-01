@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { Alert, Badge, Button, Card, Input, Loading, Modal, Table } from "../components/Ui";
+import { Alert, Badge, Button, CancelButton, Card, Input, Loading, Modal, Table } from "../components/Ui";
 import { useAuth } from "../context/AuthContext";
 import useFetch from "../hooks/useFetch";
 import api, { apiMessage } from "../services/api";
@@ -68,9 +68,7 @@ export default function WarehousesPage() {
             onChange={(e) => setForm({ ...form, location: e.target.value })}
           />
           <div className="flex justify-end gap-2">
-            <Button type="button" variant="secondary" onClick={() => setOpen(false)}>
-              إلغاء
-            </Button>
+            <CancelButton onClose={() => setOpen(false)} />
             <Button type="submit">حفظ</Button>
           </div>
         </form>

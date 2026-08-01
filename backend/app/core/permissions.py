@@ -24,6 +24,10 @@ PERMISSION_GROUPS: list[dict] = [
             {"code": "stock.receive", "label": "استلام بضاعة"},
             {"code": "stock.transfer", "label": "التحويل بين المستودعات"},
             {"code": "stock.adjust", "label": "تسجيل تعديلات/إتلاف المخزون"},
+            {
+                "code": "stock.adjust_cancel",
+                "label": "إلغاء تعديلات/إتلاف المخزون (إرجاع الكمية)",
+            },
         ],
     },
     {

@@ -28,6 +28,11 @@ class StockAdjustmentReason(str, enum.Enum):
     OTHER = "other"  # أخرى
 
 
+class AdjustmentStatus(str, enum.Enum):
+    POSTED = "posted"  # مُثبّت — البضاعة خرجت من المخزون
+    CANCELLED = "cancelled"  # ملغى — أُعيدت الكمية للمخزون وعُكس القيد
+
+
 class Warehouse(Base):
     __tablename__ = "warehouses"
 
@@ -145,6 +150,21 @@ class StockAdjustment(Base):
         nullable=False,
     )
     total_cost: Mapped[Decimal] = mapped_column(Numeric(14, 2), nullable=False)
+    # A write-off entered by mistake is cancelled, never deleted: the goods go back
+    # to their batch, the journal entry is reversed, and the record stays on file.
+    status: Mapped[AdjustmentStatus] = mapped_column(
+        Enum(AdjustmentStatus, values_callable=lambda e: [m.value for m in e]),
+        nullable=False,
+        default=AdjustmentStatus.POSTED,
+        server_default=AdjustmentStatus.POSTED.value,
+    )
+    cancelled_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    cancelled_by: Mapped[int | None] = mapped_column(
+        ForeignKey("users.id"), nullable=True
+    )
+    cancel_reason: Mapped[str | None] = mapped_column(String(300))
     notes: Mapped[str | None] = mapped_column(String(300))
     created_by: Mapped[int | None] = mapped_column(ForeignKey("users.id"))
     created_at: Mapped[datetime] = mapped_column(
@@ -154,6 +174,18 @@ class StockAdjustment(Base):
     lines: Mapped[list["StockAdjustmentLine"]] = relationship(
         back_populates="adjustment", cascade="all, delete-orphan"
     )
+
+    @property
+    def total_quantity(self) -> Decimal:
+        """Total base-unit quantity written off across all lines."""
+        return sum((line.quantity for line in self.lines), Decimal("0"))
+
+    @property
+    def cost_known(self) -> bool:
+        """False when no line had a purchase cost on its batch, so `total_cost`
+        is 0 because the cost is unknown — not because nothing of value was lost.
+        """
+        return any(line.unit_cost > 0 for line in self.lines)
 
 
 class StockAdjustmentLine(Base):
@@ -179,3 +211,28 @@ class StockAdjustmentLine(Base):
     line_total: Mapped[Decimal] = mapped_column(Numeric(14, 2), nullable=False)
 
     adjustment: Mapped[StockAdjustment] = relationship(back_populates="lines")
+    product: Mapped[Product] = relationship()
+    batch: Mapped[ProductBatch] = relationship()
+    warehouse: Mapped[Warehouse] = relationship()
+
+    # Read-through labels so the log and the printed report are self-describing
+    # without the caller having to join products/batches/warehouses itself.
+    @property
+    def product_name(self) -> str:
+        return self.product.name
+
+    @property
+    def base_unit_name(self) -> str:
+        return self.product.base_unit_name
+
+    @property
+    def batch_number(self) -> str:
+        return self.batch.batch_number
+
+    @property
+    def expiry_date(self) -> date:
+        return self.batch.expiry_date
+
+    @property
+    def warehouse_name(self) -> str:
+        return self.warehouse.name

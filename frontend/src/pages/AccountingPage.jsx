@@ -543,7 +543,7 @@ export default function AccountingPage() {
                   },
                 ]}
                 rows={taxSummary.data?.rows}
-                keyField="name"
+                keyField={(r) => `${r.name}-${r.rate}`}
                 empty="لا توجد حركات ضريبية في هذه الفترة."
               />
               {taxSummary.data?.rows?.length > 0 && (

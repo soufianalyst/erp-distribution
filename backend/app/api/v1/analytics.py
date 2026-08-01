@@ -1,6 +1,8 @@
 """Analytics/dashboard endpoints: RFM, trends, waste, credit risk, delivery, reps."""
 
-from fastapi import APIRouter, Depends
+from datetime import date
+
+from fastapi import APIRouter, Depends, Query
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.deps import require_permissions
@@ -8,6 +10,8 @@ from app.api.schemas.analytics import (
     ARAgingRowOut,
     CreditRiskCustomerOut,
     CustomerRFMOut,
+    DamageReportOut,
+    DiscountReportOut,
     DashboardSummaryOut,
     DriverPerformanceOut,
     ExpiryRiskOut,
@@ -147,3 +151,27 @@ async def rep_performance(
 ) -> APIResponse[list[RepPerformanceOut]]:
     """أداء مناديب المبيعات: الإيرادات، متوسط الفاتورة، ونسبة المرتجعات."""
     return APIResponse(data=await AnalyticsService(db).rep_performance())
+
+
+@router.get("/inventory/damage-report", response_model=APIResponse[DamageReportOut])
+async def damage_report(
+    date_from: date | None = Query(default=None),
+    date_to: date | None = Query(default=None),
+    db: AsyncSession = Depends(get_db),
+) -> APIResponse[DamageReportOut]:
+    """تقرير التالف/الهالك لفترة محددة، موزعاً حسب السبب وحسب الصنف."""
+    return APIResponse(
+        data=await AnalyticsService(db).damage_report(date_from, date_to)
+    )
+
+
+@router.get("/sales/discount-report", response_model=APIResponse[DiscountReportOut])
+async def discount_report(
+    date_from: date | None = Query(default=None),
+    date_to: date | None = Query(default=None),
+    db: AsyncSession = Depends(get_db),
+) -> APIResponse[DiscountReportOut]:
+    """تقرير الخصومات الممنوحة على الفواتير لفترة محددة، حسب العميل والمندوب."""
+    return APIResponse(
+        data=await AnalyticsService(db).discount_report(date_from, date_to)
+    )

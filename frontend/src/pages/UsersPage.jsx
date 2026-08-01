@@ -1,5 +1,6 @@
 import { useState } from "react";
 import {
+  CancelButton,
   Alert,
   Badge,
   Button,
@@ -165,9 +166,7 @@ function PermissionsEditor({ user, catalog, onSaved, onClose }) {
           إعادة التعيين حسب الدور
         </Button>
         <div className="flex gap-2">
-          <Button variant="secondary" onClick={onClose} disabled={busy}>
-            إلغاء
-          </Button>
+          <CancelButton onClose={onClose} disabled={busy} />
           <Button onClick={() => save(false)} disabled={busy}>
             حفظ الصلاحيات
           </Button>
@@ -300,9 +299,7 @@ export default function UsersPage() {
             onChange={set("commission_rate")}
           />
           <div className="flex justify-end gap-2">
-            <Button type="button" variant="secondary" onClick={() => setOpen(false)}>
-              إلغاء
-            </Button>
+            <CancelButton onClose={() => setOpen(false)} />
             <Button type="submit">إنشاء المستخدم</Button>
           </div>
         </form>

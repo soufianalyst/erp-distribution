@@ -155,6 +155,16 @@ export default function PrintInvoicePage() {
                   <td className="border border-slate-300 px-3 py-2">{money(tax.amount)}</td>
                 </tr>
               ))}
+              {Number(inv.discount_amount) > 0 && (
+                <tr>
+                  <td className="border border-slate-300 bg-slate-50 px-3 py-2 font-bold print:bg-white">
+                    الخصم
+                  </td>
+                  <td className="border border-slate-300 px-3 py-2">
+                    − {money(inv.discount_amount)}
+                  </td>
+                </tr>
+              )}
               <tr className="text-base font-extrabold">
                 <td className="border-2 border-slate-800 bg-slate-800 px-3 py-2 text-white">
                   الإجمالي المستحق

@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { Alert, Badge, Button, Card, Input, Modal, Stat, Table, money, qty } from "../components/Ui";
+import { Alert, Badge, Button, CancelButton, Card, Input, Modal, Stat, Table, money, qty } from "../components/Ui";
 import useFetch from "../hooks/useFetch";
 import api, { apiMessage } from "../services/api";
 
@@ -344,9 +344,7 @@ export default function CashierPage() {
               ولا تُحرَّر لفريق التوزيع إلا بعد تحصيل كامل قيمتها.
             </p>
             <div className="flex justify-end gap-2">
-              <Button type="button" variant="secondary" onClick={() => setCollectingFor(null)}>
-                إلغاء
-              </Button>
+              <CancelButton onClose={() => setCollectingFor(null)} />
               <Button type="submit">تأكيد التحصيل</Button>
             </div>
           </form>
@@ -388,9 +386,7 @@ export default function CashierPage() {
               إذا كان المبلغ المُدخل أقل من المتبقي، يبقى المستند بانتظار استكمال السداد.
             </p>
             <div className="flex justify-end gap-2">
-              <Button type="button" variant="secondary" onClick={() => setPayingFor(null)}>
-                إلغاء
-              </Button>
+              <CancelButton onClose={() => setPayingFor(null)} />
               <Button type="submit">تأكيد السداد</Button>
             </div>
           </form>

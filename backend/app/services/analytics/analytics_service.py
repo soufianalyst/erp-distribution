@@ -17,6 +17,13 @@ from app.api.schemas.analytics import (
     ARAgingRowOut,
     CreditRiskCustomerOut,
     CustomerRFMOut,
+    DamageByProductOut,
+    DamageByReasonOut,
+    DamageReportOut,
+    DiscountByCustomerOut,
+    DiscountBySalesmanOut,
+    DiscountInvoiceOut,
+    DiscountReportOut,
     DashboardSummaryOut,
     DriverPerformanceOut,
     ExpiryRiskOut,
@@ -30,7 +37,14 @@ from app.api.schemas.analytics import (
     WarehouseRevenueOut,
 )
 from app.domain.models.delivery import DeliveryStop, DeliveryTrip
-from app.domain.models.inventory import Product, ProductBatch, Warehouse
+from app.domain.models.inventory import (
+    AdjustmentStatus,
+    Product,
+    ProductBatch,
+    StockAdjustment,
+    StockAdjustmentLine,
+    Warehouse,
+)
 from app.domain.models.sales import (
     Customer,
     CustomerPayment,
@@ -819,4 +833,181 @@ class AnalyticsService:
             waste_risk_value_30d=waste_value.quantize(TWO_PLACES),
             avg_order_value=avg_order,
             return_rate_pct_12m=_pct(total_returns, total_revenue),
+        )
+
+    async def damage_report(
+        self, date_from: date | None = None, date_to: date | None = None
+    ) -> DamageReportOut:
+        """Written-off stock over a period, broken down by reason and by product.
+
+        Cancelled write-offs are excluded: their goods went back to stock, so
+        counting them would overstate the loss.
+        """
+        stmt = (
+            select(StockAdjustment, StockAdjustmentLine, Product)
+            .join(StockAdjustmentLine, StockAdjustmentLine.adjustment_id == StockAdjustment.id)
+            .join(Product, Product.id == StockAdjustmentLine.product_id)
+            .where(StockAdjustment.status != AdjustmentStatus.CANCELLED)
+        )
+        if date_from is not None:
+            stmt = stmt.where(func.date(StockAdjustment.created_at) >= date_from)
+        if date_to is not None:
+            stmt = stmt.where(func.date(StockAdjustment.created_at) <= date_to)
+        rows = (await self.session.execute(stmt)).all()
+
+        adjustment_ids: set[int] = set()
+        total_quantity = Decimal("0")
+        total_cost = Decimal("0")
+        by_reason: dict[str, dict] = defaultdict(
+            lambda: {"ids": set(), "quantity": Decimal("0"), "cost": Decimal("0")}
+        )
+        by_product: dict[int, dict] = {}
+
+        for adjustment, line, product in rows:
+            adjustment_ids.add(adjustment.id)
+            total_quantity += line.quantity
+            total_cost += line.line_total
+
+            reason = adjustment.reason.value
+            by_reason[reason]["ids"].add(adjustment.id)
+            by_reason[reason]["quantity"] += line.quantity
+            by_reason[reason]["cost"] += line.line_total
+
+            entry = by_product.setdefault(
+                product.id,
+                {
+                    "name": product.name,
+                    "unit": product.base_unit_name,
+                    "quantity": Decimal("0"),
+                    "cost": Decimal("0"),
+                },
+            )
+            entry["quantity"] += line.quantity
+            entry["cost"] += line.line_total
+
+        return DamageReportOut(
+            date_from=date_from,
+            date_to=date_to,
+            adjustment_count=len(adjustment_ids),
+            total_quantity=total_quantity,
+            total_cost=total_cost.quantize(TWO_PLACES),
+            by_reason=[
+                DamageByReasonOut(
+                    reason=reason,
+                    adjustment_count=len(data["ids"]),
+                    total_quantity=data["quantity"],
+                    total_cost=data["cost"].quantize(TWO_PLACES),
+                )
+                for reason, data in sorted(
+                    by_reason.items(), key=lambda kv: kv[1]["cost"], reverse=True
+                )
+            ],
+            by_product=[
+                DamageByProductOut(
+                    product_id=pid,
+                    product_name=data["name"],
+                    base_unit_name=data["unit"],
+                    total_quantity=data["quantity"],
+                    total_cost=data["cost"].quantize(TWO_PLACES),
+                )
+                for pid, data in sorted(
+                    by_product.items(), key=lambda kv: kv[1]["cost"], reverse=True
+                )
+            ],
+        )
+
+    async def discount_report(
+        self, date_from: date | None = None, date_to: date | None = None
+    ) -> DiscountReportOut:
+        """Discounts granted on invoices over a period, by customer and salesman.
+
+        Only invoices whose collectable amount was adjusted down appear here, so
+        the list is exactly the set of concessions given.
+        """
+        stmt = (
+            select(SalesInvoice, Customer.name, User.full_name)
+            .join(Customer, Customer.id == SalesInvoice.customer_id)
+            .outerjoin(User, User.id == SalesInvoice.salesman_id)
+            .where(SalesInvoice.discount_amount > 0)
+            .order_by(SalesInvoice.invoice_date.desc(), SalesInvoice.id.desc())
+        )
+        if date_from is not None:
+            stmt = stmt.where(SalesInvoice.invoice_date >= date_from)
+        if date_to is not None:
+            stmt = stmt.where(SalesInvoice.invoice_date <= date_to)
+        rows = (await self.session.execute(stmt)).all()
+
+        total_discount = Decimal("0")
+        total_gross = Decimal("0")
+        total_net = Decimal("0")
+        by_customer: dict[int, dict] = {}
+        by_salesman: dict[int | None, dict] = {}
+        invoices: list[DiscountInvoiceOut] = []
+
+        for invoice, customer_name, salesman_name in rows:
+            gross = invoice.subtotal + invoice.vat_amount
+            total_discount += invoice.discount_amount
+            total_gross += gross
+            total_net += invoice.total
+
+            customer = by_customer.setdefault(
+                invoice.customer_id,
+                {"name": customer_name, "count": 0, "discount": Decimal("0")},
+            )
+            customer["count"] += 1
+            customer["discount"] += invoice.discount_amount
+
+            salesman = by_salesman.setdefault(
+                invoice.salesman_id,
+                {
+                    "name": salesman_name or "بدون مندوب",
+                    "count": 0,
+                    "discount": Decimal("0"),
+                },
+            )
+            salesman["count"] += 1
+            salesman["discount"] += invoice.discount_amount
+
+            invoices.append(
+                DiscountInvoiceOut(
+                    invoice_id=invoice.id,
+                    invoice_date=invoice.invoice_date,
+                    customer_name=customer_name,
+                    salesman_name=salesman_name,
+                    gross_amount=gross.quantize(TWO_PLACES),
+                    discount_amount=invoice.discount_amount,
+                    total=invoice.total,
+                )
+            )
+
+        return DiscountReportOut(
+            date_from=date_from,
+            date_to=date_to,
+            invoice_count=len(invoices),
+            total_discount=total_discount.quantize(TWO_PLACES),
+            total_gross=total_gross.quantize(TWO_PLACES),
+            total_net=total_net.quantize(TWO_PLACES),
+            by_customer=[
+                DiscountByCustomerOut(
+                    customer_id=cid,
+                    customer_name=data["name"],
+                    invoice_count=data["count"],
+                    discount_amount=data["discount"].quantize(TWO_PLACES),
+                )
+                for cid, data in sorted(
+                    by_customer.items(), key=lambda kv: kv[1]["discount"], reverse=True
+                )
+            ],
+            by_salesman=[
+                DiscountBySalesmanOut(
+                    salesman_id=sid,
+                    salesman_name=data["name"],
+                    invoice_count=data["count"],
+                    discount_amount=data["discount"].quantize(TWO_PLACES),
+                )
+                for sid, data in sorted(
+                    by_salesman.items(), key=lambda kv: kv[1]["discount"], reverse=True
+                )
+            ],
+            invoices=invoices,
         )

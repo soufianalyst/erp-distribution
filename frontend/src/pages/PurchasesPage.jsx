@@ -10,6 +10,7 @@ import {
   Select,
   Table,
   money,
+  useUnsavedGuard,
   qty,
 } from "../components/Ui";
 import { useAuth } from "../context/AuthContext";
@@ -152,7 +153,10 @@ function PurchaseForm({ suppliers, warehouses, products, taxRates, onCreated, in
       <div>
         <div className="mb-2 flex items-center justify-between">
           <span className="text-sm font-bold text-slate-600">
-            أسطر الفاتورة — رقم التشغيلة وتاريخ الانتهاء إلزاميان لكل سطر
+            أسطر الفاتورة — رقم التشغيلة وتاريخ الانتهاء إلزاميان لكل سطر{" "}
+            <span className="text-xs font-normal text-slate-400">
+              (Tab في آخر حقل يضيف سطراً جديداً)
+            </span>
           </span>
           <Button type="button" variant="secondary" onClick={() => setLines([...lines, { ...EMPTY_LINE }])}>
             + سطر
@@ -165,6 +169,7 @@ function PurchaseForm({ suppliers, warehouses, products, taxRates, onCreated, in
               <div className="col-span-3">
                 <Select
                   label={index === 0 ? "الصنف" : undefined}
+                  data-purchase-product
                   value={line.product_id}
                   onChange={(e) => setLine(index, "product_id", e.target.value)}
                   required
@@ -235,6 +240,28 @@ function PurchaseForm({ suppliers, warehouses, products, taxRates, onCreated, in
                   min="0"
                   value={line.unit_cost}
                   onChange={(e) => setLine(index, "unit_cost", e.target.value)}
+                  onKeyDown={(e) => {
+                    // Tab out of the last line's final field appends a fresh row,
+                    // so the storekeeper never needs the mouse while keying in goods.
+                    if (
+                      e.key === "Tab" &&
+                      !e.shiftKey &&
+                      index === lines.length - 1 &&
+                      line.product_id &&
+                      line.quantity &&
+                      line.unit_cost
+                    ) {
+                      e.preventDefault();
+                      setLines([...lines, { ...EMPTY_LINE }]);
+                      setTimeout(() => {
+                        const selects = document.querySelectorAll(
+                          "select[data-purchase-product]"
+                        );
+                        const newSelect = selects[selects.length - 1];
+                        if (newSelect) newSelect.focus();
+                      }, 0);
+                    }
+                  }}
                   required
                 />
               </div>
@@ -336,6 +363,14 @@ export default function PurchasesPage() {
   const { can } = useAuth();
   const canBuy = can("purchases.create");
   const [tab, setTab] = useState("list");
+  // The new-invoice form lives in a tab, not a dialog, so switching away would
+  // silently discard it — guard the switch the same way modals are guarded.
+  const newInvoiceGuard = useUnsavedGuard(tab === "new");
+  const switchTab = (next) => {
+    if (next === tab) return;
+    if (tab === "new" && !newInvoiceGuard.confirmLeave()) return;
+    setTab(next);
+  };
   const [viewing, setViewing] = useState(null);
   const [editing, setEditing] = useState(null);
   const [returnFor, setReturnFor] = useState(null);
@@ -357,15 +392,15 @@ export default function PurchasesPage() {
       <div className="flex items-center justify-between">
         <h1 className="text-2xl font-extrabold">فواتير المشتريات</h1>
         <div className="flex gap-2">
-          <Button variant={tab === "list" ? "primary" : "secondary"} onClick={() => setTab("list")}>
+          <Button variant={tab === "list" ? "primary" : "secondary"} onClick={() => switchTab("list")}>
             القائمة
           </Button>
           {canBuy && (
-            <Button variant={tab === "new" ? "primary" : "secondary"} onClick={() => setTab("new")}>
+            <Button variant={tab === "new" ? "primary" : "secondary"} onClick={() => switchTab("new")}>
               + فاتورة جديدة
             </Button>
           )}
-          <Button variant={tab === "returns" ? "primary" : "secondary"} onClick={() => setTab("returns")}>
+          <Button variant={tab === "returns" ? "primary" : "secondary"} onClick={() => switchTab("returns")}>
             المرتجعات
           </Button>
         </div>
@@ -375,18 +410,22 @@ export default function PurchasesPage() {
 
       {tab === "new" && canBuy && (
         <Card title="فاتورة شراء جديدة — تُدخل البضاعة للمخزون في عملية واحدة">
-          <PurchaseForm
-            suppliers={suppliers.data}
-            warehouses={warehouses.data}
-            products={products.data}
-            taxRates={taxRates.data || []}
-            onCreated={(invoice) => {
-              setViewing(invoice);
-              setTab("list");
-              setNotice(null);
-              invoices.reload();
-            }}
-          />
+          <div ref={newInvoiceGuard.ref}>
+            <PurchaseForm
+              suppliers={suppliers.data}
+              warehouses={warehouses.data}
+              products={products.data}
+              taxRates={taxRates.data || []}
+              onCreated={(invoice) => {
+                // Saved, so the fields are no longer unsaved work.
+                newInvoiceGuard.markClean();
+                setViewing(invoice);
+                setTab("list");
+                setNotice(null);
+                invoices.reload();
+              }}
+            />
+          </div>
         </Card>
       )}
 

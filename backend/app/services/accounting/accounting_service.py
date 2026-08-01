@@ -34,6 +34,10 @@ VAT = "2020"
 CAPITAL = "3010"
 SALES_REVENUE = "4010"
 SALES_RETURNS = "4020"
+# Contra-revenue: discounts granted on invoices (including rounding down the
+# collectable amount). Debiting a revenue-type account reduces net revenue,
+# which is exactly how the income statement should treat a discount given.
+SALES_DISCOUNT = "4030"
 COGS = "5010"
 GENERAL_EXPENSES = "5020"
 DAMAGE_LOSS = "5030"
@@ -48,6 +52,7 @@ DEFAULT_ACCOUNTS: list[tuple[str, str, AccountType]] = [
     (CAPITAL, "رأس المال", AccountType.EQUITY),
     (SALES_REVENUE, "إيرادات المبيعات", AccountType.REVENUE),
     (SALES_RETURNS, "مرتجعات المبيعات", AccountType.REVENUE),
+    (SALES_DISCOUNT, "خصم مسموح به", AccountType.REVENUE),
     (COGS, "تكلفة البضاعة المباعة", AccountType.EXPENSE),
     (GENERAL_EXPENSES, "مصاريف تشغيلية عامة", AccountType.EXPENSE),
     (DAMAGE_LOSS, "خسائر التالف والمرتجعات", AccountType.EXPENSE),

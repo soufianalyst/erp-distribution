@@ -113,6 +113,12 @@ class SalesInvoice(Base):
     )
     subtotal: Mapped[Decimal] = mapped_column(Numeric(14, 2), nullable=False)
     vat_amount: Mapped[Decimal] = mapped_column(Numeric(12, 2), nullable=False)
+    # Granted when the collectable amount is adjusted down at issue time (e.g.
+    # rounding 12,005 to 12,000). Applied after VAT, so it never changes the
+    # taxable base — `total` is what the customer actually owes.
+    discount_amount: Mapped[Decimal] = mapped_column(
+        Numeric(14, 2), nullable=False, default=Decimal("0"), server_default="0"
+    )
     total: Mapped[Decimal] = mapped_column(Numeric(14, 2), nullable=False)
     paid_amount: Mapped[Decimal] = mapped_column(
         Numeric(14, 2), nullable=False, default=Decimal("0")
