@@ -24,6 +24,7 @@ PERMISSION_GROUPS: list[dict] = [
             {"code": "stock.receive", "label": "استلام بضاعة"},
             {"code": "stock.transfer", "label": "التحويل بين المستودعات"},
             {"code": "stock.adjust", "label": "تسجيل تعديلات/إتلاف المخزون"},
+            {"code": "stock.stocktake", "label": "جرد المستودعات وتسوية الفروقات"},
             {
                 "code": "stock.adjust_cancel",
                 "label": "إلغاء تعديلات/إتلاف المخزون (إرجاع الكمية)",
@@ -153,6 +154,7 @@ ROLE_DEFAULT_PERMISSIONS: dict[str, frozenset[str]] = {
             "stock.receive",
             "stock.transfer",
             "stock.adjust",
+            "stock.stocktake",
             "delivery.view",
             "delivery.manage",
             "delivery.deliver",

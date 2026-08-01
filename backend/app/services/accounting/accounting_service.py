@@ -41,6 +41,10 @@ SALES_DISCOUNT = "4030"
 COGS = "5010"
 GENERAL_EXPENSES = "5020"
 DAMAGE_LOSS = "5030"
+# Physical-count differences. Typed EXPENSE so a shortfall (debit) is a cost;
+# a surplus credits it, which nets the cost down — the same account carries both
+# directions because they are two outcomes of the same reconciliation.
+STOCKTAKE_VARIANCE = "5040"
 
 DEFAULT_ACCOUNTS: list[tuple[str, str, AccountType]] = [
     (CASH, "الصندوق", AccountType.ASSET),
@@ -56,6 +60,7 @@ DEFAULT_ACCOUNTS: list[tuple[str, str, AccountType]] = [
     (COGS, "تكلفة البضاعة المباعة", AccountType.EXPENSE),
     (GENERAL_EXPENSES, "مصاريف تشغيلية عامة", AccountType.EXPENSE),
     (DAMAGE_LOSS, "خسائر التالف والمرتجعات", AccountType.EXPENSE),
+    (STOCKTAKE_VARIANCE, "فروقات الجرد (عجز وزيادة)", AccountType.EXPENSE),
 ]
 
 

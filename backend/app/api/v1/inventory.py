@@ -16,6 +16,10 @@ from app.api.schemas.inventory import (
     StockAdjustmentOut,
     StockLevelOut,
     StockReceiveRequest,
+    StocktakeCancelIn,
+    StocktakeCountsIn,
+    StocktakeCreate,
+    StocktakeOut,
     StockTransferRequest,
     TransferLineOut,
     WarehouseCreate,
@@ -24,6 +28,7 @@ from app.api.schemas.inventory import (
 )
 from app.api.schemas.purchases import ReorderSuggestionOut
 from app.db.session import get_db
+from app.domain.models.inventory import StocktakeStatus
 from app.domain.models.user import User
 from app.services.inventory.product_service import ProductService
 from app.services.inventory.stock_service import StockService
@@ -322,4 +327,99 @@ async def cancel_adjustment(
     return APIResponse(
         data=StockAdjustmentOut.model_validate(adjustment),
         message="تم إلغاء السجل وإرجاع الكمية للمخزون.",
+    )
+
+
+# --- Stocktakes (physical counts) ---
+@router.post(
+    "/stocktakes",
+    response_model=APIResponse[StocktakeOut],
+    status_code=status.HTTP_201_CREATED,
+)
+async def open_stocktake(
+    body: StocktakeCreate,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(require_permissions("stock.stocktake")),
+) -> APIResponse[StocktakeOut]:
+    """بدء جرد لمستودع: تُلتقط الكميات المتوقعة لكل تشغيلة كورقة جرد."""
+    stocktake = await StockService(db).open_stocktake(body, created_by=current_user.id)
+    return APIResponse(
+        data=StocktakeOut.model_validate(stocktake),
+        message="تم بدء الجرد؛ أدخل الكميات الفعلية ثم ثبّت التسوية.",
+    )
+
+
+@router.get(
+    "/stocktakes",
+    response_model=APIResponse[list[StocktakeOut]],
+    dependencies=[stock_view],
+)
+async def list_stocktakes(
+    warehouse_id: int | None = Query(default=None),
+    stocktake_status: StocktakeStatus | None = Query(
+        default=None, description="تصفية حسب حالة الجرد"
+    ),
+    db: AsyncSession = Depends(get_db),
+) -> APIResponse[list[StocktakeOut]]:
+    """عرض عمليات الجرد، مع إمكانية التصفية حسب المستودع أو الحالة."""
+    stocktakes = await StockService(db).list_stocktakes(warehouse_id, stocktake_status)
+    return APIResponse(data=[StocktakeOut.model_validate(s) for s in stocktakes])
+
+
+@router.get(
+    "/stocktakes/{stocktake_id}",
+    response_model=APIResponse[StocktakeOut],
+    dependencies=[stock_view],
+)
+async def get_stocktake(
+    stocktake_id: int, db: AsyncSession = Depends(get_db)
+) -> APIResponse[StocktakeOut]:
+    """عرض ورقة جرد واحدة بكل سطورها وفروقاتها (للإدخال أو الطباعة)."""
+    stocktake = await StockService(db).get_stocktake(stocktake_id)
+    return APIResponse(data=StocktakeOut.model_validate(stocktake))
+
+
+@router.put("/stocktakes/{stocktake_id}/counts", response_model=APIResponse[StocktakeOut])
+async def save_stocktake_counts(
+    stocktake_id: int,
+    body: StocktakeCountsIn,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(require_permissions("stock.stocktake")),
+) -> APIResponse[StocktakeOut]:
+    """حفظ الكميات الفعلية؛ يمكن الحفظ على دفعات أثناء التنقل بين الرفوف."""
+    stocktake = await StockService(db).save_counts(stocktake_id, body)
+    return APIResponse(
+        data=StocktakeOut.model_validate(stocktake), message="تم حفظ الكميات المُدخلة."
+    )
+
+
+@router.post("/stocktakes/{stocktake_id}/post", response_model=APIResponse[StocktakeOut])
+async def post_stocktake(
+    stocktake_id: int,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(require_permissions("stock.stocktake")),
+) -> APIResponse[StocktakeOut]:
+    """تثبيت الجرد: تُسوّى فروقات النقص والزيادة على المخزون وتُسجّل قيودها."""
+    stocktake = await StockService(db).post_stocktake(
+        stocktake_id, posted_by=current_user.id
+    )
+    return APIResponse(
+        data=StocktakeOut.model_validate(stocktake),
+        message="تم تثبيت الجرد وتسوية الفروقات على المخزون.",
+    )
+
+
+@router.post(
+    "/stocktakes/{stocktake_id}/cancel", response_model=APIResponse[StocktakeOut]
+)
+async def cancel_stocktake(
+    stocktake_id: int,
+    body: StocktakeCancelIn,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(require_permissions("stock.stocktake")),
+) -> APIResponse[StocktakeOut]:
+    """إلغاء جرد لم يُثبّت؛ لا أثر على المخزون لأن الجرد لا يُحرّك شيئاً قبل التثبيت."""
+    stocktake = await StockService(db).cancel_stocktake(stocktake_id, body.cancel_reason)
+    return APIResponse(
+        data=StocktakeOut.model_validate(stocktake), message="تم إلغاء عملية الجرد."
     )

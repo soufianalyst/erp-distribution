@@ -19,6 +19,7 @@ import PrintAdjustmentPage from "./pages/PrintAdjustmentPage";
 import PrintDamageReportPage from "./pages/PrintDamageReportPage";
 import PrintDiscountReportPage from "./pages/PrintDiscountReportPage";
 import PrintPickupPrepPage from "./pages/PrintPickupPrepPage";
+import PrintStocktakePage from "./pages/PrintStocktakePage";
 import ProductsPage from "./pages/ProductsPage";
 import PurchasesPage from "./pages/PurchasesPage";
 import SalesPage from "./pages/SalesPage";
@@ -75,6 +76,14 @@ export default function App() {
               element={
                 <RequireAuth>
                   <PrintAdjustmentPage />
+                </RequireAuth>
+              }
+            />
+            <Route
+              path="/print/stocktake/:stocktakeId"
+              element={
+                <RequireAuth>
+                  <PrintStocktakePage />
                 </RequireAuth>
               }
             />

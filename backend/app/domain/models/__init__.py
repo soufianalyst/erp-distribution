@@ -24,6 +24,9 @@ from app.domain.models.inventory import (
     StockAdjustment,
     StockAdjustmentLine,
     StockAdjustmentReason,
+    Stocktake,
+    StocktakeLine,
+    StocktakeStatus,
     Warehouse,
 )
 from app.domain.models.purchases import (
@@ -88,6 +91,9 @@ __all__ = [
     "StockAdjustment",
     "StockAdjustmentLine",
     "StockAdjustmentReason",
+    "Stocktake",
+    "StocktakeLine",
+    "StocktakeStatus",
     "PurchaseInvoice",
     "PurchaseInvoiceLine",
     "PurchaseInvoiceTax",

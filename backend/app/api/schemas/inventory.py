@@ -5,7 +5,11 @@ from decimal import Decimal
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from app.domain.models.inventory import AdjustmentStatus, StockAdjustmentReason
+from app.domain.models.inventory import (
+    AdjustmentStatus,
+    StockAdjustmentReason,
+    StocktakeStatus,
+)
 
 
 # --- Warehouses ---
@@ -196,3 +200,71 @@ class StockAdjustmentOut(BaseModel):
     cancel_reason: str | None
     created_at: datetime
     lines: list[StockAdjustmentLineOut]
+
+
+# --- Stocktakes (physical counts) ---
+class StocktakeCreate(BaseModel):
+    """Opens a count for one warehouse, snapshotting what the books expect."""
+
+    warehouse_id: int
+    count_date: date | None = None
+    notes: str | None = Field(default=None, max_length=300)
+
+
+class StocktakeCountIn(BaseModel):
+    """One counted line. Zero is a valid count — the shelf was empty."""
+
+    line_id: int
+    counted_quantity: Decimal = Field(ge=0)
+
+
+class StocktakeCountsIn(BaseModel):
+    """Counts can be saved in batches as the aisles are walked."""
+
+    counts: list[StocktakeCountIn] = Field(min_length=1)
+
+
+class StocktakeCancelIn(BaseModel):
+    cancel_reason: str | None = Field(default=None, max_length=300)
+
+
+class StocktakeLineOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: int
+    product_id: int
+    product_name: str
+    sku: str
+    base_unit_name: str
+    batch_id: int
+    batch_number: str
+    expiry_date: date
+    expected_quantity: Decimal
+    # NULL until this batch has been counted.
+    counted_quantity: Decimal | None
+    # Counted minus expected: negative is a shortfall, positive a surplus.
+    variance: Decimal
+    unit_cost: Decimal
+    variance_value: Decimal
+
+
+class StocktakeOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: int
+    warehouse_id: int
+    warehouse_name: str
+    count_date: date
+    status: StocktakeStatus
+    notes: str | None
+    # Net value of the differences: positive = surplus, negative = shortfall.
+    # Only meaningful once posted.
+    net_value: Decimal
+    line_count: int
+    counted_line_count: int
+    variance_line_count: int
+    posted_at: datetime | None
+    cancelled_at: datetime | None
+    cancel_reason: str | None
+    created_at: datetime
+    lines: list[StocktakeLineOut]

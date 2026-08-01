@@ -12,6 +12,8 @@ from app.api.schemas.inventory import (
     StockAdjustmentCreate,
     StockLevelOut,
     StockReceiveRequest,
+    StocktakeCountsIn,
+    StocktakeCreate,
     StockTransferRequest,
     TransferLineOut,
 )
@@ -22,11 +24,15 @@ from app.domain.models.inventory import (
     ProductBatch,
     StockAdjustment,
     StockAdjustmentLine,
+    Stocktake,
+    StocktakeLine,
+    StocktakeStatus,
     Warehouse,
 )
 from app.services.accounting.accounting_service import (
     DAMAGE_LOSS,
     INVENTORY,
+    STOCKTAKE_VARIANCE,
     AccountingService,
 )
 
@@ -518,3 +524,220 @@ class StockService:
 
         await self.session.commit()
         return await self.get_adjustment(adjustment.id)
+
+    # --- Stocktakes (physical counts) ---
+    async def get_stocktake(self, stocktake_id: int) -> Stocktake:
+        result = await self.session.execute(
+            select(Stocktake)
+            .options(
+                selectinload(Stocktake.warehouse),
+                selectinload(Stocktake.lines).selectinload(StocktakeLine.product),
+            )
+            .where(Stocktake.id == stocktake_id)
+        )
+        stocktake = result.scalar_one_or_none()
+        if stocktake is None:
+            raise AppException(404, "عملية الجرد غير موجودة.")
+        return stocktake
+
+    async def list_stocktakes(
+        self,
+        warehouse_id: int | None = None,
+        status: StocktakeStatus | None = None,
+    ) -> list[Stocktake]:
+        stmt = (
+            select(Stocktake)
+            .options(
+                selectinload(Stocktake.warehouse),
+                selectinload(Stocktake.lines).selectinload(StocktakeLine.product),
+            )
+            .order_by(Stocktake.id.desc())
+        )
+        if warehouse_id is not None:
+            stmt = stmt.where(Stocktake.warehouse_id == warehouse_id)
+        if status is not None:
+            stmt = stmt.where(Stocktake.status == status)
+        result = await self.session.execute(stmt)
+        return list(result.scalars().all())
+
+    async def open_stocktake(
+        self, data: StocktakeCreate, created_by: int | None = None
+    ) -> Stocktake:
+        """Open a count for one warehouse, snapshotting the expected quantities.
+
+        Only batches currently holding stock are put on the sheet: goods found in
+        a batch the books show as empty need a receipt, not a count correction.
+        """
+        warehouse = await self.get_active_warehouse(data.warehouse_id)
+
+        # One open count per warehouse: two concurrent sheets would each hold a
+        # stale snapshot and the second to post would undo the first.
+        existing = await self.session.execute(
+            select(Stocktake.id).where(
+                Stocktake.warehouse_id == data.warehouse_id,
+                Stocktake.status == StocktakeStatus.COUNTING,
+            )
+        )
+        open_id = existing.scalars().first()
+        if open_id is not None:
+            raise AppException(
+                409,
+                f"يوجد جرد مفتوح لهذا المستودع (رقم {open_id})؛ "
+                "أكمله أو ألغِه قبل بدء جرد جديد.",
+            )
+
+        batches = await self.session.execute(
+            select(ProductBatch)
+            .options(selectinload(ProductBatch.product))
+            .where(
+                ProductBatch.warehouse_id == data.warehouse_id,
+                ProductBatch.quantity > 0,
+            )
+            .join(Product, ProductBatch.product_id == Product.id)
+            .order_by(Product.name, ProductBatch.expiry_date)
+        )
+        rows = list(batches.scalars().all())
+        if not rows:
+            raise AppException(400, "لا يوجد مخزون في هذا المستودع لجرده.")
+
+        stocktake = Stocktake(
+            warehouse_id=warehouse.id,
+            count_date=data.count_date or date.today(),
+            status=StocktakeStatus.COUNTING,
+            notes=data.notes,
+            net_value=Decimal("0"),
+            created_by=created_by,
+        )
+        for batch in rows:
+            stocktake.lines.append(
+                StocktakeLine(
+                    product_id=batch.product_id,
+                    batch_id=batch.id,
+                    batch_number=batch.batch_number,
+                    expiry_date=batch.expiry_date,
+                    expected_quantity=batch.quantity,
+                    counted_quantity=None,
+                    unit_cost=batch.unit_cost or Decimal("0"),
+                )
+            )
+
+        self.session.add(stocktake)
+        await self.session.commit()
+        return await self.get_stocktake(stocktake.id)
+
+    async def save_counts(
+        self, stocktake_id: int, data: StocktakeCountsIn
+    ) -> Stocktake:
+        """Record counted quantities. Saved in batches as the aisles are walked,
+        so a long count is never lost, and re-counting a line just overwrites it.
+        """
+        stocktake = await self.get_stocktake(stocktake_id)
+        if stocktake.status is not StocktakeStatus.COUNTING:
+            raise AppException(400, "لا يمكن تعديل الكميات بعد تثبيت الجرد أو إلغائه.")
+
+        lines_by_id = {line.id: line for line in stocktake.lines}
+        for count in data.counts:
+            line = lines_by_id.get(count.line_id)
+            if line is None:
+                raise AppException(400, "أحد السطور لا ينتمي إلى هذا الجرد.")
+            line.counted_quantity = count.counted_quantity
+
+        await self.session.commit()
+        return await self.get_stocktake(stocktake.id)
+
+    async def post_stocktake(
+        self, stocktake_id: int, posted_by: int | None = None
+    ) -> Stocktake:
+        """Settle the counted differences against stock and the ledger, atomically.
+
+        Applies each variance as a *delta* to the batch rather than overwriting the
+        quantity outright: stock may legitimately have moved between counting and
+        posting (a sale, a transfer), and a delta preserves those movements while
+        still correcting what the count found.
+
+        Uncounted lines are left alone — an unvisited shelf is not a shortfall.
+        """
+        stocktake = await self.get_stocktake(stocktake_id)
+        if stocktake.status is not StocktakeStatus.COUNTING:
+            raise AppException(400, "تم تثبيت هذا الجرد أو إلغاؤه من قبل.")
+        if stocktake.counted_line_count == 0:
+            raise AppException(400, "أدخل الكميات الفعلية لسطر واحد على الأقل أولاً.")
+
+        shortfall_value = Decimal("0")
+        surplus_value = Decimal("0")
+        for line in stocktake.lines:
+            variance = line.variance
+            if variance == 0:
+                continue
+            batch = await self.session.get(ProductBatch, line.batch_id)
+            if batch is None:
+                raise AppException(
+                    404, f"التشغيلة ({line.batch_number}) لم تعد موجودة."
+                )
+            if batch.quantity + variance < 0:
+                raise AppException(
+                    400,
+                    f"لا يمكن تسوية الصنف ({line.product_name}) في التشغيلة "
+                    f"({line.batch_number}): الرصيد الحالي {batch.quantity} "
+                    "وسيصبح سالباً بعد التسوية؛ أعد الجرد.",
+                )
+            batch.quantity += variance
+            if variance < 0:
+                shortfall_value += -line.variance_value
+            else:
+                surplus_value += line.variance_value
+
+        net_value = surplus_value - shortfall_value
+        stocktake.net_value = net_value
+        stocktake.status = StocktakeStatus.POSTED
+        stocktake.posted_at = datetime.now(timezone.utc)
+        stocktake.posted_by = posted_by
+        await self.session.flush()
+
+        # One netted entry per count. Costs are unknown for batches received
+        # outside a purchase invoice, so a count can move quantities without
+        # moving any value — in which case there is nothing to post.
+        if net_value != 0:
+            items = (
+                [
+                    (INVENTORY, net_value, Decimal("0")),
+                    (STOCKTAKE_VARIANCE, Decimal("0"), net_value),
+                ]
+                if net_value > 0
+                else [
+                    (STOCKTAKE_VARIANCE, -net_value, Decimal("0")),
+                    (INVENTORY, Decimal("0"), -net_value),
+                ]
+            )
+            await self.accounting.add_entry_no_commit(
+                entry_date=stocktake.count_date,
+                description=(
+                    f"تسوية جرد رقم {stocktake.id} — مستودع "
+                    f"({stocktake.warehouse_name})"
+                ),
+                items=items,
+                reference_type="stocktake",
+                reference_id=stocktake.id,
+                created_by=posted_by,
+            )
+
+        await self.session.commit()
+        return await self.get_stocktake(stocktake.id)
+
+    async def cancel_stocktake(
+        self, stocktake_id: int, cancel_reason: str | None = None
+    ) -> Stocktake:
+        """Abandon a count. Nothing to reverse: a count only touches stock when posted."""
+        stocktake = await self.get_stocktake(stocktake_id)
+        if stocktake.status is StocktakeStatus.POSTED:
+            raise AppException(
+                400, "تم تثبيت هذا الجرد؛ صحّح الفروقات بجرد جديد أو بتعديل مخزون."
+            )
+        if stocktake.status is StocktakeStatus.CANCELLED:
+            raise AppException(400, "هذا الجرد ملغى من قبل.")
+
+        stocktake.status = StocktakeStatus.CANCELLED
+        stocktake.cancelled_at = datetime.now(timezone.utc)
+        stocktake.cancel_reason = cancel_reason
+        await self.session.commit()
+        return await self.get_stocktake(stocktake.id)
