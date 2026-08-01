@@ -619,3 +619,58 @@ class TestReports:
         items = response.json()["data"]
         assert [i["batch_number"] for i in items] == ["B-NEAR"]
         assert items[0]["days_remaining"] == 10
+
+    async def test_reorder_suggestions_flag_out_of_stock_and_below_minimum(
+        self, client: AsyncClient
+    ) -> None:
+        """Drives the worklist shown when preparing a purchase order."""
+        admin = await login(client, "admin", TEST_ADMIN_PASSWORD)
+        warehouse_id = await create_warehouse(client, admin, "الرئيسي")
+        # All three carry min_stock_level 50 (see create_product).
+        never_stocked = await create_product(client, admin, "REORDER-NONE")
+        below = await create_product(client, admin, "REORDER-LOW")
+        healthy = await create_product(client, admin, "REORDER-OK")
+        await receive(client, admin, below["id"], warehouse_id, "B-LOW", 90, "20")
+        await receive(client, admin, healthy["id"], warehouse_id, "B-OK", 90, "80")
+
+        response = await client.get(
+            "/api/v1/inventory/stock/reorder-suggestions", headers=admin
+        )
+        assert response.status_code == 200, response.text
+        by_sku = {i["sku"]: i for i in response.json()["data"]}
+
+        # A product with no batches at all must still surface — it is the one most
+        # in need of ordering, and an inner join on batches would hide it.
+        assert never_stocked["sku"] in by_sku
+        assert by_sku[never_stocked["sku"]]["out_of_stock"] is True
+        assert as_decimal(by_sku[never_stocked["sku"]]["shortfall"]) == Decimal("50")
+
+        assert by_sku[below["sku"]]["out_of_stock"] is False
+        assert as_decimal(by_sku[below["sku"]]["current_stock"]) == Decimal("20")
+        assert as_decimal(by_sku[below["sku"]]["shortfall"]) == Decimal("30")
+
+        # Comfortably stocked products stay out of the way.
+        assert healthy["sku"] not in by_sku
+
+    async def test_reorder_suggestions_skip_inactive_products(
+        self, client: AsyncClient
+    ) -> None:
+        admin = await login(client, "admin", TEST_ADMIN_PASSWORD)
+        product = await create_product(client, admin, "REORDER-STOPPED")
+
+        listed = await client.get(
+            "/api/v1/inventory/stock/reorder-suggestions", headers=admin
+        )
+        assert product["sku"] in [i["sku"] for i in listed.json()["data"]]
+
+        stopped = await client.patch(
+            f"/api/v1/inventory/products/{product['id']}",
+            headers=admin,
+            json={"is_active": False},
+        )
+        assert stopped.status_code == 200, stopped.text
+
+        after = await client.get(
+            "/api/v1/inventory/stock/reorder-suggestions", headers=admin
+        )
+        assert product["sku"] not in [i["sku"] for i in after.json()["data"]]

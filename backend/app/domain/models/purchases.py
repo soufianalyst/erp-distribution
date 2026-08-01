@@ -35,6 +35,14 @@ class PurchaseReturnReason(str, enum.Enum):
     OTHER = "other"  # أخرى
 
 
+class PurchaseOrderStatus(str, enum.Enum):
+    DRAFT = "draft"  # مسودة — قيد التحضير، لم تُرسل للمورد بعد
+    SENT = "sent"  # مرسل للمورد — بانتظار التوريد
+    PARTIALLY_RECEIVED = "partially_received"  # مستلم جزئياً
+    RECEIVED = "received"  # مستلم بالكامل
+    CANCELLED = "cancelled"  # ملغى
+
+
 class Supplier(Base):
     __tablename__ = "suppliers"
 
@@ -52,6 +60,92 @@ class Supplier(Base):
     )
 
 
+class PurchaseOrder(Base):
+    """طلب شراء — what we intend to buy from a supplier, before anything arrives.
+
+    Carries no stock or accounting effect on its own. Goods enter the warehouse
+    only when a delivery is received, which raises a normal purchase invoice.
+    A single order may be received over several deliveries.
+    """
+
+    __tablename__ = "purchase_orders"
+
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    supplier_id: Mapped[int] = mapped_column(
+        ForeignKey("suppliers.id"), nullable=False, index=True
+    )
+    # Where the goods are expected to land; each receipt can override it.
+    warehouse_id: Mapped[int] = mapped_column(
+        ForeignKey("warehouses.id"), nullable=False
+    )
+    order_date: Mapped[date] = mapped_column(Date, nullable=False)
+    expected_date: Mapped[date | None] = mapped_column(Date, nullable=True)
+    status: Mapped[PurchaseOrderStatus] = mapped_column(
+        Enum(PurchaseOrderStatus, values_callable=lambda e: [m.value for m in e]),
+        nullable=False,
+        default=PurchaseOrderStatus.DRAFT,
+        server_default=PurchaseOrderStatus.DRAFT.value,
+    )
+    # Expected value at the prices agreed when ordering; the actual cost is
+    # whatever the receipts end up recording.
+    subtotal: Mapped[Decimal] = mapped_column(Numeric(14, 2), nullable=False)
+    notes: Mapped[str | None] = mapped_column(String(300))
+    sent_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    cancelled_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    cancel_reason: Mapped[str | None] = mapped_column(String(300))
+    created_by: Mapped[int | None] = mapped_column(ForeignKey("users.id"))
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+
+    supplier: Mapped[Supplier] = relationship()
+    lines: Mapped[list["PurchaseOrderLine"]] = relationship(
+        back_populates="order", cascade="all, delete-orphan"
+    )
+    # Deliveries raised against this order. Viewonly because the link is owned by
+    # the invoice side (purchase_invoices.purchase_order_id) — an order never
+    # creates or detaches invoices by itself.
+    received_invoices: Mapped[list["PurchaseInvoice"]] = relationship(
+        "PurchaseInvoice", viewonly=True, order_by="PurchaseInvoice.id"
+    )
+
+    @property
+    def is_fully_received(self) -> bool:
+        return all(line.received_quantity >= line.quantity for line in self.lines)
+
+    @property
+    def received_invoice_ids(self) -> list[int]:
+        return [invoice.id for invoice in self.received_invoices]
+
+
+class PurchaseOrderLine(Base):
+    __tablename__ = "purchase_order_lines"
+
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    order_id: Mapped[int] = mapped_column(
+        ForeignKey("purchase_orders.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    product_id: Mapped[int] = mapped_column(ForeignKey("products.id"), nullable=False)
+    # Ordered amount in the product's base unit, at the expected cost per base
+    # unit. Batch number and expiry are unknown until the goods actually arrive,
+    # so they live on the receipt, not here.
+    quantity: Mapped[Decimal] = mapped_column(Numeric(14, 3), nullable=False)
+    received_quantity: Mapped[Decimal] = mapped_column(
+        Numeric(14, 3), nullable=False, default=Decimal("0"), server_default="0"
+    )
+    unit_cost: Mapped[Decimal] = mapped_column(Numeric(12, 4), nullable=False)
+    line_total: Mapped[Decimal] = mapped_column(Numeric(14, 2), nullable=False)
+
+    order: Mapped[PurchaseOrder] = relationship(back_populates="lines")
+
+    @property
+    def outstanding_quantity(self) -> Decimal:
+        """Still to be delivered on this line."""
+        return max(self.quantity - self.received_quantity, Decimal("0"))
+
+
 class PurchaseInvoice(Base):
     __tablename__ = "purchase_invoices"
 
@@ -64,6 +158,11 @@ class PurchaseInvoice(Base):
     )
     # The supplier's own paper invoice reference, if any.
     supplier_invoice_number: Mapped[str | None] = mapped_column(String(50))
+    # Set when this invoice came from receiving a purchase order, so an order
+    # can show every delivery raised against it.
+    purchase_order_id: Mapped[int | None] = mapped_column(
+        ForeignKey("purchase_orders.id"), nullable=True, index=True
+    )
     invoice_date: Mapped[date] = mapped_column(Date, nullable=False)
     payment_method: Mapped[PurchasePaymentMethod] = mapped_column(
         Enum(PurchasePaymentMethod, values_callable=lambda e: [m.value for m in e]),

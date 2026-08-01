@@ -278,6 +278,72 @@ class StockService:
             for row in result.all()
         ]
 
+    async def reorder_suggestions(self) -> list["ReorderSuggestionOut"]:
+        """Active products worth reordering: out of stock, or at/below their minimum.
+
+        Deliberately an OUTER join from products: an inner join on batches — the
+        way `stock_levels` works — hides products with no stock at all, which are
+        exactly the ones most in need of ordering.
+        """
+        from app.api.schemas.purchases import ReorderSuggestionOut
+
+        stock = func.coalesce(func.sum(ProductBatch.quantity), 0).label("stock")
+        stmt = (
+            select(
+                Product.id,
+                Product.sku,
+                Product.name,
+                Product.base_unit_name,
+                Product.min_stock_level,
+                stock,
+            )
+            .outerjoin(
+                ProductBatch,
+                (ProductBatch.product_id == Product.id) & (ProductBatch.quantity > 0),
+            )
+            .where(Product.is_active.is_(True))
+            .group_by(
+                Product.id,
+                Product.sku,
+                Product.name,
+                Product.base_unit_name,
+                Product.min_stock_level,
+            )
+            .having(stock <= Product.min_stock_level)
+            .order_by(stock, Product.name)
+        )
+        rows = (await self.session.execute(stmt)).all()
+        if not rows:
+            return []
+
+        # Latest known purchase cost per product, to pre-fill an order line.
+        costs = await self.session.execute(
+            select(ProductBatch.product_id, ProductBatch.unit_cost)
+            .where(
+                ProductBatch.product_id.in_([r[0] for r in rows]),
+                ProductBatch.unit_cost.is_not(None),
+            )
+            .order_by(ProductBatch.product_id, ProductBatch.id.desc())
+        )
+        last_cost: dict[int, Decimal] = {}
+        for product_id, unit_cost in costs.all():
+            last_cost.setdefault(product_id, unit_cost)
+
+        return [
+            ReorderSuggestionOut(
+                product_id=row[0],
+                sku=row[1],
+                name=row[2],
+                base_unit_name=row[3],
+                current_stock=Decimal(str(row[5])),
+                min_stock_level=row[4],
+                shortfall=max(row[4] - Decimal(str(row[5])), Decimal("0")),
+                out_of_stock=Decimal(str(row[5])) <= 0,
+                last_unit_cost=last_cost.get(row[0]),
+            )
+            for row in rows
+        ]
+
     async def near_expiry(self, days: int = 30) -> list[NearExpiryOut]:
         """Batches expiring within `days` days — including already-expired stock still on hand."""
         today = date.today()

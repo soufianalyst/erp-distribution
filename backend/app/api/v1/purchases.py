@@ -8,6 +8,11 @@ from app.api.schemas.common import APIResponse
 from app.api.schemas.purchases import (
     PurchaseInvoiceCreate,
     PurchaseInvoiceOut,
+    PurchaseOrderCancelIn,
+    PurchaseOrderCreate,
+    PurchaseOrderOut,
+    PurchaseOrderReceiveIn,
+    PurchaseOrderUpdate,
     PurchaseReturnCreate,
     PurchaseReturnOut,
     SupplierCreate,
@@ -18,6 +23,7 @@ from app.api.schemas.purchases import (
     SupplierUpdate,
 )
 from app.db.session import get_db
+from app.domain.models.purchases import PurchaseOrderStatus
 from app.domain.models.user import User
 from app.services.purchases.purchase_service import PurchaseService
 
@@ -161,6 +167,120 @@ async def delete_invoice(
     """حذف فاتورة شراء نهائياً (المدير): يُعكس أثرها على المخزون وتُحذف قيودها."""
     await PurchaseService(db).delete_invoice(invoice_id)
     return APIResponse(data=None, message="تم حذف فاتورة الشراء وعكس أثرها على المخزون بنجاح.")
+
+
+# --- Purchase orders ---
+@router.post(
+    "/orders",
+    response_model=APIResponse[PurchaseOrderOut],
+    status_code=status.HTTP_201_CREATED,
+)
+async def create_order(
+    body: PurchaseOrderCreate,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(require_permissions("purchases.orders")),
+) -> APIResponse[PurchaseOrderOut]:
+    """إنشاء طلب شراء كمسودة — لا أثر على المخزون أو الحسابات حتى الاستلام."""
+    order = await PurchaseService(db).create_order(body, created_by=current_user.id)
+    return APIResponse(
+        data=PurchaseOrderOut.model_validate(order),
+        message="تم إنشاء طلب الشراء كمسودة بنجاح.",
+    )
+
+
+@router.get(
+    "/orders",
+    response_model=APIResponse[list[PurchaseOrderOut]],
+    dependencies=[purchases_view],
+)
+async def list_orders(
+    supplier_id: int | None = Query(default=None),
+    order_status: PurchaseOrderStatus | None = Query(
+        default=None, description="تصفية حسب حالة الطلب"
+    ),
+    db: AsyncSession = Depends(get_db),
+) -> APIResponse[list[PurchaseOrderOut]]:
+    """عرض طلبات الشراء، مع إمكانية التصفية حسب المورد أو الحالة."""
+    orders = await PurchaseService(db).list_orders(supplier_id, order_status)
+    return APIResponse(data=[PurchaseOrderOut.model_validate(o) for o in orders])
+
+
+@router.get(
+    "/orders/{order_id}",
+    response_model=APIResponse[PurchaseOrderOut],
+    dependencies=[purchases_view],
+)
+async def get_order(
+    order_id: int, db: AsyncSession = Depends(get_db)
+) -> APIResponse[PurchaseOrderOut]:
+    """عرض تفاصيل طلب شراء واحد مع أسطره والكميات المتبقية عليه."""
+    order = await PurchaseService(db).get_order(order_id)
+    return APIResponse(data=PurchaseOrderOut.model_validate(order))
+
+
+@router.put("/orders/{order_id}", response_model=APIResponse[PurchaseOrderOut])
+async def update_order(
+    order_id: int,
+    body: PurchaseOrderUpdate,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(require_permissions("purchases.orders")),
+) -> APIResponse[PurchaseOrderOut]:
+    """تعديل طلب شراء ما دام مسودة؛ بعد إرساله للمورد لا يمكن تعديله."""
+    order = await PurchaseService(db).update_order(order_id, body)
+    return APIResponse(
+        data=PurchaseOrderOut.model_validate(order),
+        message="تم تعديل طلب الشراء بنجاح.",
+    )
+
+
+@router.post("/orders/{order_id}/send", response_model=APIResponse[PurchaseOrderOut])
+async def send_order(
+    order_id: int,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(require_permissions("purchases.orders")),
+) -> APIResponse[PurchaseOrderOut]:
+    """إرسال الطلب للمورد؛ بعدها يصبح جاهزاً لاستلام التوريدات."""
+    order = await PurchaseService(db).send_order(order_id)
+    return APIResponse(
+        data=PurchaseOrderOut.model_validate(order),
+        message="تم إرسال طلب الشراء للمورد.",
+    )
+
+
+@router.post("/orders/{order_id}/cancel", response_model=APIResponse[PurchaseOrderOut])
+async def cancel_order(
+    order_id: int,
+    body: PurchaseOrderCancelIn,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(require_permissions("purchases.orders")),
+) -> APIResponse[PurchaseOrderOut]:
+    """إلغاء الطلب وما تبقى عليه؛ التوريدات المستلمة تبقى كفواتير شراء قائمة."""
+    order = await PurchaseService(db).cancel_order(order_id, body.cancel_reason)
+    return APIResponse(
+        data=PurchaseOrderOut.model_validate(order),
+        message="تم إلغاء طلب الشراء.",
+    )
+
+
+@router.post(
+    "/orders/{order_id}/receive",
+    response_model=APIResponse[PurchaseInvoiceOut],
+    status_code=status.HTTP_201_CREATED,
+)
+async def receive_order(
+    order_id: int,
+    body: PurchaseOrderReceiveIn,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(require_permissions("purchases.orders")),
+) -> APIResponse[PurchaseInvoiceOut]:
+    """استلام توريد على طلب شراء: تُصدر فاتورة شراء وتدخل البضاعة للمخزون."""
+    invoice = await PurchaseService(db).receive_order(
+        order_id, body, created_by=current_user.id
+    )
+    return APIResponse(
+        data=PurchaseInvoiceOut.model_validate(invoice),
+        message="تم استلام التوريد وإصدار فاتورة الشراء بنجاح.",
+    )
 
 
 # --- Purchase returns ---

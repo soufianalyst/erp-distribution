@@ -22,6 +22,7 @@ from app.api.schemas.inventory import (
     WarehouseOut,
     WarehouseUpdate,
 )
+from app.api.schemas.purchases import ReorderSuggestionOut
 from app.db.session import get_db
 from app.domain.models.user import User
 from app.services.inventory.product_service import ProductService
@@ -228,6 +229,19 @@ async def stock_levels(
     """عرض أرصدة المخزون الحالية مجمعة حسب الصنف والمستودع."""
     levels = await StockService(db).stock_levels(product_id, warehouse_id)
     return APIResponse(data=levels)
+
+
+@router.get(
+    "/stock/reorder-suggestions",
+    response_model=APIResponse[list[ReorderSuggestionOut]],
+    dependencies=[stock_view],
+)
+async def reorder_suggestions(
+    db: AsyncSession = Depends(get_db),
+) -> APIResponse[list[ReorderSuggestionOut]]:
+    """الأصناف التي نفدت أو وصلت حدها الأدنى — لتسهيل تحضير طلب الشراء."""
+    items = await StockService(db).reorder_suggestions()
+    return APIResponse(data=items)
 
 
 @router.get(

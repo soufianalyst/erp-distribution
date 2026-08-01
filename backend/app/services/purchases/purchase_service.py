@@ -9,6 +9,11 @@ from sqlalchemy.orm import selectinload
 
 from app.api.schemas.purchases import (
     PurchaseInvoiceCreate,
+    PurchaseLineIn,
+    PurchaseOrderCreate,
+    PurchaseOrderReceiveIn,
+    PurchaseOrderUpdate,
+    PurchaseReceiptLineIn,
     PurchaseReturnCreate,
     SupplierCreate,
     SupplierPaymentCreate,
@@ -22,6 +27,9 @@ from app.domain.models.purchases import (
     PurchaseInvoice,
     PurchaseInvoiceLine,
     PurchaseInvoiceTax,
+    PurchaseOrder,
+    PurchaseOrderLine,
+    PurchaseOrderStatus,
     PurchasePaymentMethod,
     PurchaseReturn,
     PurchaseReturnLine,
@@ -197,11 +205,17 @@ class PurchaseService:
         return subtotal
 
     async def create_invoice(
-        self, data: PurchaseInvoiceCreate, created_by: int | None = None
+        self,
+        data: PurchaseInvoiceCreate,
+        created_by: int | None = None,
+        purchase_order_id: int | None = None,
     ) -> PurchaseInvoice:
         """Post a purchase invoice and enter its goods into stock — all in ONE transaction.
 
         If any line fails (unknown product, expired goods, batch conflict), nothing is saved.
+        `purchase_order_id` is set when the invoice is a delivery received against
+        an order (see `receive_order`); the commit here covers the order's updated
+        received quantities too, so a failed receipt leaves the order untouched.
         """
         supplier = await self.get_supplier(data.supplier_id)
         if not supplier.is_active:
@@ -213,6 +227,7 @@ class PurchaseService:
             supplier_id=data.supplier_id,
             warehouse_id=data.warehouse_id,
             supplier_invoice_number=data.supplier_invoice_number,
+            purchase_order_id=purchase_order_id,
             invoice_date=data.invoice_date or date.today(),
             payment_method=data.payment_method,
             shipping_cost=data.shipping_cost,
@@ -410,6 +425,248 @@ class PurchaseService:
             stmt = stmt.where(PurchaseInvoice.supplier_id == supplier_id)
         result = await self.session.execute(stmt)
         return list(result.scalars().all())
+
+    # --- Purchase orders ---
+    async def _build_order_lines(
+        self, order: PurchaseOrder, data: PurchaseOrderCreate | PurchaseOrderUpdate
+    ) -> Decimal:
+        """Attach the ordered lines, converted to base units; returns the subtotal.
+
+        No stock or accounting effect — an order is only an intention to buy.
+        """
+        subtotal = Decimal("0")
+        for line in data.lines:
+            result = await self.session.execute(
+                select(Product)
+                .options(selectinload(Product.units))
+                .where(Product.id == line.product_id)
+            )
+            product = result.scalar_one_or_none()
+            if product is None:
+                raise AppException(404, f"الصنف رقم {line.product_id} غير موجود.")
+            if not product.is_active:
+                raise AppException(400, f"الصنف ({product.name}) موقوف ولا يمكن طلبه.")
+
+            base_quantity = self.stock.to_base_quantity(
+                product, line.quantity, line.unit_id
+            )
+            line_total = (line.quantity * line.unit_cost).quantize(
+                TWO_PLACES, rounding=ROUND_HALF_UP
+            )
+            base_unit_cost = (
+                (line_total / base_quantity).quantize(
+                    FOUR_PLACES, rounding=ROUND_HALF_UP
+                )
+                if base_quantity > 0
+                else Decimal("0")
+            )
+
+            order.lines.append(
+                PurchaseOrderLine(
+                    product_id=line.product_id,
+                    quantity=base_quantity,
+                    received_quantity=Decimal("0"),
+                    unit_cost=base_unit_cost,
+                    line_total=line_total,
+                )
+            )
+            subtotal += line_total
+        return subtotal
+
+    async def create_order(
+        self, data: PurchaseOrderCreate, created_by: int | None = None
+    ) -> PurchaseOrder:
+        """Raise a purchase order as a draft; nothing reaches stock or the ledger yet."""
+        supplier = await self.get_supplier(data.supplier_id)
+        if not supplier.is_active:
+            raise AppException(400, "هذا المورد موقوف ولا يمكن الشراء منه.")
+        await self.stock.get_active_warehouse(data.warehouse_id)
+
+        order = PurchaseOrder(
+            supplier_id=data.supplier_id,
+            warehouse_id=data.warehouse_id,
+            order_date=date.today(),
+            expected_date=data.expected_date,
+            status=PurchaseOrderStatus.DRAFT,
+            subtotal=Decimal("0"),
+            notes=data.notes,
+            created_by=created_by,
+        )
+        order.subtotal = await self._build_order_lines(order, data)
+
+        self.session.add(order)
+        await self.session.commit()
+        return await self.get_order(order.id)
+
+    async def get_order(self, order_id: int) -> PurchaseOrder:
+        result = await self.session.execute(
+            select(PurchaseOrder)
+            .options(
+                selectinload(PurchaseOrder.lines),
+                # Eager: `received_invoice_ids` walks this and cannot lazy-load
+                # under an async session.
+                selectinload(PurchaseOrder.received_invoices),
+            )
+            .where(PurchaseOrder.id == order_id)
+        )
+        order = result.scalar_one_or_none()
+        if order is None:
+            raise AppException(404, "طلب الشراء غير موجود.")
+        return order
+
+    async def list_orders(
+        self,
+        supplier_id: int | None = None,
+        status: PurchaseOrderStatus | None = None,
+    ) -> list[PurchaseOrder]:
+        stmt = (
+            select(PurchaseOrder)
+            .options(
+                selectinload(PurchaseOrder.lines),
+                selectinload(PurchaseOrder.received_invoices),
+            )
+            .order_by(PurchaseOrder.id.desc())
+        )
+        if supplier_id is not None:
+            stmt = stmt.where(PurchaseOrder.supplier_id == supplier_id)
+        if status is not None:
+            stmt = stmt.where(PurchaseOrder.status == status)
+        result = await self.session.execute(stmt)
+        return list(result.scalars().all())
+
+    async def update_order(
+        self, order_id: int, data: PurchaseOrderUpdate
+    ) -> PurchaseOrder:
+        """Rewrite a draft order. Once sent, the supplier has it — editing is refused."""
+        order = await self.get_order(order_id)
+        if order.status is not PurchaseOrderStatus.DRAFT:
+            raise AppException(
+                400, "لا يمكن تعديل الطلب إلا وهو مسودة؛ أنشئ طلباً جديداً."
+            )
+
+        supplier = await self.get_supplier(data.supplier_id)
+        if not supplier.is_active:
+            raise AppException(400, "هذا المورد موقوف ولا يمكن الشراء منه.")
+        await self.stock.get_active_warehouse(data.warehouse_id)
+
+        order.supplier_id = data.supplier_id
+        order.warehouse_id = data.warehouse_id
+        order.expected_date = data.expected_date
+        order.notes = data.notes
+        order.lines.clear()
+        await self.session.flush()
+        order.subtotal = await self._build_order_lines(order, data)
+
+        await self.session.commit()
+        return await self.get_order(order.id)
+
+    async def send_order(self, order_id: int) -> PurchaseOrder:
+        """Mark a draft as sent to the supplier; only then can deliveries be received."""
+        order = await self.get_order(order_id)
+        if order.status is not PurchaseOrderStatus.DRAFT:
+            raise AppException(400, "تم إرسال هذا الطلب من قبل.")
+        order.status = PurchaseOrderStatus.SENT
+        order.sent_at = datetime.now(timezone.utc)
+        await self.session.commit()
+        return await self.get_order(order.id)
+
+    async def cancel_order(
+        self, order_id: int, cancel_reason: str | None = None
+    ) -> PurchaseOrder:
+        """Abandon an order and whatever is still outstanding on it.
+
+        Deliveries already received stay as their own purchase invoices — they are
+        real goods in the warehouse — so a partially received order can be
+        cancelled to mean "we are not expecting the rest".
+        """
+        order = await self.get_order(order_id)
+        if order.status is PurchaseOrderStatus.CANCELLED:
+            raise AppException(400, "هذا الطلب ملغى من قبل.")
+        if order.status is PurchaseOrderStatus.RECEIVED:
+            raise AppException(400, "لا يمكن إلغاء طلب تم استلامه بالكامل.")
+        order.status = PurchaseOrderStatus.CANCELLED
+        order.cancelled_at = datetime.now(timezone.utc)
+        order.cancel_reason = cancel_reason
+        await self.session.commit()
+        return await self.get_order(order.id)
+
+    async def receive_order(
+        self,
+        order_id: int,
+        data: PurchaseOrderReceiveIn,
+        created_by: int | None = None,
+    ) -> PurchaseInvoice:
+        """Receive a delivery against an order: raises a normal purchase invoice.
+
+        The invoice is what carries the stock and accounting effect; the order only
+        tracks how much of each line has now arrived. An order may be received over
+        several deliveries, and the whole thing is one transaction — a rejected
+        line (expired goods, batch conflict) leaves the order's received
+        quantities untouched.
+        """
+        order = await self.get_order(order_id)
+        if order.status is PurchaseOrderStatus.DRAFT:
+            raise AppException(400, "أرسل الطلب للمورد أولاً قبل استلام البضاعة.")
+        if order.status is PurchaseOrderStatus.CANCELLED:
+            raise AppException(400, "هذا الطلب ملغى ولا يمكن استلام بضاعة عليه.")
+        if order.status is PurchaseOrderStatus.RECEIVED:
+            raise AppException(400, "تم استلام هذا الطلب بالكامل.")
+
+        lines_by_id = {line.id: line for line in order.lines}
+        # Validate the whole delivery before touching anything, so a bad line
+        # cannot leave half the receipt applied.
+        receipts: list[tuple[PurchaseOrderLine, PurchaseReceiptLineIn]] = []
+        for receipt_line in data.lines:
+            order_line = lines_by_id.get(receipt_line.order_line_id)
+            if order_line is None:
+                raise AppException(400, "أحد السطور لا ينتمي إلى هذا الطلب.")
+            if receipt_line.quantity > order_line.outstanding_quantity:
+                raise AppException(
+                    400,
+                    "الكمية المستلمة أكبر من المتبقي على السطر؛ "
+                    f"المتبقي {order_line.outstanding_quantity} فقط.",
+                )
+            receipts.append((order_line, receipt_line))
+
+        invoice_data = PurchaseInvoiceCreate(
+            supplier_id=order.supplier_id,
+            warehouse_id=data.warehouse_id or order.warehouse_id,
+            payment_method=data.payment_method,
+            supplier_invoice_number=data.supplier_invoice_number,
+            invoice_date=data.invoice_date,
+            shipping_cost=data.shipping_cost,
+            tax_rate_ids=data.tax_rate_ids,
+            notes=data.notes,
+            lines=[
+                PurchaseLineIn(
+                    product_id=order_line.product_id,
+                    batch_number=receipt_line.batch_number,
+                    expiry_date=receipt_line.expiry_date,
+                    quantity=receipt_line.quantity,
+                    # Already base-unit quantities and costs on both sides.
+                    unit_id=None,
+                    unit_cost=(
+                        receipt_line.unit_cost
+                        if receipt_line.unit_cost is not None
+                        else order_line.unit_cost
+                    ),
+                )
+                for order_line, receipt_line in receipts
+            ],
+        )
+
+        for order_line, receipt_line in receipts:
+            order_line.received_quantity += receipt_line.quantity
+        order.status = (
+            PurchaseOrderStatus.RECEIVED
+            if order.is_fully_received
+            else PurchaseOrderStatus.PARTIALLY_RECEIVED
+        )
+
+        # create_invoice commits, which also persists the order changes above.
+        return await self.create_invoice(
+            invoice_data, created_by=created_by, purchase_order_id=order.id
+        )
 
     # --- Purchase returns ---
     async def create_return(
