@@ -144,17 +144,17 @@ function PurchaseForm({ suppliers, warehouses, products, taxRates, onCreated, in
       </div>
 
       <div>
-        <span className="mb-1 block text-sm font-bold text-slate-600">
+        <span className="mb-1 block text-sm font-bold text-slate-600 dark:text-slate-400">
           الضرائب المطبّقة (يمكن اختيار أكثر من ضريبة)
         </span>
-        <div className="flex flex-wrap gap-3 rounded-lg border border-slate-300 bg-white p-3">
+        <div className="flex flex-wrap gap-3 rounded-lg border border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-800 p-3">
           {taxRates.filter((t) => t.is_active).length === 0 && (
-            <span className="text-sm text-slate-400">لا توجد ضرائب مفعّلة.</span>
+            <span className="text-sm text-slate-400 dark:text-slate-500">لا توجد ضرائب مفعّلة.</span>
           )}
           {taxRates
             .filter((t) => t.is_active)
             .map((t) => (
-              <label key={t.id} className="flex items-center gap-2 text-sm font-bold text-slate-700">
+              <label key={t.id} className="flex items-center gap-2 text-sm font-bold text-slate-700 dark:text-slate-300">
                 <input
                   type="checkbox"
                   checked={form.tax_rate_ids.includes(t.id)}
@@ -168,9 +168,9 @@ function PurchaseForm({ suppliers, warehouses, products, taxRates, onCreated, in
 
       <div>
         <div className="mb-2 flex items-center justify-between">
-          <span className="text-sm font-bold text-slate-600">
+          <span className="text-sm font-bold text-slate-600 dark:text-slate-400">
             أسطر الفاتورة — رقم التشغيلة وتاريخ الانتهاء إلزاميان لكل سطر{" "}
-            <span className="text-xs font-normal text-slate-400">
+            <span className="text-xs font-normal text-slate-400 dark:text-slate-500">
               (Tab في آخر حقل يضيف سطراً جديداً)
             </span>
           </span>
@@ -181,10 +181,10 @@ function PurchaseForm({ suppliers, warehouses, products, taxRates, onCreated, in
         {lines.map((line, index) => {
           const product = products.find((p) => String(p.id) === String(line.product_id));
           return (
-            <div key={index} className="mb-2 grid grid-cols-12 items-end gap-2">
+            <div key={index} className={`line-row ${index === 0 ? "line-row-first" : ""} mb-2 grid grid-cols-12 items-end gap-2 max-sm:grid-cols-1 max-sm:[&>*]:col-span-1`}>
               <div className="col-span-3">
                 <Select
-                  label={index === 0 ? "الصنف" : undefined}
+                  label="الصنف"
                   data-purchase-product
                   value={line.product_id}
                   onChange={(e) => setLine(index, "product_id", e.target.value)}
@@ -202,7 +202,7 @@ function PurchaseForm({ suppliers, warehouses, products, taxRates, onCreated, in
               </div>
               <div className="col-span-2">
                 <Input
-                  label={index === 0 ? "التشغيلة" : undefined}
+                  label="التشغيلة"
                   value={line.batch_number}
                   onChange={(e) => setLine(index, "batch_number", e.target.value)}
                   required
@@ -210,7 +210,7 @@ function PurchaseForm({ suppliers, warehouses, products, taxRates, onCreated, in
               </div>
               <div className="col-span-2">
                 <Input
-                  label={index === 0 ? "تاريخ الانتهاء" : undefined}
+                  label="تاريخ الانتهاء"
                   type="date"
                   value={line.expiry_date}
                   onChange={(e) => setLine(index, "expiry_date", e.target.value)}
@@ -219,7 +219,7 @@ function PurchaseForm({ suppliers, warehouses, products, taxRates, onCreated, in
               </div>
               <div className="col-span-1">
                 <Input
-                  label={index === 0 ? "الكمية" : undefined}
+                  label="الكمية"
                   type="number"
                   step="any"
                   min="0.001"
@@ -230,7 +230,7 @@ function PurchaseForm({ suppliers, warehouses, products, taxRates, onCreated, in
               </div>
               <div className="col-span-2">
                 <Select
-                  label={index === 0 ? "الوحدة" : undefined}
+                  label="الوحدة"
                   value={line.unit_id}
                   onChange={(e) => setLine(index, "unit_id", e.target.value)}
                 >
@@ -250,7 +250,7 @@ function PurchaseForm({ suppliers, warehouses, products, taxRates, onCreated, in
               </div>
               <div className="col-span-1">
                 <Input
-                  label={index === 0 ? "سعر الشراء" : undefined}
+                  label="سعر الشراء"
                   type="number"
                   step="any"
                   min="0"
@@ -304,11 +304,11 @@ function ReorderWorklist({ onAdd, addedIds }) {
   const rows = (suggestions.data || []).filter((s) => !addedIds.includes(String(s.product_id)));
 
   return (
-    <div className="rounded-lg border border-amber-300 bg-amber-50 p-3">
+    <div className="rounded-lg border border-amber-300 dark:border-amber-800 bg-amber-50 dark:bg-amber-950/40 p-3">
       <div className="mb-2 flex items-center justify-between">
-        <span className="text-sm font-bold text-amber-900">
+        <span className="text-sm font-bold text-amber-900 dark:text-amber-200">
           أصناف تحتاج إعادة طلب — نفدت أو وصلت حدها الأدنى
-          <span className="block text-xs font-normal text-amber-800">
+          <span className="block text-xs font-normal text-amber-800 dark:text-amber-300">
             للتذكير فقط؛ يمكنك إضافة أي صنف آخر للطلب حتى لو كان مخزونه جيداً.
           </span>
         </span>
@@ -320,16 +320,16 @@ function ReorderWorklist({ onAdd, addedIds }) {
       </div>
       <Alert>{suggestions.error}</Alert>
       {rows.length === 0 ? (
-        <p className="text-sm font-bold text-emerald-800">
+        <p className="text-sm font-bold text-emerald-800 dark:text-emerald-300">
           {(suggestions.data || []).length
             ? "تمت إضافة كل الأصناف المقترحة إلى الطلب."
             : "لا توجد أصناف نفدت أو تحت الحد الأدنى — المخزون بحالة جيدة."}
         </p>
       ) : (
-        <div className="max-h-52 overflow-y-auto">
-          <table className="w-full text-xs">
+        <div className="max-h-52 overflow-auto">
+          <table className="w-full min-w-[30rem] text-xs">
             <thead>
-              <tr className="text-amber-900">
+              <tr className="text-amber-900 dark:text-amber-200">
                 <th className="text-right font-normal">الصنف</th>
                 <th className="text-right font-normal">المتوفر</th>
                 <th className="text-right font-normal">الحد الأدنى</th>
@@ -339,7 +339,7 @@ function ReorderWorklist({ onAdd, addedIds }) {
             </thead>
             <tbody>
               {rows.map((s) => (
-                <tr key={s.product_id} className="border-t border-amber-200">
+                <tr key={s.product_id} className="border-t border-amber-200 dark:border-amber-900">
                   <td className="py-1 font-bold">
                     {s.sku} — {s.name}
                     {s.out_of_stock && (
@@ -352,7 +352,7 @@ function ReorderWorklist({ onAdd, addedIds }) {
                     {qty(s.current_stock)} {s.base_unit_name}
                   </td>
                   <td>{qty(s.min_stock_level)}</td>
-                  <td className="font-bold text-rose-700">{qty(s.shortfall)}</td>
+                  <td className="font-bold text-rose-700 dark:text-rose-400">{qty(s.shortfall)}</td>
                   <td className="text-left">
                     <Button type="button" variant="secondary" onClick={() => onAdd(s)}>
                       + أضف للطلب
@@ -476,9 +476,9 @@ function PurchaseOrderForm({ suppliers, warehouses, products, order, onDone }) {
 
       <div>
         <div className="mb-2 flex items-center justify-between">
-          <span className="text-sm font-bold text-slate-600">
+          <span className="text-sm font-bold text-slate-600 dark:text-slate-400">
             أسطر الطلب — الأسعار متوقعة، والفعلي يُسجّل عند الاستلام{" "}
-            <span className="text-xs font-normal text-slate-400">
+            <span className="text-xs font-normal text-slate-400 dark:text-slate-500">
               (Tab في آخر حقل يضيف سطراً جديداً)
             </span>
           </span>
@@ -489,10 +489,10 @@ function PurchaseOrderForm({ suppliers, warehouses, products, order, onDone }) {
         {lines.map((line, index) => {
           const product = products.find((p) => String(p.id) === String(line.product_id));
           return (
-            <div key={index} className="mb-2 grid grid-cols-12 items-end gap-2">
+            <div key={index} className={`line-row ${index === 0 ? "line-row-first" : ""} mb-2 grid grid-cols-12 items-end gap-2 max-sm:grid-cols-1 max-sm:[&>*]:col-span-1`}>
               <div className="col-span-5">
                 <Select
-                  label={index === 0 ? "الصنف" : undefined}
+                  label="الصنف"
                   data-order-product
                   value={line.product_id}
                   onChange={(e) => setLine(index, "product_id", e.target.value)}
@@ -510,7 +510,7 @@ function PurchaseOrderForm({ suppliers, warehouses, products, order, onDone }) {
               </div>
               <div className="col-span-2">
                 <Input
-                  label={index === 0 ? "الكمية" : undefined}
+                  label="الكمية"
                   type="number"
                   step="any"
                   min="0.001"
@@ -521,7 +521,7 @@ function PurchaseOrderForm({ suppliers, warehouses, products, order, onDone }) {
               </div>
               <div className="col-span-2">
                 <Select
-                  label={index === 0 ? "الوحدة" : undefined}
+                  label="الوحدة"
                   value={line.unit_id}
                   onChange={(e) => setLine(index, "unit_id", e.target.value)}
                 >
@@ -541,7 +541,7 @@ function PurchaseOrderForm({ suppliers, warehouses, products, order, onDone }) {
               </div>
               <div className="col-span-2">
                 <Input
-                  label={index === 0 ? "السعر المتوقع" : undefined}
+                  label="السعر المتوقع"
                   type="number"
                   step="any"
                   min="0"
@@ -584,9 +584,9 @@ function PurchaseOrderForm({ suppliers, warehouses, products, order, onDone }) {
 
       <Input label="ملاحظات (اختياري)" value={form.notes} onChange={set("notes")} />
 
-      <div className="flex items-center justify-between">
-        <span className="text-sm font-bold text-slate-700">
-          القيمة المتوقعة للطلب: <span className="text-emerald-700">{money(expectedTotal)}</span>
+      <div className="flex flex-wrap items-center justify-between gap-3">
+        <span className="text-sm font-bold text-slate-700 dark:text-slate-300">
+          القيمة المتوقعة للطلب: <span className="text-emerald-700 dark:text-emerald-400">{money(expectedTotal)}</span>
         </span>
         <Button type="submit">{editing ? "حفظ التعديلات" : "حفظ الطلب كمسودة"}</Button>
       </div>
@@ -661,7 +661,7 @@ function ReceiveOrderForm({ order, products, warehouses, taxRates, onDone }) {
   return (
     <form onSubmit={submit} className="space-y-4">
       <Alert>{error}</Alert>
-      <p className="text-xs font-bold text-slate-600">
+      <p className="text-xs font-bold text-slate-600 dark:text-slate-400">
         الكميات المعروضة هي المتبقية على الطلب؛ عدّلها إن وصل جزء منها فقط. رقم التشغيلة
         وتاريخ الانتهاء إلزاميان لكل صنف يدخل المخزون.
       </p>
@@ -684,15 +684,15 @@ function ReceiveOrderForm({ order, products, warehouses, taxRates, onDone }) {
       </div>
 
       <div>
-        <span className="mb-1 block text-sm font-bold text-slate-600">الضرائب المطبّقة</span>
-        <div className="flex flex-wrap gap-3 rounded-lg border border-slate-300 bg-white p-3">
+        <span className="mb-1 block text-sm font-bold text-slate-600 dark:text-slate-400">الضرائب المطبّقة</span>
+        <div className="flex flex-wrap gap-3 rounded-lg border border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-800 p-3">
           {(taxRates || []).filter((t) => t.is_active).length === 0 && (
-            <span className="text-sm text-slate-400">لا توجد ضرائب مفعّلة.</span>
+            <span className="text-sm text-slate-400 dark:text-slate-500">لا توجد ضرائب مفعّلة.</span>
           )}
           {(taxRates || [])
             .filter((t) => t.is_active)
             .map((t) => (
-              <label key={t.id} className="flex items-center gap-2 text-sm font-bold text-slate-700">
+              <label key={t.id} className="flex items-center gap-2 text-sm font-bold text-slate-700 dark:text-slate-300">
                 <input type="checkbox" checked={form.tax_rate_ids.includes(t.id)} onChange={() => toggleTax(t.id)} />
                 {t.name} ({t.rate}%)
               </label>
@@ -704,10 +704,13 @@ function ReceiveOrderForm({ order, products, warehouses, taxRates, onDone }) {
         const product = products.find((p) => p.id === line.product_id);
         const row = rows[line.id];
         return (
-          <div key={line.id} className="grid grid-cols-12 items-end gap-2 rounded-lg border border-slate-200 p-2">
+          <div
+            key={line.id}
+            className="grid grid-cols-12 items-end gap-2 rounded-lg border border-slate-200 dark:border-slate-700 p-2 max-sm:grid-cols-1 max-sm:[&>*]:col-span-1 dark:border-slate-700"
+          >
             <div className="col-span-4 text-sm font-bold">
               {product?.name ?? `صنف ${line.product_id}`}
-              <div className="text-xs font-normal text-slate-500">
+              <div className="text-xs font-normal text-slate-500 dark:text-slate-400">
                 المتبقي: {qty(line.outstanding_quantity)} {product?.base_unit_name ?? ""} — من أصل{" "}
                 {qty(line.quantity)}
               </div>
@@ -804,7 +807,7 @@ function PurchaseReturnForm({ invoice, products, onDone }) {
           </option>
         ))}
       </Select>
-      <p className="text-xs font-bold text-rose-700">
+      <p className="text-xs font-bold text-rose-700 dark:text-rose-400">
         البضاعة المرتجعة تخرج نهائياً من المخزون وتعود للمورد، أياً كان السبب.
       </p>
       {productIds.map((id) => {
@@ -813,7 +816,7 @@ function PurchaseReturnForm({ invoice, products, onDone }) {
           <div key={id} className="grid grid-cols-2 items-end gap-4">
             <div className="text-sm font-bold">
               {product?.name ?? `صنف ${id}`}
-              <div className="text-xs font-normal text-slate-500">
+              <div className="text-xs font-normal text-slate-500 dark:text-slate-400">
                 المستلم: {qty(receivedByProduct[id])} {product?.base_unit_name ?? ""}
               </div>
             </div>
@@ -874,9 +877,9 @@ export default function PurchasesPage() {
 
   return (
     <div className="space-y-6">
-      <div className="flex items-center justify-between">
+      <div className="flex flex-wrap items-center justify-between gap-3">
         <h1 className="text-2xl font-extrabold">فواتير المشتريات</h1>
-        <div className="flex gap-2">
+        <div className="flex flex-wrap gap-2">
           <Button variant={tab === "list" ? "primary" : "secondary"} onClick={() => switchTab("list")}>
             القائمة
           </Button>
@@ -1138,13 +1141,13 @@ export default function PurchasesPage() {
               );
               if (!invoiceReturns.length) return null;
               return (
-                <div className="rounded-lg border border-rose-200 bg-rose-50 p-3">
-                  <div className="mb-2 text-sm font-bold text-rose-700">
+                <div className="rounded-lg border border-rose-200 dark:border-rose-900 bg-rose-50 dark:bg-rose-950/40 p-3">
+                  <div className="mb-2 text-sm font-bold text-rose-700 dark:text-rose-400">
                     مرتجعات هذه الفاتورة ({invoiceReturns.length})
                   </div>
                   <div className="space-y-3">
                     {invoiceReturns.map((ret) => (
-                      <div key={ret.id} className="rounded border border-rose-100 bg-white p-2">
+                      <div key={ret.id} className="rounded border border-rose-100 dark:border-rose-900 bg-white dark:bg-slate-800 p-2">
                         <div className="mb-1 flex items-center justify-between text-xs">
                           <span className="font-bold">
                             مرتجع #{ret.id} — {ret.created_at?.slice(0, 10)}
@@ -1153,7 +1156,7 @@ export default function PurchasesPage() {
                         </div>
                         <table className="w-full text-xs">
                           <thead>
-                            <tr className="text-slate-500">
+                            <tr className="text-slate-500 dark:text-slate-400">
                               <th className="text-right font-normal">الصنف</th>
                               <th className="text-right font-normal">الكمية</th>
                               <th className="text-right font-normal">القيمة</th>
@@ -1172,7 +1175,7 @@ export default function PurchasesPage() {
                             ))}
                           </tbody>
                         </table>
-                        <div className="mt-1 text-right text-xs font-bold text-rose-700">
+                        <div className="mt-1 text-right text-xs font-bold text-rose-700 dark:text-rose-400">
                           إجمالي هذا المرتجع: {money(ret.total)}
                         </div>
                       </div>
@@ -1198,9 +1201,9 @@ export default function PurchasesPage() {
                     {t.name} ({t.rate}%): {money(t.amount)}
                   </span>
                 ))}
-                <span className="text-emerald-700">الإجمالي: {money(viewing.total)}</span>
+                <span className="text-emerald-700 dark:text-emerald-400">الإجمالي: {money(viewing.total)}</span>
               </div>
-              <div className="flex gap-2">
+              <div className="flex flex-wrap gap-2">
                 {can("purchases.returns") && (
                   <Button
                     variant="danger"
@@ -1375,7 +1378,7 @@ export default function PurchasesPage() {
                   label: "المتبقي",
                   render: (r) =>
                     Number(r.outstanding_quantity) > 0 ? (
-                      <b className="text-amber-700">{qty(r.outstanding_quantity)}</b>
+                      <b className="text-amber-700 dark:text-amber-400">{qty(r.outstanding_quantity)}</b>
                     ) : (
                       <Badge tone="green">مكتمل</Badge>
                     ),
@@ -1387,8 +1390,8 @@ export default function PurchasesPage() {
             />
 
             {viewingOrder.received_invoice_ids.length > 0 && (
-              <div className="rounded-lg border border-emerald-200 bg-emerald-50 p-3 text-sm">
-                <div className="mb-1 font-bold text-emerald-800">
+              <div className="rounded-lg border border-emerald-200 dark:border-emerald-900 bg-emerald-50 dark:bg-emerald-950/40 p-3 text-sm">
+                <div className="mb-1 font-bold text-emerald-800 dark:text-emerald-300">
                   التوريدات المستلمة على هذا الطلب ({viewingOrder.received_invoice_ids.length})
                 </div>
                 <div className="flex flex-wrap gap-2">
@@ -1415,15 +1418,15 @@ export default function PurchasesPage() {
             )}
 
             {viewingOrder.status === "cancelled" && (
-              <p className="text-sm font-bold text-rose-700">
+              <p className="text-sm font-bold text-rose-700 dark:text-rose-400">
                 ألغي هذا الطلب{viewingOrder.cancelled_at ? ` بتاريخ ${viewingOrder.cancelled_at.slice(0, 10)}` : ""}
                 {viewingOrder.cancel_reason ? ` — السبب: ${viewingOrder.cancel_reason}` : ""}.
               </p>
             )}
             {viewingOrder.notes && (
-              <p className="text-sm text-slate-600">ملاحظات: {viewingOrder.notes}</p>
+              <p className="text-sm text-slate-600 dark:text-slate-400">ملاحظات: {viewingOrder.notes}</p>
             )}
-            <div className="text-right text-sm font-bold text-emerald-700">
+            <div className="text-right text-sm font-bold text-emerald-700 dark:text-emerald-400">
               القيمة المتوقعة للطلب: {money(viewingOrder.subtotal)}
             </div>
           </div>

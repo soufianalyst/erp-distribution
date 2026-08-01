@@ -26,7 +26,7 @@ export default function WarehousesPage() {
 
   return (
     <div className="space-y-6">
-      <div className="flex items-center justify-between">
+      <div className="flex flex-wrap items-center justify-between gap-3">
         <h1 className="text-2xl font-extrabold">المستودعات</h1>
         {can("warehouses.manage") && <Button onClick={() => setOpen(true)}>+ مستودع جديد</Button>}
       </div>

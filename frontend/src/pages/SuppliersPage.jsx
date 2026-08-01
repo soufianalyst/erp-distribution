@@ -34,8 +34,8 @@ function PaymentSection({ supplierId, onPaid }) {
   };
 
   return (
-    <form onSubmit={submit} className="rounded-lg border border-rose-200 bg-rose-50/60 p-4">
-      <div className="mb-2 text-sm font-extrabold text-rose-800">سند صرف جديد</div>
+    <form onSubmit={submit} className="rounded-lg border border-rose-200 dark:border-rose-900 bg-rose-50/60 p-4">
+      <div className="mb-2 text-sm font-extrabold text-rose-800 dark:text-rose-300">سند صرف جديد</div>
       <Alert>{error}</Alert>
       <div className="grid grid-cols-3 items-end gap-3">
         <Input
@@ -94,7 +94,7 @@ export default function SuppliersPage() {
 
   return (
     <div className="space-y-6">
-      <div className="flex items-center justify-between">
+      <div className="flex flex-wrap items-center justify-between gap-3">
         <h1 className="text-2xl font-extrabold">الموردون</h1>
         {canManage && <Button onClick={() => setOpen(true)}>+ مورد جديد</Button>}
       </div>
@@ -155,21 +155,21 @@ export default function SuppliersPage() {
         ) : statement ? (
           <div className="space-y-4">
             <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
-              <div className="rounded-lg bg-slate-50 p-3 text-center">
-                <div className="text-xs font-bold text-slate-500">رصيد افتتاحي</div>
+              <div className="rounded-lg bg-slate-50 dark:bg-slate-800/60 p-3 text-center">
+                <div className="text-xs font-bold text-slate-500 dark:text-slate-400">رصيد افتتاحي</div>
                 <div className="text-lg font-extrabold">{money(statement.opening_balance)}</div>
               </div>
-              <div className="rounded-lg bg-slate-50 p-3 text-center">
-                <div className="text-xs font-bold text-slate-500">إجمالي الفواتير</div>
+              <div className="rounded-lg bg-slate-50 dark:bg-slate-800/60 p-3 text-center">
+                <div className="text-xs font-bold text-slate-500 dark:text-slate-400">إجمالي الفواتير</div>
                 <div className="text-lg font-extrabold">{money(statement.total_invoices)}</div>
               </div>
-              <div className="rounded-lg bg-slate-50 p-3 text-center">
-                <div className="text-xs font-bold text-slate-500">المسدد</div>
+              <div className="rounded-lg bg-slate-50 dark:bg-slate-800/60 p-3 text-center">
+                <div className="text-xs font-bold text-slate-500 dark:text-slate-400">المسدد</div>
                 <div className="text-lg font-extrabold">{money(statement.total_paid)}</div>
               </div>
-              <div className="rounded-lg bg-rose-50 p-3 text-center">
-                <div className="text-xs font-bold text-rose-700">المستحق للمورد</div>
-                <div className="text-lg font-extrabold text-rose-800">{money(statement.balance)}</div>
+              <div className="rounded-lg bg-rose-50 dark:bg-rose-950/40 p-3 text-center">
+                <div className="text-xs font-bold text-rose-700 dark:text-rose-400">المستحق للمورد</div>
+                <div className="text-lg font-extrabold text-rose-800 dark:text-rose-300">{money(statement.balance)}</div>
               </div>
             </div>
             <Table

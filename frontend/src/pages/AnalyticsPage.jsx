@@ -46,40 +46,43 @@ const SEGMENT_COLORS = {
 };
 
 const SEGMENT_BADGE_STYLES = {
-  "بطل (Champion)": "bg-emerald-100 text-emerald-800",
-  "الأكثر مبيعاً": "bg-emerald-100 text-emerald-800",
-  نشط: "bg-sky-100 text-sky-800",
-  ثابت: "bg-sky-100 text-sky-800",
-  "بحاجة لعناية": "bg-amber-100 text-amber-800",
-  عادي: "bg-slate-100 text-slate-700",
-  "معرض للخطر": "bg-orange-100 text-orange-800",
-  متراجع: "bg-orange-100 text-orange-800",
-  "خامل (Lost)": "bg-rose-100 text-rose-800",
-  "راكد (Dead Stock)": "bg-rose-100 text-rose-800",
-  "لم يشترِ بعد": "bg-slate-100 text-slate-500",
-  "لم يُباع بعد": "bg-slate-100 text-slate-500",
+  "بطل (Champion)": "bg-emerald-100 dark:bg-emerald-900/50 text-emerald-800 dark:text-emerald-300",
+  "الأكثر مبيعاً": "bg-emerald-100 dark:bg-emerald-900/50 text-emerald-800 dark:text-emerald-300",
+  نشط: "bg-sky-100 dark:bg-sky-900/50 text-sky-800 dark:text-sky-300",
+  ثابت: "bg-sky-100 dark:bg-sky-900/50 text-sky-800 dark:text-sky-300",
+  "بحاجة لعناية": "bg-amber-100 dark:bg-amber-900/50 text-amber-800 dark:text-amber-300",
+  عادي: "bg-slate-100 dark:bg-slate-800 text-slate-700 dark:text-slate-300",
+  "معرض للخطر": "bg-orange-100 dark:bg-orange-900/50 text-orange-800 dark:text-orange-300",
+  متراجع: "bg-orange-100 dark:bg-orange-900/50 text-orange-800 dark:text-orange-300",
+  "خامل (Lost)": "bg-rose-100 dark:bg-rose-900/50 text-rose-800 dark:text-rose-300",
+  "راكد (Dead Stock)": "bg-rose-100 dark:bg-rose-900/50 text-rose-800 dark:text-rose-300",
+  "لم يشترِ بعد": "bg-slate-100 dark:bg-slate-800 text-slate-500 dark:text-slate-400",
+  "لم يُباع بعد": "bg-slate-100 dark:bg-slate-800 text-slate-500 dark:text-slate-400",
 };
 
 // Shared chart typography — recharts' defaults (12px, light gray #666) are too
 // faint to read comfortably; every axis/legend/tooltip in this file uses these.
-const AXIS_TICK_STYLE = { fontSize: 13, fill: "#334155", fontWeight: 600 };
-const AXIS_LABEL_STYLE = { fontSize: 13, fill: "#0f172a", fontWeight: 700 };
-const LEGEND_STYLE = { fontSize: 13, fontWeight: 700, color: "#334155" };
+// Colours come from CSS variables (see index.css) so they follow day/night mode:
+// recharts paints inline, out of reach of Tailwind's dark: variants.
+const AXIS_TICK_STYLE = { fontSize: 13, fill: "var(--chart-tick)", fontWeight: 600 };
+const AXIS_LABEL_STYLE = { fontSize: 13, fill: "var(--chart-label)", fontWeight: 700 };
+const LEGEND_STYLE = { fontSize: 13, fontWeight: 700, color: "var(--chart-tick)" };
 const TOOLTIP_CONTENT_STYLE = {
   fontSize: 13,
   borderRadius: 8,
-  border: "1px solid #e2e8f0",
+  backgroundColor: "var(--chart-surface)",
+  border: "1px solid var(--chart-border)",
   boxShadow: "0 4px 12px rgba(0,0,0,0.08)",
 };
-const TOOLTIP_LABEL_STYLE = { fontWeight: 700, color: "#0f172a", marginBottom: 4 };
-const TOOLTIP_ITEM_STYLE = { color: "#334155", fontWeight: 600 };
-const DATA_LABEL_STYLE = { fontSize: 12, fontWeight: 700, fill: "#0f172a" };
+const TOOLTIP_LABEL_STYLE = { fontWeight: 700, color: "var(--chart-label)", marginBottom: 4 };
+const TOOLTIP_ITEM_STYLE = { color: "var(--chart-tick)", fontWeight: 600 };
+const DATA_LABEL_STYLE = { fontSize: 12, fontWeight: 700, fill: "var(--chart-label)" };
 // For labels drawn inside a colored bar (narrow two-column charts, where an
 // outside label would collide with the category axis) — white for contrast.
 const INSIDE_DATA_LABEL_STYLE = { fontSize: 12, fontWeight: 700, fill: "#ffffff" };
 
 function segmentBadge(segment) {
-  const cls = SEGMENT_BADGE_STYLES[segment] || "bg-slate-100 text-slate-700";
+  const cls = SEGMENT_BADGE_STYLES[segment] || "bg-slate-100 dark:bg-slate-800 text-slate-700 dark:text-slate-300";
   return (
     <span className={`inline-block rounded-full px-2.5 py-0.5 text-xs font-bold ${cls}`}>
       {segment}
@@ -89,17 +92,17 @@ function segmentBadge(segment) {
 
 function Kpi({ label, value, tone = "slate", hint }) {
   const tones = {
-    emerald: "text-emerald-700",
-    rose: "text-rose-700",
-    amber: "text-amber-700",
-    sky: "text-sky-700",
-    slate: "text-slate-800",
+    emerald: "text-emerald-700 dark:text-emerald-400",
+    rose: "text-rose-700 dark:text-rose-400",
+    amber: "text-amber-700 dark:text-amber-400",
+    sky: "text-sky-700 dark:text-sky-400",
+    slate: "text-slate-800 dark:text-slate-100",
   };
   return (
-    <div className="rounded-xl bg-white p-5 shadow-sm">
-      <div className="text-sm font-bold text-slate-500">{label}</div>
+    <div className="rounded-xl bg-white dark:bg-slate-800 p-5 shadow-sm">
+      <div className="text-sm font-bold text-slate-500 dark:text-slate-400">{label}</div>
       <div className={`mt-1 text-2xl font-extrabold ${tones[tone]}`}>{value}</div>
-      {hint && <div className="mt-1 text-xs text-slate-400">{hint}</div>}
+      {hint && <div className="mt-1 text-xs text-slate-400 dark:text-slate-500">{hint}</div>}
     </div>
   );
 }
@@ -138,7 +141,7 @@ export default function AnalyticsPage() {
 
   return (
     <div className="space-y-6">
-      <div className="flex items-center justify-between">
+      <div className="flex flex-wrap items-center justify-between gap-3">
         <h1 className="text-2xl font-extrabold">لوحة التحليلات والتقارير</h1>
       </div>
 
@@ -232,7 +235,7 @@ function OverviewTab({ summary, salesTrend, byWarehouse, byPriceTier, returnsTre
         <div className="h-72 w-full" dir="ltr">
           <ResponsiveContainer>
             <AreaChart data={salesTrend} margin={{ top: 10, right: 10, left: 10, bottom: 10 }}>
-              <CartesianGrid strokeDasharray="3 3" />
+              <CartesianGrid strokeDasharray="3 3" stroke="var(--chart-grid)" />
               <XAxis dataKey="period" reversed tick={AXIS_TICK_STYLE} />
               <YAxis tick={AXIS_TICK_STYLE} width={70} />
               <Tooltip
@@ -253,7 +256,7 @@ function OverviewTab({ summary, salesTrend, byWarehouse, byPriceTier, returnsTre
         <div className="h-64 w-full" dir="ltr">
           <ResponsiveContainer>
             <BarChart data={salesTrend} margin={{ top: 10, right: 10, left: 10, bottom: 10 }}>
-              <CartesianGrid strokeDasharray="3 3" />
+              <CartesianGrid strokeDasharray="3 3" stroke="var(--chart-grid)" />
               <XAxis dataKey="period" reversed tick={AXIS_TICK_STYLE} />
               <YAxis tick={AXIS_TICK_STYLE} width={70} />
               <Tooltip
@@ -275,7 +278,7 @@ function OverviewTab({ summary, salesTrend, byWarehouse, byPriceTier, returnsTre
           <div className="h-56 w-full" dir="ltr">
             <ResponsiveContainer>
               <BarChart data={byWarehouse} layout="vertical" margin={{ top: 5, right: 15, left: 5, bottom: 5 }}>
-                <CartesianGrid strokeDasharray="3 3" />
+                <CartesianGrid strokeDasharray="3 3" stroke="var(--chart-grid)" />
                 <XAxis type="number" tick={AXIS_TICK_STYLE} />
                 <YAxis dataKey="warehouse_name" type="category" width={110} tick={AXIS_TICK_STYLE} interval={0} />
                 <Tooltip
@@ -299,7 +302,7 @@ function OverviewTab({ summary, salesTrend, byWarehouse, byPriceTier, returnsTre
                 layout="vertical"
                 margin={{ top: 5, right: 15, left: 5, bottom: 5 }}
               >
-                <CartesianGrid strokeDasharray="3 3" />
+                <CartesianGrid strokeDasharray="3 3" stroke="var(--chart-grid)" />
                 <XAxis type="number" tick={AXIS_TICK_STYLE} />
                 <YAxis dataKey="tier_label" type="category" width={110} tick={AXIS_TICK_STYLE} interval={0} />
                 <Tooltip
@@ -321,7 +324,7 @@ function OverviewTab({ summary, salesTrend, byWarehouse, byPriceTier, returnsTre
         <div className="h-64 w-full" dir="ltr">
           <ResponsiveContainer>
             <LineChart data={returnsTrend} margin={{ top: 10, right: 10, left: 10, bottom: 10 }}>
-              <CartesianGrid strokeDasharray="3 3" />
+              <CartesianGrid strokeDasharray="3 3" stroke="var(--chart-grid)" />
               <XAxis dataKey="period" reversed tick={AXIS_TICK_STYLE} />
               <YAxis unit="%" tick={AXIS_TICK_STYLE} width={50} />
               <Tooltip
@@ -370,7 +373,7 @@ function CustomerRfmTab({ rows, loading }) {
           <div className="h-64 w-full" dir="ltr">
             <ResponsiveContainer>
               <BarChart data={segments} layout="vertical" margin={{ top: 5, right: 40, left: 5, bottom: 5 }}>
-                <CartesianGrid strokeDasharray="3 3" />
+                <CartesianGrid strokeDasharray="3 3" stroke="var(--chart-grid)" />
                 <XAxis type="number" allowDecimals={false} tick={AXIS_TICK_STYLE} />
                 <YAxis dataKey="segment" type="category" width={140} tick={AXIS_TICK_STYLE} interval={0} />
                 <Tooltip contentStyle={TOOLTIP_CONTENT_STYLE} labelStyle={TOOLTIP_LABEL_STYLE} itemStyle={TOOLTIP_ITEM_STYLE} />
@@ -388,7 +391,7 @@ function CustomerRfmTab({ rows, loading }) {
           <div className="h-64 w-full" dir="ltr">
             <ResponsiveContainer>
               <ScatterChart margin={{ top: 10, right: 20, left: 10, bottom: 20 }}>
-                <CartesianGrid strokeDasharray="3 3" />
+                <CartesianGrid strokeDasharray="3 3" stroke="var(--chart-grid)" />
                 <XAxis type="number" dataKey="x" name="أيام منذ آخر شراء" tick={AXIS_TICK_STYLE}>
                   <Label value="الحداثة (يوم)" position="insideBottom" offset={-10} style={AXIS_LABEL_STYLE} />
                 </XAxis>
@@ -401,11 +404,11 @@ function CustomerRfmTab({ rows, loading }) {
                   labelFormatter={() => ""}
                   content={({ payload }) =>
                     payload?.[0] ? (
-                      <div className="rounded-lg border border-slate-200 bg-white p-2.5 text-xs shadow-lg">
-                        <b className="text-slate-900">{payload[0].payload.customer_name}</b>
-                        <div className="mt-1 font-semibold text-slate-600">الحداثة: {payload[0].payload.x} يوم</div>
-                        <div className="font-semibold text-slate-600">التكرار: {payload[0].payload.y}</div>
-                        <div className="font-semibold text-slate-600">القيمة: {money(payload[0].payload.z)}</div>
+                      <div className="rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 p-2.5 text-xs shadow-lg">
+                        <b className="text-slate-900 dark:text-slate-50">{payload[0].payload.customer_name}</b>
+                        <div className="mt-1 font-semibold text-slate-600 dark:text-slate-400">الحداثة: {payload[0].payload.x} يوم</div>
+                        <div className="font-semibold text-slate-600 dark:text-slate-400">التكرار: {payload[0].payload.y}</div>
+                        <div className="font-semibold text-slate-600 dark:text-slate-400">القيمة: {money(payload[0].payload.z)}</div>
                       </div>
                     ) : null
                   }
@@ -458,7 +461,7 @@ function ProductRfmTab({ rows, loading }) {
           <div className="h-64 w-full" dir="ltr">
             <ResponsiveContainer>
               <BarChart data={segments} layout="vertical" margin={{ top: 5, right: 40, left: 5, bottom: 5 }}>
-                <CartesianGrid strokeDasharray="3 3" />
+                <CartesianGrid strokeDasharray="3 3" stroke="var(--chart-grid)" />
                 <XAxis type="number" allowDecimals={false} tick={AXIS_TICK_STYLE} />
                 <YAxis dataKey="segment" type="category" width={140} tick={AXIS_TICK_STYLE} interval={0} />
                 <Tooltip contentStyle={TOOLTIP_CONTENT_STYLE} labelStyle={TOOLTIP_LABEL_STYLE} itemStyle={TOOLTIP_ITEM_STYLE} />
@@ -476,7 +479,7 @@ function ProductRfmTab({ rows, loading }) {
           <div className="h-64 w-full" dir="ltr">
             <ResponsiveContainer>
               <BarChart data={rows.slice(0, 10)} layout="vertical" margin={{ top: 5, right: 60, left: 5, bottom: 5 }}>
-                <CartesianGrid strokeDasharray="3 3" />
+                <CartesianGrid strokeDasharray="3 3" stroke="var(--chart-grid)" />
                 <XAxis type="number" tick={AXIS_TICK_STYLE} />
                 <YAxis dataKey="product_name" type="category" width={130} tick={AXIS_TICK_STYLE} interval={0} />
                 <Tooltip
@@ -590,26 +593,26 @@ function DiscountReportCard() {
       ) : (
         <div className="space-y-5">
           <div className="grid grid-cols-1 gap-3 sm:grid-cols-4">
-            <div className="rounded-lg bg-slate-50 p-3 text-sm">
-              <div className="font-extrabold text-slate-500">عدد الفواتير المخصومة</div>
+            <div className="rounded-lg bg-slate-50 dark:bg-slate-800/60 p-3 text-sm">
+              <div className="font-extrabold text-slate-500 dark:text-slate-400">عدد الفواتير المخصومة</div>
               <div className="text-lg font-extrabold">{data?.invoice_count ?? 0}</div>
             </div>
-            <div className="rounded-lg bg-slate-50 p-3 text-sm">
-              <div className="font-extrabold text-slate-500">إجمالي الخصومات</div>
-              <div className="text-lg font-extrabold text-amber-700">{money(data?.total_discount)}</div>
+            <div className="rounded-lg bg-slate-50 dark:bg-slate-800/60 p-3 text-sm">
+              <div className="font-extrabold text-slate-500 dark:text-slate-400">إجمالي الخصومات</div>
+              <div className="text-lg font-extrabold text-amber-700 dark:text-amber-400">{money(data?.total_discount)}</div>
             </div>
-            <div className="rounded-lg bg-slate-50 p-3 text-sm">
-              <div className="font-extrabold text-slate-500">قبل الخصم</div>
+            <div className="rounded-lg bg-slate-50 dark:bg-slate-800/60 p-3 text-sm">
+              <div className="font-extrabold text-slate-500 dark:text-slate-400">قبل الخصم</div>
               <div className="text-lg font-extrabold">{money(data?.total_gross)}</div>
             </div>
-            <div className="rounded-lg bg-slate-50 p-3 text-sm">
-              <div className="font-extrabold text-slate-500">صافي المحصّل</div>
-              <div className="text-lg font-extrabold text-emerald-700">{money(data?.total_net)}</div>
+            <div className="rounded-lg bg-slate-50 dark:bg-slate-800/60 p-3 text-sm">
+              <div className="font-extrabold text-slate-500 dark:text-slate-400">صافي المحصّل</div>
+              <div className="text-lg font-extrabold text-emerald-700 dark:text-emerald-400">{money(data?.total_net)}</div>
             </div>
           </div>
 
           <div>
-            <h3 className="mb-2 text-sm font-extrabold text-slate-600">حسب العميل</h3>
+            <h3 className="mb-2 text-sm font-extrabold text-slate-600 dark:text-slate-400">حسب العميل</h3>
             <Table
               columns={[
                 { key: "customer_name", label: "العميل" },
@@ -617,7 +620,7 @@ function DiscountReportCard() {
                 {
                   key: "discount_amount",
                   label: "إجمالي الخصم",
-                  render: (r) => <b className="text-amber-700">{money(r.discount_amount)}</b>,
+                  render: (r) => <b className="text-amber-700 dark:text-amber-400">{money(r.discount_amount)}</b>,
                 },
               ]}
               rows={data?.by_customer}
@@ -627,7 +630,7 @@ function DiscountReportCard() {
           </div>
 
           <div>
-            <h3 className="mb-2 text-sm font-extrabold text-slate-600">حسب المندوب</h3>
+            <h3 className="mb-2 text-sm font-extrabold text-slate-600 dark:text-slate-400">حسب المندوب</h3>
             <Table
               columns={[
                 { key: "salesman_name", label: "المندوب" },
@@ -635,7 +638,7 @@ function DiscountReportCard() {
                 {
                   key: "discount_amount",
                   label: "إجمالي الخصم",
-                  render: (r) => <b className="text-amber-700">{money(r.discount_amount)}</b>,
+                  render: (r) => <b className="text-amber-700 dark:text-amber-400">{money(r.discount_amount)}</b>,
                 },
               ]}
               rows={data?.by_salesman}
@@ -645,7 +648,7 @@ function DiscountReportCard() {
           </div>
 
           <div>
-            <h3 className="mb-2 text-sm font-extrabold text-slate-600">الفواتير المخصومة</h3>
+            <h3 className="mb-2 text-sm font-extrabold text-slate-600 dark:text-slate-400">الفواتير المخصومة</h3>
             <Table
               columns={[
                 { key: "invoice_id", label: "#", render: (r) => `#${r.invoice_id}` },
@@ -656,7 +659,7 @@ function DiscountReportCard() {
                 {
                   key: "discount_amount",
                   label: "الخصم",
-                  render: (r) => <b className="text-amber-700">{money(r.discount_amount)}</b>,
+                  render: (r) => <b className="text-amber-700 dark:text-amber-400">{money(r.discount_amount)}</b>,
                 },
                 { key: "total", label: "المستحق", render: (r) => <b>{money(r.total)}</b> },
               ]}
@@ -705,24 +708,24 @@ function DamageReportCard() {
       ) : (
         <div className="space-y-5">
           <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
-            <div className="rounded-lg bg-slate-50 p-3 text-sm">
-              <div className="font-extrabold text-slate-500">عدد عمليات الإتلاف</div>
+            <div className="rounded-lg bg-slate-50 dark:bg-slate-800/60 p-3 text-sm">
+              <div className="font-extrabold text-slate-500 dark:text-slate-400">عدد عمليات الإتلاف</div>
               <div className="text-lg font-extrabold">{report.data?.adjustment_count ?? 0}</div>
             </div>
-            <div className="rounded-lg bg-slate-50 p-3 text-sm">
-              <div className="font-extrabold text-slate-500">إجمالي الكمية</div>
+            <div className="rounded-lg bg-slate-50 dark:bg-slate-800/60 p-3 text-sm">
+              <div className="font-extrabold text-slate-500 dark:text-slate-400">إجمالي الكمية</div>
               <div className="text-lg font-extrabold">{qty(report.data?.total_quantity ?? 0)}</div>
             </div>
-            <div className="rounded-lg bg-slate-50 p-3 text-sm">
-              <div className="font-extrabold text-slate-500">إجمالي قيمة الخسارة</div>
-              <div className="text-lg font-extrabold text-rose-700">
+            <div className="rounded-lg bg-slate-50 dark:bg-slate-800/60 p-3 text-sm">
+              <div className="font-extrabold text-slate-500 dark:text-slate-400">إجمالي قيمة الخسارة</div>
+              <div className="text-lg font-extrabold text-rose-700 dark:text-rose-400">
                 {money(report.data?.total_cost ?? 0)}
               </div>
             </div>
           </div>
 
           <div>
-            <div className="mb-2 text-sm font-extrabold text-slate-600">حسب السبب</div>
+            <div className="mb-2 text-sm font-extrabold text-slate-600 dark:text-slate-400">حسب السبب</div>
             <Table
               columns={[
                 {
@@ -737,7 +740,7 @@ function DamageReportCard() {
                 {
                   key: "total_cost",
                   label: "قيمة الخسارة",
-                  render: (r) => <b className="text-rose-700">{money(r.total_cost)}</b>,
+                  render: (r) => <b className="text-rose-700 dark:text-rose-400">{money(r.total_cost)}</b>,
                 },
               ]}
               rows={report.data?.by_reason}
@@ -747,7 +750,7 @@ function DamageReportCard() {
           </div>
 
           <div>
-            <div className="mb-2 text-sm font-extrabold text-slate-600">حسب الصنف</div>
+            <div className="mb-2 text-sm font-extrabold text-slate-600 dark:text-slate-400">حسب الصنف</div>
             <Table
               columns={[
                 { key: "product_name", label: "الصنف" },
@@ -759,7 +762,7 @@ function DamageReportCard() {
                 {
                   key: "total_cost",
                   label: "قيمة الخسارة",
-                  render: (r) => <b className="text-rose-700">{money(r.total_cost)}</b>,
+                  render: (r) => <b className="text-rose-700 dark:text-rose-400">{money(r.total_cost)}</b>,
                 },
               ]}
               rows={report.data?.by_product}
@@ -796,7 +799,7 @@ function InventoryTab({ expiryRisk, turnover, loading }) {
             {
               key: "value_at_risk",
               label: "القيمة المعرضة للخطر",
-              render: (r) => <b className="text-rose-700">{money(r.value_at_risk)}</b>,
+              render: (r) => <b className="text-rose-700 dark:text-rose-400">{money(r.value_at_risk)}</b>,
             },
           ]}
           rows={expiryRisk}
@@ -809,7 +812,7 @@ function InventoryTab({ expiryRisk, turnover, loading }) {
         <div className="h-72 w-full" dir="ltr">
           <ResponsiveContainer>
             <BarChart data={turnover.slice(0, 15)} layout="vertical" margin={{ top: 5, right: 40, left: 5, bottom: 5 }}>
-              <CartesianGrid strokeDasharray="3 3" />
+              <CartesianGrid strokeDasharray="3 3" stroke="var(--chart-grid)" />
               <XAxis type="number" tick={AXIS_TICK_STYLE} />
               <YAxis dataKey="product_name" type="category" width={140} tick={AXIS_TICK_STYLE} interval={0} />
               <Tooltip contentStyle={TOOLTIP_CONTENT_STYLE} labelStyle={TOOLTIP_LABEL_STYLE} itemStyle={TOOLTIP_ITEM_STYLE} />
@@ -837,7 +840,7 @@ function CreditTab({ aging, risk, loading }) {
         <div className="h-56 w-full" dir="ltr">
           <ResponsiveContainer>
             <BarChart data={agingTotals} margin={{ top: 20, right: 10, left: 10, bottom: 5 }}>
-              <CartesianGrid strokeDasharray="3 3" />
+              <CartesianGrid strokeDasharray="3 3" stroke="var(--chart-grid)" />
               <XAxis dataKey="bucket" tick={AXIS_TICK_STYLE} />
               <YAxis tick={AXIS_TICK_STYLE} width={70} />
               <Tooltip
@@ -893,7 +896,7 @@ function CreditTab({ aging, risk, loading }) {
             {
               key: "bucket_90_plus",
               label: "90+ يوم",
-              render: (r) => <b className="text-rose-700">{money(r.bucket_90_plus)}</b>,
+              render: (r) => <b className="text-rose-700 dark:text-rose-400">{money(r.bucket_90_plus)}</b>,
             },
             { key: "total_outstanding", label: "الإجمالي", render: (r) => <b>{money(r.total_outstanding)}</b> },
           ]}
@@ -914,16 +917,16 @@ function DeliveryTab({ fulfillment, drivers, loading }) {
           <Card key={f.fulfillment} title={f.fulfillment === "delivery" ? "🚛 التوصيل" : "🏬 الاستلام من المستودع"}>
             <div className="grid grid-cols-3 gap-4 text-center">
               <div>
-                <div className="text-2xl font-extrabold text-slate-800">{qty(f.invoice_count)}</div>
-                <div className="text-xs font-bold text-slate-500">إجمالي الفواتير</div>
+                <div className="text-2xl font-extrabold text-slate-800 dark:text-slate-100">{qty(f.invoice_count)}</div>
+                <div className="text-xs font-bold text-slate-500 dark:text-slate-400">إجمالي الفواتير</div>
               </div>
               <div>
-                <div className="text-2xl font-extrabold text-emerald-700">{qty(f.completed_count)}</div>
-                <div className="text-xs font-bold text-slate-500">مكتملة</div>
+                <div className="text-2xl font-extrabold text-emerald-700 dark:text-emerald-400">{qty(f.completed_count)}</div>
+                <div className="text-xs font-bold text-slate-500 dark:text-slate-400">مكتملة</div>
               </div>
               <div>
-                <div className="text-2xl font-extrabold text-rose-700">{f.completion_rate_pct}%</div>
-                <div className="text-xs font-bold text-slate-500">نسبة الإنجاز</div>
+                <div className="text-2xl font-extrabold text-rose-700 dark:text-rose-400">{f.completion_rate_pct}%</div>
+                <div className="text-xs font-bold text-slate-500 dark:text-slate-400">نسبة الإنجاز</div>
               </div>
             </div>
           </Card>
@@ -961,7 +964,7 @@ function RepsTab({ rows, loading }) {
         <div className="h-64 w-full" dir="ltr">
           <ResponsiveContainer>
             <BarChart data={rows} layout="vertical" margin={{ top: 5, right: 60, left: 5, bottom: 5 }}>
-              <CartesianGrid strokeDasharray="3 3" />
+              <CartesianGrid strokeDasharray="3 3" stroke="var(--chart-grid)" />
               <XAxis type="number" tick={AXIS_TICK_STYLE} />
               <YAxis dataKey="salesman_name" type="category" width={130} tick={AXIS_TICK_STYLE} interval={0} />
               <Tooltip

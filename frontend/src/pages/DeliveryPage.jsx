@@ -59,7 +59,7 @@ function TripDetails({ trip, invoices, canManage, onChanged, onError }) {
 
   return (
     <div className="space-y-4">
-      <div className="flex items-center justify-between text-sm font-bold text-slate-600">
+      <div className="flex items-center justify-between text-sm font-bold text-slate-600 dark:text-slate-400">
         <span>
           السائق: {trip.driver_name}
           {trip.vehicle ? ` — ${trip.vehicle}` : ""} | التاريخ: {trip.trip_date}
@@ -150,7 +150,7 @@ function TripDetails({ trip, invoices, canManage, onChanged, onError }) {
       />
 
       {canManage && trip.status === "planned" && (
-        <div className="flex items-end gap-2 rounded-lg border border-slate-200 bg-slate-50 p-3">
+        <div className="flex items-end gap-2 rounded-lg border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800/60 p-3">
           <div className="flex-1">
             <Select
               label="إضافة فاتورة للرحلة"
@@ -182,7 +182,7 @@ function TripDetails({ trip, invoices, canManage, onChanged, onError }) {
       )}
 
       {canManage && (
-        <div className="flex justify-end gap-2 border-t border-slate-200 pt-3">
+        <div className="flex justify-end gap-2 border-t border-slate-200 dark:border-slate-700 pt-3">
           {trip.status === "planned" && (
             <Button
               onClick={() => call(() => api.post(`/delivery/trips/${trip.id}/dispatch`))}
@@ -308,9 +308,9 @@ export default function DeliveryPage() {
 
   return (
     <div className="space-y-6">
-      <div className="flex items-center justify-between">
+      <div className="flex flex-wrap items-center justify-between gap-3">
         <h1 className="text-2xl font-extrabold">التوزيع والتسليم</h1>
-        <div className="flex gap-2">
+        <div className="flex flex-wrap gap-2">
           <Button variant={tab === "trips" ? "primary" : "secondary"} onClick={() => setTab("trips")}>
             🚛 رحلات التوصيل
           </Button>

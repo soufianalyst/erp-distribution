@@ -284,16 +284,16 @@ function ManualEntryForm({ accounts, onCreated }) {
       />
       <div>
         <div className="mb-2 flex items-center justify-between">
-          <span className="text-sm font-bold text-slate-600">أطراف القيد</span>
+          <span className="text-sm font-bold text-slate-600 dark:text-slate-400">أطراف القيد</span>
           <Button type="button" variant="secondary" onClick={() => setItems([...items, { ...EMPTY_ITEM }])}>
             + طرف
           </Button>
         </div>
         {items.map((item, index) => (
-          <div key={index} className="mb-2 grid grid-cols-12 items-end gap-2">
+          <div key={index} className={`line-row ${index === 0 ? "line-row-first" : ""} mb-2 grid grid-cols-12 items-end gap-2 max-sm:grid-cols-1 max-sm:[&>*]:col-span-1`}>
             <div className="col-span-6">
               <Select
-                label={index === 0 ? "الحساب" : undefined}
+                label="الحساب"
                 value={item.account_code}
                 onChange={(e) => setItem(index, "account_code", e.target.value)}
                 required
@@ -308,7 +308,7 @@ function ManualEntryForm({ accounts, onCreated }) {
             </div>
             <div className="col-span-2">
               <Input
-                label={index === 0 ? "مدين" : undefined}
+                label="مدين"
                 type="number"
                 step="0.01"
                 min="0"
@@ -319,7 +319,7 @@ function ManualEntryForm({ accounts, onCreated }) {
             </div>
             <div className="col-span-2">
               <Input
-                label={index === 0 ? "دائن" : undefined}
+                label="دائن"
                 type="number"
                 step="0.01"
                 min="0"
@@ -338,7 +338,7 @@ function ManualEntryForm({ accounts, onCreated }) {
           </div>
         ))}
       </div>
-      <div className="flex items-center justify-between rounded-lg bg-slate-50 px-4 py-3 text-sm font-bold">
+      <div className="flex items-center justify-between rounded-lg bg-slate-50 dark:bg-slate-800/60 px-4 py-3 text-sm font-bold">
         <span>مجموع المدين: {money(totalDebit)}</span>
         <span>مجموع الدائن: {money(totalCredit)}</span>
         {balanced ? <Badge tone="green">متوازن ✓</Badge> : <Badge tone="red">غير متوازن</Badge>}
@@ -399,13 +399,13 @@ export default function AccountingPage() {
   return (
     <div className="space-y-6">
       <h1 className="text-2xl font-extrabold">الحسابات</h1>
-      <div className="flex gap-2">
+      <div className="flex flex-wrap gap-2">
         {TABS.map((t) => (
           <button
             key={t.id}
             onClick={() => setTab(t.id)}
             className={`rounded-lg px-4 py-2 text-sm font-bold ${
-              tab === t.id ? "bg-emerald-700 text-white" : "bg-white text-slate-600 hover:bg-slate-50"
+              tab === t.id ? "bg-emerald-700 text-white" : "bg-white dark:bg-slate-800 text-slate-600 dark:text-slate-400 hover:bg-slate-50"
             }`}
           >
             {t.label}
@@ -421,10 +421,10 @@ export default function AccountingPage() {
           ) : (
             <div className="space-y-4">
               {(entries.data || []).map((entry) => (
-                <div key={entry.id} className="rounded-lg border border-slate-200 p-4">
+                <div key={entry.id} className="rounded-lg border border-slate-200 dark:border-slate-700 p-4">
                   <div className="mb-2 flex items-center justify-between">
                     <div className="font-bold">{entry.description}</div>
-                    <div className="flex items-center gap-2 text-xs text-slate-500">
+                    <div className="flex items-center gap-2 text-xs text-slate-500 dark:text-slate-400">
                       <Badge tone="blue">{REFERENCE_LABELS[entry.reference_type] || "—"}</Badge>
                       <span>{entry.entry_date}</span>
                       <span>قيد #{entry.id}</span>
@@ -441,7 +441,7 @@ export default function AccountingPage() {
                 </div>
               ))}
               {!entries.data?.length && (
-                <div className="py-10 text-center text-sm text-slate-400">لا توجد قيود بعد.</div>
+                <div className="py-10 text-center text-sm text-slate-400 dark:text-slate-500">لا توجد قيود بعد.</div>
               )}
             </div>
           )}
@@ -495,7 +495,7 @@ export default function AccountingPage() {
                 empty="لا توجد حركات محاسبية بعد."
               />
               {trialBalance.data?.rows?.length > 0 && (
-                <div className="mt-3 flex justify-end gap-8 border-t-2 border-slate-300 pt-3 font-extrabold">
+                <div className="mt-3 flex justify-end gap-8 border-t-2 border-slate-300 dark:border-slate-600 pt-3 font-extrabold">
                   <span>مجموع المدين: {money(trialBalance.data.total_debit)}</span>
                   <span>مجموع الدائن: {money(trialBalance.data.total_credit)}</span>
                 </div>
@@ -536,7 +536,7 @@ export default function AccountingPage() {
                     key: "net",
                     label: "الصافي المستحق",
                     render: (r) => (
-                      <span className={Number(r.net) >= 0 ? "text-emerald-700" : "text-red-700"}>
+                      <span className={Number(r.net) >= 0 ? "text-emerald-700 dark:text-emerald-400" : "text-red-700"}>
                         {money(r.net)}
                       </span>
                     ),
@@ -547,7 +547,7 @@ export default function AccountingPage() {
                 empty="لا توجد حركات ضريبية في هذه الفترة."
               />
               {taxSummary.data?.rows?.length > 0 && (
-                <div className="mt-3 flex flex-wrap justify-end gap-8 border-t-2 border-slate-300 pt-3 font-extrabold">
+                <div className="mt-3 flex flex-wrap justify-end gap-8 border-t-2 border-slate-300 dark:border-slate-600 pt-3 font-extrabold">
                   <span>إجمالي المحصّلة: {money(taxSummary.data.total_collected)}</span>
                   <span>إجمالي المدفوعة: {money(taxSummary.data.total_paid)}</span>
                   <span>الصافي المستحق: {money(taxSummary.data.total_net)}</span>
@@ -589,7 +589,7 @@ export default function AccountingPage() {
           ) : (
             <div className="space-y-6">
               <div>
-                <div className="mb-2 text-sm font-bold text-slate-600">الإيرادات</div>
+                <div className="mb-2 text-sm font-bold text-slate-600 dark:text-slate-400">الإيرادات</div>
                 <Table
                   columns={[
                     { key: "account_code", label: "الرقم" },
@@ -606,7 +606,7 @@ export default function AccountingPage() {
               </div>
 
               <div>
-                <div className="mb-2 text-sm font-bold text-slate-600">تكلفة البضاعة المباعة</div>
+                <div className="mb-2 text-sm font-bold text-slate-600 dark:text-slate-400">تكلفة البضاعة المباعة</div>
                 <Table
                   columns={[
                     { key: "account_code", label: "الرقم" },
@@ -622,14 +622,14 @@ export default function AccountingPage() {
                 </div>
               </div>
 
-              <div className="flex justify-end border-t-2 border-slate-300 pt-3 text-emerald-700">
+              <div className="flex justify-end border-t-2 border-slate-300 dark:border-slate-600 pt-3 text-emerald-700 dark:text-emerald-400">
                 <span className="font-extrabold">
                   مجمل الربح: {money(incomeStatement.data?.gross_profit)}
                 </span>
               </div>
 
               <div>
-                <div className="mb-2 text-sm font-bold text-slate-600">المصاريف التشغيلية</div>
+                <div className="mb-2 text-sm font-bold text-slate-600 dark:text-slate-400">المصاريف التشغيلية</div>
                 <Table
                   columns={[
                     { key: "account_code", label: "الرقم" },
@@ -646,8 +646,8 @@ export default function AccountingPage() {
               </div>
 
               <div
-                className={`flex justify-end border-t-2 border-slate-300 pt-3 text-lg font-extrabold ${
-                  Number(incomeStatement.data?.net_profit) >= 0 ? "text-emerald-700" : "text-red-700"
+                className={`flex justify-end border-t-2 border-slate-300 dark:border-slate-600 pt-3 text-lg font-extrabold ${
+                  Number(incomeStatement.data?.net_profit) >= 0 ? "text-emerald-700 dark:text-emerald-400" : "text-red-700"
                 }`}
               >
                 <span>صافي الربح: {money(incomeStatement.data?.net_profit)}</span>
@@ -678,7 +678,7 @@ export default function AccountingPage() {
           ) : (
             <div className="space-y-6">
               <div>
-                <div className="mb-2 text-sm font-bold text-slate-600">الأصول</div>
+                <div className="mb-2 text-sm font-bold text-slate-600 dark:text-slate-400">الأصول</div>
                 <Table
                   columns={[
                     { key: "account_code", label: "الرقم" },
@@ -695,7 +695,7 @@ export default function AccountingPage() {
               </div>
 
               <div>
-                <div className="mb-2 text-sm font-bold text-slate-600">الالتزامات</div>
+                <div className="mb-2 text-sm font-bold text-slate-600 dark:text-slate-400">الالتزامات</div>
                 <Table
                   columns={[
                     { key: "account_code", label: "الرقم" },
@@ -712,7 +712,7 @@ export default function AccountingPage() {
               </div>
 
               <div>
-                <div className="mb-2 text-sm font-bold text-slate-600">حقوق الملكية</div>
+                <div className="mb-2 text-sm font-bold text-slate-600 dark:text-slate-400">حقوق الملكية</div>
                 <Table
                   columns={[
                     { key: "account_code", label: "الرقم" },
@@ -723,7 +723,7 @@ export default function AccountingPage() {
                   keyField="account_code"
                   empty="لا توجد حقوق ملكية مسجلة بعد."
                 />
-                <div className="mt-1 flex justify-end text-sm text-slate-600">
+                <div className="mt-1 flex justify-end text-sm text-slate-600 dark:text-slate-400">
                   <span>الأرباح المرحلة (غير الموزعة): {money(balanceSheet.data?.retained_earnings)}</span>
                 </div>
                 <div className="mt-2 flex justify-end font-extrabold">
@@ -731,7 +731,7 @@ export default function AccountingPage() {
                 </div>
               </div>
 
-              <div className="flex justify-end gap-8 border-t-2 border-slate-300 pt-3 text-lg font-extrabold">
+              <div className="flex justify-end gap-8 border-t-2 border-slate-300 dark:border-slate-600 pt-3 text-lg font-extrabold">
                 <span>إجمالي الأصول: {money(balanceSheet.data?.total_assets)}</span>
                 <span>إجمالي الالتزامات وحقوق الملكية: {money(balanceSheet.data?.total_liabilities_and_equity)}</span>
               </div>

@@ -91,9 +91,10 @@ export const qty = (value) => {
 };
 
 const BUTTON_VARIANTS = {
-  primary: "bg-emerald-700 text-white hover:bg-emerald-800",
-  secondary: "bg-white text-slate-700 border border-slate-300 hover:bg-slate-50",
-  danger: "bg-rose-600 text-white hover:bg-rose-700",
+  primary: "bg-emerald-700 text-white hover:bg-emerald-800 dark:bg-emerald-600 dark:hover:bg-emerald-500",
+  secondary:
+    "bg-white text-slate-700 border border-slate-300 hover:bg-slate-50 dark:bg-slate-800 dark:text-slate-200 dark:border-slate-600 dark:hover:bg-slate-700",
+  danger: "bg-rose-600 text-white hover:bg-rose-700 dark:bg-rose-700 dark:hover:bg-rose-600",
 };
 
 export function Button({ variant = "primary", className = "", ...props }) {
@@ -108,14 +109,18 @@ export function Button({ variant = "primary", className = "", ...props }) {
 export function Field({ label, children }) {
   return (
     <label className="block text-sm">
-      <span className="mb-1 block font-bold text-slate-600">{label}</span>
+      {/* `field-label` lets repeated line-item labels hide on wider screens
+          while staying visible on stacked mobile rows (see index.css). */}
+      <span className="field-label mb-1 block font-bold text-slate-600 dark:text-slate-400">
+        {label}
+      </span>
       {children}
     </label>
   );
 }
 
 const CONTROL =
-  "w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm focus:border-emerald-600";
+  "w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm focus:border-emerald-600 dark:border-slate-600 dark:bg-slate-800 dark:text-slate-100 dark:placeholder:text-slate-500";
 
 export function Input({ label, ...props }) {
   const input = <input className={CONTROL} {...props} />;
@@ -133,11 +138,16 @@ export function Select({ label, children, ...props }) {
 
 export function Card({ title, actions, children, className = "" }) {
   return (
-    <section className={`rounded-xl bg-white p-5 shadow-sm ${className}`}>
+    <section
+      className={`rounded-xl bg-white p-4 shadow-sm sm:p-5 dark:bg-slate-900 dark:ring-1 dark:ring-slate-800 ${className}`}
+    >
       {(title || actions) && (
-        <header className="mb-4 flex items-center justify-between gap-2">
-          <h2 className="text-lg font-extrabold text-slate-800">{title}</h2>
-          <div className="flex gap-2">{actions}</div>
+        // Wraps on narrow screens so a long title never squashes its buttons.
+        <header className="mb-4 flex flex-wrap items-center justify-between gap-2">
+          <h2 className="text-base font-extrabold text-slate-800 sm:text-lg dark:text-slate-100">
+            {title}
+          </h2>
+          <div className="flex flex-wrap gap-2">{actions}</div>
         </header>
       )}
       {children}
@@ -145,12 +155,27 @@ export function Card({ title, actions, children, className = "" }) {
   );
 }
 
+// Spelled out rather than interpolated: Tailwind only ships classes it can see
+// as literal strings, so a `text-${tone}-700` template would rely on the colour
+// happening to be used elsewhere in the app.
+const STAT_TONES = {
+  emerald: "text-emerald-700 dark:text-emerald-400",
+  rose: "text-rose-700 dark:text-rose-400",
+  amber: "text-amber-700 dark:text-amber-400",
+  sky: "text-sky-700 dark:text-sky-400",
+  slate: "text-slate-700 dark:text-slate-300",
+};
+
 export function Stat({ label, value, hint, tone = "emerald" }) {
   return (
-    <div className="rounded-xl bg-white p-5 shadow-sm">
-      <div className="text-sm font-bold text-slate-500">{label}</div>
-      <div className={`mt-1 text-3xl font-extrabold text-${tone}-700`}>{value}</div>
-      {hint && <div className="mt-1 text-xs text-slate-400">{hint}</div>}
+    <div className="rounded-xl bg-white p-4 shadow-sm sm:p-5 dark:bg-slate-900 dark:ring-1 dark:ring-slate-800">
+      <div className="text-sm font-bold text-slate-500 dark:text-slate-400">{label}</div>
+      <div
+        className={`mt-1 text-2xl font-extrabold sm:text-3xl ${STAT_TONES[tone] ?? STAT_TONES.emerald}`}
+      >
+        {value}
+      </div>
+      {hint && <div className="mt-1 text-xs text-slate-400 dark:text-slate-500">{hint}</div>}
     </div>
   );
 }
@@ -186,7 +211,9 @@ export function Table({
   }, [rows?.length, query]);
 
   if (!rows?.length) {
-    return <div className="py-10 text-center text-sm text-slate-400">{empty}</div>;
+    return (
+      <div className="py-10 text-center text-sm text-slate-400 dark:text-slate-500">{empty}</div>
+    );
   }
 
   const q = query.trim().toLowerCase();
@@ -233,26 +260,31 @@ export function Table({
             value={query}
             onChange={(e) => setQuery(e.target.value)}
             placeholder={searchPlaceholder}
-            className="w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm focus:border-emerald-600 sm:w-64"
+            className={`${CONTROL} sm:w-64`}
           />
         </div>
       )}
-      <div className="overflow-x-auto">
-        <table className="w-full text-right text-sm">
+      {/* Data tables carry too many columns for a phone, so the table keeps a
+          readable minimum width and scrolls sideways inside this box rather
+          than crushing its columns or widening the whole page. */}
+      <div className="-mx-4 overflow-x-auto px-4 sm:mx-0 sm:px-0">
+        <table className="w-full min-w-[44rem] text-right text-sm">
           <thead>
-            <tr className="border-b border-slate-200 text-xs font-bold text-slate-500">
+            <tr className="border-b border-slate-200 text-xs font-bold text-slate-500 dark:border-slate-700 dark:text-slate-400">
               {columns.map((col) => {
                 const isSortable = !!col.label && col.sortable !== false;
                 return (
                   <th
                     key={col.key}
-                    className={`px-3 py-2 ${isSortable ? "cursor-pointer select-none hover:text-slate-700" : ""}`}
+                    className={`px-3 py-2 ${isSortable ? "cursor-pointer select-none hover:text-slate-700 dark:hover:text-slate-200" : ""}`}
                     onClick={isSortable ? () => toggleSort(col.key) : undefined}
                   >
                     <span className="inline-flex items-center gap-1">
                       {col.label}
                       {isSortable && sort.key === col.key && (
-                        <span className="text-emerald-700">{sort.dir === "asc" ? "▲" : "▼"}</span>
+                        <span className="text-emerald-700 dark:text-emerald-400">
+                          {sort.dir === "asc" ? "▲" : "▼"}
+                        </span>
                       )}
                     </span>
                   </th>
@@ -265,7 +297,7 @@ export function Table({
               {pageRows.map((row, index) => (
                 <tr
                   key={(typeof keyField === "function" ? keyField(row) : row[keyField]) ?? index}
-                  className="border-b border-slate-100 last:border-0 hover:bg-slate-50"
+                  className="border-b border-slate-100 last:border-0 hover:bg-slate-50 dark:border-slate-800 dark:hover:bg-slate-800/60"
                 >
                   {columns.map((col) => (
                     <td key={col.key} className="px-3 py-2.5">
@@ -278,7 +310,10 @@ export function Table({
           ) : (
             <tbody>
               <tr>
-                <td colSpan={columns.length} className="py-8 text-center text-sm text-slate-400">
+                <td
+                  colSpan={columns.length}
+                  className="py-8 text-center text-sm text-slate-400 dark:text-slate-500"
+                >
                   لا توجد نتائج مطابقة لبحثك.
                 </td>
               </tr>
@@ -287,7 +322,7 @@ export function Table({
         </table>
       </div>
       {totalPages > 1 && (
-        <div className="mt-3 flex items-center justify-between text-xs font-bold text-slate-500">
+        <div className="mt-3 flex flex-col items-center justify-between gap-2 text-xs font-bold text-slate-500 sm:flex-row dark:text-slate-400">
           <span>إجمالي {sorted.length} عنصر</span>
           <div className="flex items-center gap-2">
             <Button
@@ -347,17 +382,23 @@ export function Modal({
   if (!open) return null;
   return (
     <div
-      className="fixed inset-0 z-50 flex items-start justify-center overflow-y-auto bg-slate-900/50 p-4 pt-14"
+      className="fixed inset-0 z-50 flex items-start justify-center overflow-y-auto bg-slate-900/50 p-3 pt-6 sm:p-4 sm:pt-14 dark:bg-slate-950/70"
       onClick={requestClose}
     >
       <div
         ref={contentRef}
-        className={`w-full ${wide ? "max-w-4xl" : "max-w-lg"} rounded-xl bg-white p-6 shadow-xl`}
+        className={`w-full ${wide ? "max-w-4xl" : "max-w-lg"} rounded-xl bg-white p-4 shadow-xl sm:p-6 dark:bg-slate-900 dark:ring-1 dark:ring-slate-700`}
         onClick={(event) => event.stopPropagation()}
       >
-        <header className="mb-4 flex items-center justify-between">
-          <h3 className="text-lg font-extrabold">{title}</h3>
-          <button onClick={requestClose} className="text-2xl leading-none text-slate-400 hover:text-slate-600">
+        {/* Sticky header keeps the title and × reachable while a long form
+            scrolls underneath on short screens. */}
+        <header className="sticky -top-4 z-10 mb-4 flex items-start justify-between gap-3 bg-white pb-2 pt-1 sm:-top-6 sm:pt-2 dark:bg-slate-900">
+          <h3 className="text-base font-extrabold sm:text-lg dark:text-slate-100">{title}</h3>
+          <button
+            onClick={requestClose}
+            aria-label="إغلاق"
+            className="shrink-0 text-2xl leading-none text-slate-400 hover:text-slate-600 dark:hover:text-slate-200"
+          >
             ×
           </button>
         </header>
@@ -383,15 +424,19 @@ export function CancelButton({ onClose, children = "إلغاء", ...props }) {
 }
 
 export function Badge({ tone = "slate", children }) {
+  // Light background + dark text of the same hue, mirrored in dark mode as a
+  // dark translucent background + light text — never white on a pale fill.
   const tones = {
-    slate: "bg-slate-100 text-slate-700",
-    green: "bg-emerald-100 text-emerald-800",
-    red: "bg-rose-100 text-rose-800",
-    amber: "bg-amber-100 text-amber-800",
-    blue: "bg-sky-100 text-sky-800",
+    slate: "bg-slate-100 text-slate-700 dark:bg-slate-700/50 dark:text-slate-200",
+    green: "bg-emerald-100 text-emerald-800 dark:bg-emerald-900/50 dark:text-emerald-200",
+    red: "bg-rose-100 text-rose-800 dark:bg-rose-900/50 dark:text-rose-200",
+    amber: "bg-amber-100 text-amber-800 dark:bg-amber-900/50 dark:text-amber-200",
+    blue: "bg-sky-100 text-sky-800 dark:bg-sky-900/50 dark:text-sky-200",
   };
   return (
-    <span className={`inline-block rounded-full px-2.5 py-0.5 text-xs font-bold ${tones[tone]}`}>
+    <span
+      className={`inline-block whitespace-nowrap rounded-full px-2.5 py-0.5 text-xs font-bold ${tones[tone]}`}
+    >
       {children}
     </span>
   );
@@ -400,12 +445,18 @@ export function Badge({ tone = "slate", children }) {
 export function Alert({ tone = "error", children }) {
   if (!children) return null;
   const tones = {
-    error: "bg-rose-50 text-rose-800 border-rose-200",
-    success: "bg-emerald-50 text-emerald-800 border-emerald-200",
+    error:
+      "bg-rose-50 text-rose-800 border-rose-200 dark:bg-rose-950/50 dark:text-rose-200 dark:border-rose-900",
+    success:
+      "bg-emerald-50 text-emerald-800 border-emerald-200 dark:bg-emerald-950/50 dark:text-emerald-200 dark:border-emerald-900",
   };
   return <div className={`mb-4 rounded-lg border px-4 py-3 text-sm font-bold ${tones[tone]}`}>{children}</div>;
 }
 
 export function Loading() {
-  return <div className="py-10 text-center text-sm text-slate-400">جارٍ التحميل...</div>;
+  return (
+    <div className="py-10 text-center text-sm text-slate-400 dark:text-slate-500">
+      جارٍ التحميل...
+    </div>
+  );
 }

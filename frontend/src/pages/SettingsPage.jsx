@@ -61,11 +61,11 @@ function TaxRateForm({ onSaved, onClose }) {
         value={form.country}
         onChange={set("country")}
       />
-      <label className="flex items-center gap-2 text-sm font-bold text-slate-600">
+      <label className="flex items-center gap-2 text-sm font-bold text-slate-600 dark:text-slate-400">
         <input type="checkbox" checked={form.is_active} onChange={set("is_active")} />
         مفعّلة
       </label>
-      <label className="flex items-center gap-2 text-sm font-bold text-slate-600">
+      <label className="flex items-center gap-2 text-sm font-bold text-slate-600 dark:text-slate-400">
         <input type="checkbox" checked={form.is_default} onChange={set("is_default")} />
         الضريبة الافتراضية المقترحة عند إصدار فاتورة جديدة
       </label>

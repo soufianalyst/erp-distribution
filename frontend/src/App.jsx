@@ -2,6 +2,7 @@ import { BrowserRouter, Navigate, Route, Routes } from "react-router-dom";
 import Layout from "./components/Layout";
 import { Loading } from "./components/Ui";
 import { AuthProvider, useAuth } from "./context/AuthContext";
+import { ThemeProvider } from "./context/ThemeContext";
 import AccountingPage from "./pages/AccountingPage";
 import AnalyticsPage from "./pages/AnalyticsPage";
 import AuditLogPage from "./pages/AuditLogPage";
@@ -41,141 +42,143 @@ function RequirePerm({ perm, children }) {
 export default function App() {
   return (
     <BrowserRouter>
-      <AuthProvider>
-        <Routes>
-          <Route path="/login" element={<LoginPage />} />
-          <Route
-            path="/print/invoice/:invoiceId"
-            element={
-              <RequireAuth>
-                <PrintInvoicePage />
-              </RequireAuth>
-            }
-          />
-          <Route
-            path="/print/picking/:tripId"
-            element={
-              <RequireAuth>
-                <PrintPickingPage />
-              </RequireAuth>
-            }
-          />
-          <Route
-            path="/print/pickup/:invoiceId"
-            element={
-              <RequireAuth>
-                <PrintPickupPrepPage />
-              </RequireAuth>
-            }
-          />
-          <Route
-            path="/print/adjustment/:adjustmentId"
-            element={
-              <RequireAuth>
-                <PrintAdjustmentPage />
-              </RequireAuth>
-            }
-          />
-          <Route
-            path="/print/damage-report"
-            element={
-              <RequireAuth>
-                <PrintDamageReportPage />
-              </RequireAuth>
-            }
-          />
-          <Route
-            path="/print/discount-report"
-            element={
-              <RequireAuth>
-                <PrintDiscountReportPage />
-              </RequireAuth>
-            }
-          />
-          <Route
-            element={
-              <RequireAuth>
-                <Layout />
-              </RequireAuth>
-            }
-          >
-            <Route path="/" element={<DashboardPage />} />
-            <Route path="/products" element={<ProductsPage />} />
+      <ThemeProvider>
+        <AuthProvider>
+          <Routes>
+            <Route path="/login" element={<LoginPage />} />
             <Route
-              path="/barcode-scan"
+              path="/print/invoice/:invoiceId"
               element={
-                <RequirePerm perm="products.view">
-                  <BarcodeScanPage />
-                </RequirePerm>
-              }
-            />
-            <Route path="/warehouses" element={<WarehousesPage />} />
-            <Route path="/stock" element={<StockPage />} />
-            <Route path="/customers" element={<CustomersPage />} />
-            <Route path="/sales" element={<SalesPage />} />
-            <Route
-              path="/cashier"
-              element={
-                <RequirePerm perm="cashier.view">
-                  <CashierPage />
-                </RequirePerm>
-              }
-            />
-            <Route path="/delivery" element={<DeliveryPage />} />
-            <Route path="/suppliers" element={<SuppliersPage />} />
-            <Route path="/purchases" element={<PurchasesPage />} />
-            <Route
-              path="/expenses"
-              element={
-                <RequirePerm perm="expenses.view">
-                  <ExpensesPage />
-                </RequirePerm>
+                <RequireAuth>
+                  <PrintInvoicePage />
+                </RequireAuth>
               }
             />
             <Route
-              path="/accounting"
+              path="/print/picking/:tripId"
               element={
-                <RequirePerm perm="accounting.view">
-                  <AccountingPage />
-                </RequirePerm>
+                <RequireAuth>
+                  <PrintPickingPage />
+                </RequireAuth>
               }
             />
             <Route
-              path="/analytics"
+              path="/print/pickup/:invoiceId"
               element={
-                <RequirePerm perm="analytics.view">
-                  <AnalyticsPage />
-                </RequirePerm>
+                <RequireAuth>
+                  <PrintPickupPrepPage />
+                </RequireAuth>
               }
             />
             <Route
-              path="/settings"
+              path="/print/adjustment/:adjustmentId"
               element={
-                <RequirePerm perm="settings.view">
-                  <SettingsPage />
-                </RequirePerm>
+                <RequireAuth>
+                  <PrintAdjustmentPage />
+                </RequireAuth>
               }
             />
             <Route
-              path="/users"
+              path="/print/damage-report"
               element={
-                <RequirePerm perm="users.manage">
-                  <UsersPage />
-                </RequirePerm>
+                <RequireAuth>
+                  <PrintDamageReportPage />
+                </RequireAuth>
               }
             />
             <Route
-              path="/audit"
+              path="/print/discount-report"
               element={
-                <RequirePerm perm="audit.view">
-                  <AuditLogPage />
-                </RequirePerm>
+                <RequireAuth>
+                  <PrintDiscountReportPage />
+                </RequireAuth>
               }
             />
-          </Route>
-          <Route path="*" element={<Navigate to="/" replace />} />
-        </Routes>
-      </AuthProvider>
+            <Route
+              element={
+                <RequireAuth>
+                  <Layout />
+                </RequireAuth>
+              }
+            >
+              <Route path="/" element={<DashboardPage />} />
+              <Route path="/products" element={<ProductsPage />} />
+              <Route
+                path="/barcode-scan"
+                element={
+                  <RequirePerm perm="products.view">
+                    <BarcodeScanPage />
+                  </RequirePerm>
+                }
+              />
+              <Route path="/warehouses" element={<WarehousesPage />} />
+              <Route path="/stock" element={<StockPage />} />
+              <Route path="/customers" element={<CustomersPage />} />
+              <Route path="/sales" element={<SalesPage />} />
+              <Route
+                path="/cashier"
+                element={
+                  <RequirePerm perm="cashier.view">
+                    <CashierPage />
+                  </RequirePerm>
+                }
+              />
+              <Route path="/delivery" element={<DeliveryPage />} />
+              <Route path="/suppliers" element={<SuppliersPage />} />
+              <Route path="/purchases" element={<PurchasesPage />} />
+              <Route
+                path="/expenses"
+                element={
+                  <RequirePerm perm="expenses.view">
+                    <ExpensesPage />
+                  </RequirePerm>
+                }
+              />
+              <Route
+                path="/accounting"
+                element={
+                  <RequirePerm perm="accounting.view">
+                    <AccountingPage />
+                  </RequirePerm>
+                }
+              />
+              <Route
+                path="/analytics"
+                element={
+                  <RequirePerm perm="analytics.view">
+                    <AnalyticsPage />
+                  </RequirePerm>
+                }
+              />
+              <Route
+                path="/settings"
+                element={
+                  <RequirePerm perm="settings.view">
+                    <SettingsPage />
+                  </RequirePerm>
+                }
+              />
+              <Route
+                path="/users"
+                element={
+                  <RequirePerm perm="users.manage">
+                    <UsersPage />
+                  </RequirePerm>
+                }
+              />
+              <Route
+                path="/audit"
+                element={
+                  <RequirePerm perm="audit.view">
+                    <AuditLogPage />
+                  </RequirePerm>
+                }
+              />
+            </Route>
+            <Route path="*" element={<Navigate to="/" replace />} />
+          </Routes>
+        </AuthProvider>
+      </ThemeProvider>
     </BrowserRouter>
   );
 }

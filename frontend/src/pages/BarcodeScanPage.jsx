@@ -102,7 +102,7 @@ export default function BarcodeScanPage() {
         </form>
 
         {scanning && (
-          <div className="mt-4 max-w-sm overflow-hidden rounded-lg border border-slate-300">
+          <div className="mt-4 max-w-sm overflow-hidden rounded-lg border border-slate-300 dark:border-slate-600">
             {/* eslint-disable-next-line jsx-a11y/media-has-caption */}
             <video ref={videoRef} className="w-full" muted playsInline />
           </div>
@@ -116,30 +116,30 @@ export default function BarcodeScanPage() {
         <Card title={`الصنف: ${product.name}`}>
           <div className="grid grid-cols-2 gap-4 text-sm sm:grid-cols-4">
             <div>
-              <div className="text-slate-500">الرمز (SKU)</div>
+              <div className="text-slate-500 dark:text-slate-400">الرمز (SKU)</div>
               <div className="font-bold">{product.sku}</div>
             </div>
             <div>
-              <div className="text-slate-500">الباركود</div>
+              <div className="text-slate-500 dark:text-slate-400">الباركود</div>
               <div className="font-bold">{product.barcode || "—"}</div>
             </div>
             <div>
-              <div className="text-slate-500">سعر الجملة</div>
+              <div className="text-slate-500 dark:text-slate-400">سعر الجملة</div>
               <div className="font-bold">{money(product.wholesale_price)}</div>
             </div>
             <div>
-              <div className="text-slate-500">سعر التجزئة</div>
+              <div className="text-slate-500 dark:text-slate-400">سعر التجزئة</div>
               <div className="font-bold">{money(product.retail_price)}</div>
             </div>
           </div>
           <div className="mt-4">
-            <div className="mb-2 text-sm font-bold text-slate-600">الرصيد الحالي</div>
+            <div className="mb-2 text-sm font-bold text-slate-600 dark:text-slate-400">الرصيد الحالي</div>
             {stockLevels.length ? (
               <ul className="space-y-1 text-sm">
                 {stockLevels.map((lvl) => (
                   <li
                     key={lvl.warehouse_id}
-                    className="flex justify-between rounded bg-slate-50 px-3 py-2"
+                    className="flex justify-between rounded bg-slate-50 dark:bg-slate-800/60 px-3 py-2"
                   >
                     <span>{lvl.warehouse_name}</span>
                     <span className="font-bold">
@@ -149,7 +149,7 @@ export default function BarcodeScanPage() {
                 ))}
               </ul>
             ) : (
-              <p className="text-sm text-slate-400">لا يوجد رصيد في أي مستودع.</p>
+              <p className="text-sm text-slate-400 dark:text-slate-500">لا يوجد رصيد في أي مستودع.</p>
             )}
           </div>
         </Card>

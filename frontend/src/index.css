@@ -7,10 +7,17 @@ body {
   @apply bg-slate-100 text-slate-800;
 }
 
-/* Clean paper output for printed invoices and reports. */
+html.dark body {
+  @apply bg-slate-950 text-slate-200;
+}
+
+/* Clean paper output for printed invoices and reports — always on white,
+   whatever the on-screen theme is. */
 @media print {
+  html.dark body,
   body {
     background: white;
+    color: black;
   }
   @page {
     size: A4;
@@ -24,4 +31,38 @@ select:focus-visible,
 button:focus-visible,
 textarea:focus-visible {
   @apply outline outline-2 outline-emerald-600;
+}
+
+/* Native controls (date pickers, dropdown arrows, spinners) render with the
+   browser's own light palette unless told otherwise. */
+html.dark {
+  color-scheme: dark;
+}
+
+/* Chart palette. Recharts takes colours as inline SVG fill/stroke values, which
+   Tailwind's dark: variants cannot reach — but SVG paint accepts CSS variables,
+   so the charts re-theme from here with no JavaScript involved. */
+:root {
+  --chart-tick: #334155;
+  --chart-label: #0f172a;
+  --chart-grid: #cbd5e1;
+  --chart-surface: #ffffff;
+  --chart-border: #e2e8f0;
+}
+
+html.dark {
+  --chart-tick: #cbd5e1;
+  --chart-label: #f1f5f9;
+  --chart-grid: #334155;
+  --chart-surface: #1e293b;
+  --chart-border: #475569;
+}
+
+/* Line-item rows (invoice / purchase order / journal entry) stack into one
+   column on phones, so each row keeps its own field labels. From `sm` up the
+   columns line up under the first row's labels, so the repeats are hidden. */
+@media (min-width: 640px) {
+  .line-row:not(.line-row-first) .field-label {
+    display: none;
+  }
 }

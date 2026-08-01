@@ -88,20 +88,20 @@ function FinalizeInvoice({ totals, initialCollectable, onConfirm, onCancel, busy
 
   return (
     <div className="space-y-4">
-      <div className="rounded-lg border border-slate-200 bg-slate-50 p-3 text-sm">
+      <div className="rounded-lg border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800/60 p-3 text-sm">
         <div className="flex justify-between py-0.5">
-          <span className="font-bold text-slate-600">قبل الضريبة</span>
+          <span className="font-bold text-slate-600 dark:text-slate-400">قبل الضريبة</span>
           <span>{money(totals.subtotal)}</span>
         </div>
         {totals.taxes.map((t) => (
           <div key={t.name} className="flex justify-between py-0.5">
-            <span className="font-bold text-slate-600">
+            <span className="font-bold text-slate-600 dark:text-slate-400">
               {t.name} ({t.rate}%)
             </span>
             <span>{money(t.amount)}</span>
           </div>
         ))}
-        <div className="mt-1 flex justify-between border-t border-slate-300 pt-1 text-base">
+        <div className="mt-1 flex justify-between border-t border-slate-300 dark:border-slate-600 pt-1 text-base">
           <span className="font-extrabold">إجمالي الفاتورة</span>
           <span className="font-extrabold">{money(totals.gross)}</span>
         </div>
@@ -120,7 +120,7 @@ function FinalizeInvoice({ totals, initialCollectable, onConfirm, onCancel, busy
 
       {roundTargets.length > 0 && (
         <div className="flex flex-wrap items-center gap-2">
-          <span className="text-xs font-bold text-slate-500">تدوير سريع:</span>
+          <span className="text-xs font-bold text-slate-500 dark:text-slate-400">تدوير سريع:</span>
           {roundTargets.map((v) => (
             <Button
               key={v}
@@ -144,7 +144,7 @@ function FinalizeInvoice({ totals, initialCollectable, onConfirm, onCancel, busy
           سيتم تسجيل خصم بقيمة {money(discount)} — المبلغ المستحق على العميل {money(entered)}.
         </Alert>
       ) : (
-        <p className="text-sm font-bold text-slate-500">بدون خصم — سيُحصّل كامل المبلغ.</p>
+        <p className="text-sm font-bold text-slate-500 dark:text-slate-400">بدون خصم — سيُحصّل كامل المبلغ.</p>
       )}
 
       <div className="flex justify-end gap-2">
@@ -316,17 +316,17 @@ function InvoiceForm({
       </div>
 
       <div>
-        <span className="mb-1 block text-sm font-bold text-slate-600">
+        <span className="mb-1 block text-sm font-bold text-slate-600 dark:text-slate-400">
           الضرائب المطبّقة (يمكن اختيار أكثر من ضريبة)
         </span>
-        <div className="flex flex-wrap gap-3 rounded-lg border border-slate-300 bg-white p-3">
+        <div className="flex flex-wrap gap-3 rounded-lg border border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-800 p-3">
           {taxRates.filter((t) => t.is_active).length === 0 && (
-            <span className="text-sm text-slate-400">لا توجد ضرائب مفعّلة.</span>
+            <span className="text-sm text-slate-400 dark:text-slate-500">لا توجد ضرائب مفعّلة.</span>
           )}
           {taxRates
             .filter((t) => t.is_active)
             .map((t) => (
-              <label key={t.id} className="flex items-center gap-2 text-sm font-bold text-slate-700">
+              <label key={t.id} className="flex items-center gap-2 text-sm font-bold text-slate-700 dark:text-slate-300">
                 <input
                   type="checkbox"
                   checked={form.tax_rate_ids.includes(t.id)}
@@ -348,9 +348,9 @@ function InvoiceForm({
 
       <div>
         <div className="mb-2 flex items-center justify-between">
-          <span className="text-sm font-bold text-slate-600">
+          <span className="text-sm font-bold text-slate-600 dark:text-slate-400">
             أسطر الفاتورة{" "}
-            <span className="text-xs font-normal text-slate-400">
+            <span className="text-xs font-normal text-slate-400 dark:text-slate-500">
               (Tab في آخر حقل يضيف سطراً جديداً)
             </span>
           </span>
@@ -361,10 +361,10 @@ function InvoiceForm({
         {lines.map((line, index) => {
           const product = products.find((p) => String(p.id) === String(line.product_id));
           return (
-            <div key={index} className="mb-2 grid grid-cols-12 items-end gap-2">
+            <div key={index} className={`line-row ${index === 0 ? "line-row-first" : ""} mb-2 grid grid-cols-12 items-end gap-2 max-sm:grid-cols-1 max-sm:[&>*]:col-span-1`}>
               <div className="col-span-6">
                 <Input
-                  label={index === 0 ? "الصنف (اكتب للبحث)" : undefined}
+                  label="الصنف (اكتب للبحث)"
                   list={productListId}
                   placeholder="ابحث بالرمز أو الاسم..."
                   value={line.product_label ?? ""}
@@ -372,7 +372,7 @@ function InvoiceForm({
                   required
                 />
                 {product && (
-                  <div className="mt-0.5 text-xs font-bold text-emerald-700">
+                  <div className="mt-0.5 text-xs font-bold text-emerald-700 dark:text-emerald-400">
                     المستودع:{" "}
                     {warehouses.find((w) => w.id === product.warehouse_id)?.name ??
                       "⚠️ الصنف غير مرتبط بمستودع"}
@@ -381,7 +381,7 @@ function InvoiceForm({
               </div>
               <div className="col-span-2">
                 <Input
-                  label={index === 0 ? "الكمية" : undefined}
+                  label="الكمية"
                   type="number"
                   step="any"
                   min="0.001"
@@ -392,7 +392,7 @@ function InvoiceForm({
               </div>
               <div className="col-span-3">
                 <Select
-                  label={index === 0 ? "الوحدة" : undefined}
+                  label="الوحدة"
                   value={line.unit_id}
                   onChange={(e) => setLine(index, "unit_id", e.target.value)}
                   onKeyDown={(e) => {
@@ -448,7 +448,7 @@ function InvoiceForm({
       </div>
 
       {isAdmin && form.payment_method === "credit" && (
-        <label className="flex items-center gap-2 text-sm font-bold text-amber-700">
+        <label className="flex items-center gap-2 text-sm font-bold text-amber-700 dark:text-amber-400">
           <input
             type="checkbox"
             checked={form.credit_override}
@@ -532,11 +532,11 @@ function ReturnForm({ invoice, products, onDone }) {
         ))}
       </Select>
       {reason === "resellable" ? (
-        <p className="text-xs font-bold text-emerald-700">
+        <p className="text-xs font-bold text-emerald-700 dark:text-emerald-400">
           البضاعة الصالحة تعود تلقائياً إلى تشغيلاتها الأصلية في المخزون.
         </p>
       ) : (
-        <p className="text-xs font-bold text-rose-700">
+        <p className="text-xs font-bold text-rose-700 dark:text-rose-400">
           البضاعة التالفة لا تعود للمخزون وتسجل كخسارة تلف في الحسابات.
         </p>
       )}
@@ -546,7 +546,7 @@ function ReturnForm({ invoice, products, onDone }) {
           <div key={id} className="grid grid-cols-2 items-end gap-4">
             <div className="text-sm font-bold">
               {product?.name ?? `صنف ${id}`}
-              <div className="text-xs font-normal text-slate-500">
+              <div className="text-xs font-normal text-slate-500 dark:text-slate-400">
                 المباع: {qty(soldByProduct[id])} {product?.base_unit_name ?? ""}
               </div>
             </div>
@@ -611,7 +611,7 @@ function CommissionsTab() {
             empty="لا توجد مبيعات لمندوبين خلال هذه الفترة."
           />
           {!!report.data?.rows?.length && (
-            <div className="mt-3 text-left text-sm font-extrabold text-emerald-800">
+            <div className="mt-3 text-left text-sm font-extrabold text-emerald-800 dark:text-emerald-300">
               إجمالي العمولات: {money(report.data.total_commission)}
             </div>
           )}
@@ -720,17 +720,17 @@ function QuotationForm({ customers, products, taxRates, onCreated }) {
       </div>
 
       <div>
-        <span className="mb-1 block text-sm font-bold text-slate-600">
+        <span className="mb-1 block text-sm font-bold text-slate-600 dark:text-slate-400">
           الضرائب المطبّقة (يمكن اختيار أكثر من ضريبة)
         </span>
-        <div className="flex flex-wrap gap-3 rounded-lg border border-slate-300 bg-white p-3">
+        <div className="flex flex-wrap gap-3 rounded-lg border border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-800 p-3">
           {taxRates.filter((t) => t.is_active).length === 0 && (
-            <span className="text-sm text-slate-400">لا توجد ضرائب مفعّلة.</span>
+            <span className="text-sm text-slate-400 dark:text-slate-500">لا توجد ضرائب مفعّلة.</span>
           )}
           {taxRates
             .filter((t) => t.is_active)
             .map((t) => (
-              <label key={t.id} className="flex items-center gap-2 text-sm font-bold text-slate-700">
+              <label key={t.id} className="flex items-center gap-2 text-sm font-bold text-slate-700 dark:text-slate-300">
                 <input
                   type="checkbox"
                   checked={form.tax_rate_ids.includes(t.id)}
@@ -752,16 +752,16 @@ function QuotationForm({ customers, products, taxRates, onCreated }) {
 
       <div>
         <div className="mb-2 flex items-center justify-between">
-          <span className="text-sm font-bold text-slate-600">أسطر العرض</span>
+          <span className="text-sm font-bold text-slate-600 dark:text-slate-400">أسطر العرض</span>
           <Button type="button" variant="secondary" onClick={() => setLines([...lines, { ...EMPTY_LINE }])}>
             + سطر
           </Button>
         </div>
         {lines.map((line, index) => (
-          <div key={index} className="mb-2 grid grid-cols-12 items-end gap-2">
+          <div key={index} className={`line-row ${index === 0 ? "line-row-first" : ""} mb-2 grid grid-cols-12 items-end gap-2 max-sm:grid-cols-1 max-sm:[&>*]:col-span-1`}>
             <div className="col-span-8">
               <Input
-                label={index === 0 ? "الصنف (اكتب للبحث)" : undefined}
+                label="الصنف (اكتب للبحث)"
                 list="quotation-products"
                 placeholder="ابحث بالرمز أو الاسم..."
                 value={line.product_label ?? ""}
@@ -771,7 +771,7 @@ function QuotationForm({ customers, products, taxRates, onCreated }) {
             </div>
             <div className="col-span-4">
               <Input
-                label={index === 0 ? "الكمية" : undefined}
+                label="الكمية"
                 type="number"
                 step="any"
                 min="0.001"
@@ -826,7 +826,7 @@ function ConvertQuotationForm({ quotation, isAdmin, onConverted, onClose }) {
         <option value="pickup">استلام من المستودع (عند محلنا)</option>
       </Select>
       {isAdmin && (
-        <label className="flex items-center gap-2 text-sm font-bold text-slate-700">
+        <label className="flex items-center gap-2 text-sm font-bold text-slate-700 dark:text-slate-300">
           <input
             type="checkbox"
             checked={form.credit_override}
@@ -861,7 +861,7 @@ function QuotationsTab({ customers, products, taxRates, canQuote, isAdmin, onInv
 
   return (
     <div className="space-y-4">
-      <div className="flex items-center justify-between">
+      <div className="flex flex-wrap items-center justify-between gap-3">
         <h2 className="text-lg font-extrabold">عروض الأسعار</h2>
         {canQuote && <Button onClick={() => setCreating(true)}>+ عرض سعر جديد</Button>}
       </div>
@@ -896,7 +896,7 @@ function QuotationsTab({ customers, products, taxRates, canQuote, isAdmin, onInv
                 label: "",
                 render: (r) =>
                   r.status === "draft" && canQuote ? (
-                    <div className="flex gap-2">
+                    <div className="flex flex-wrap gap-2">
                       <Button variant="secondary" onClick={() => setConverting(r)}>
                         تحويل إلى فاتورة
                       </Button>
@@ -905,7 +905,7 @@ function QuotationsTab({ customers, products, taxRates, canQuote, isAdmin, onInv
                       </Button>
                     </div>
                   ) : r.converted_invoice_id ? (
-                    <span className="text-xs text-slate-500">فاتورة #{r.converted_invoice_id}</span>
+                    <span className="text-xs text-slate-500 dark:text-slate-400">فاتورة #{r.converted_invoice_id}</span>
                   ) : null,
               },
             ]}
@@ -1041,7 +1041,7 @@ export default function SalesPage() {
 
   return (
     <div className="space-y-6">
-      <div className="flex items-center justify-between">
+      <div className="flex flex-wrap items-center justify-between gap-3">
         <h1 className="text-2xl font-extrabold">فواتير المبيعات</h1>
         <div className="flex flex-wrap gap-2">
           {TABS.map((t) => (
@@ -1062,12 +1062,12 @@ export default function SalesPage() {
       {tab === "drafts" && canSell && drafts.length > 0 && (
         <Card>
           {/* One row of draft tabs — click to switch, × to close that draft. */}
-          <div className="mb-4 flex flex-wrap items-center gap-2 border-b border-slate-200 pb-3">
+          <div className="mb-4 flex flex-wrap items-center gap-2 border-b border-slate-200 dark:border-slate-700 pb-3">
             {drafts.map((d, index) => (
               <div
                 key={d.id}
                 className={`flex items-center gap-1 rounded-lg px-1 ${
-                  d.id === activeDraftId ? "bg-emerald-700 text-white" : "bg-white text-slate-700 border border-slate-300"
+                  d.id === activeDraftId ? "bg-emerald-700 text-white" : "bg-white dark:bg-slate-800 text-slate-700 dark:text-slate-300 border border-slate-300 dark:border-slate-600"
                 }`}
               >
                 <button
@@ -1082,7 +1082,7 @@ export default function SalesPage() {
                   onClick={() => closeDraft(d.id)}
                   title="إغلاق هذه المسودة"
                   className={`px-1.5 text-lg leading-none ${
-                    d.id === activeDraftId ? "text-white/80 hover:text-white" : "text-slate-400 hover:text-slate-700"
+                    d.id === activeDraftId ? "text-white/80 hover:text-white" : "text-slate-400 dark:text-slate-500 hover:text-slate-700"
                   }`}
                 >
                   ×
@@ -1094,7 +1094,7 @@ export default function SalesPage() {
             </Button>
           </div>
 
-          <p className="mb-4 text-sm font-bold text-slate-600">
+          <p className="mb-4 text-sm font-bold text-slate-600 dark:text-slate-400">
             فاتورة مبيعات جديدة — يتم خصم المخزون تلقائياً حسب FEFO
           </p>
 
@@ -1177,7 +1177,7 @@ export default function SalesPage() {
                   label: "الخصم",
                   render: (r) =>
                     Number(r.discount_amount) > 0 ? (
-                      <span className="font-bold text-amber-700">{money(r.discount_amount)}</span>
+                      <span className="font-bold text-amber-700 dark:text-amber-400">{money(r.discount_amount)}</span>
                     ) : (
                       "—"
                     ),
@@ -1240,7 +1240,7 @@ export default function SalesPage() {
                   label: "حصة الخصم",
                   render: (r) =>
                     Number(r.discount_amount) > 0 ? (
-                      <span className="font-bold text-amber-700">
+                      <span className="font-bold text-amber-700 dark:text-amber-400">
                         − {money(r.discount_amount)}
                       </span>
                     ) : (
@@ -1299,13 +1299,13 @@ export default function SalesPage() {
               );
               if (!invoiceReturns.length) return null;
               return (
-                <div className="rounded-lg border border-rose-200 bg-rose-50 p-3">
-                  <div className="mb-2 text-sm font-bold text-rose-700">
+                <div className="rounded-lg border border-rose-200 dark:border-rose-900 bg-rose-50 dark:bg-rose-950/40 p-3">
+                  <div className="mb-2 text-sm font-bold text-rose-700 dark:text-rose-400">
                     مرتجعات هذه الفاتورة ({invoiceReturns.length})
                   </div>
                   <div className="space-y-3">
                     {invoiceReturns.map((ret) => (
-                      <div key={ret.id} className="rounded border border-rose-100 bg-white p-2">
+                      <div key={ret.id} className="rounded border border-rose-100 dark:border-rose-900 bg-white dark:bg-slate-800 p-2">
                         <div className="mb-1 flex items-center justify-between text-xs">
                           <span className="font-bold">
                             مرتجع #{ret.id} — {ret.created_at?.slice(0, 10)}
@@ -1316,7 +1316,7 @@ export default function SalesPage() {
                         </div>
                         <table className="w-full text-xs">
                           <thead>
-                            <tr className="text-slate-500">
+                            <tr className="text-slate-500 dark:text-slate-400">
                               <th className="text-right font-normal">الصنف</th>
                               <th className="text-right font-normal">الكمية</th>
                               <th className="text-right font-normal">القيمة</th>
@@ -1335,9 +1335,9 @@ export default function SalesPage() {
                             ))}
                           </tbody>
                         </table>
-                        <div className="mt-1 text-right text-xs font-bold text-rose-700">
+                        <div className="mt-1 text-right text-xs font-bold text-rose-700 dark:text-rose-400">
                           {Number(ret.discount_amount) > 0 && (
-                            <span className="me-2 font-normal text-amber-700">
+                            <span className="me-2 font-normal text-amber-700 dark:text-amber-400">
                               (قبل الخصم {money(ret.subtotal)} − حصة الخصم{" "}
                               {money(ret.discount_amount)})
                             </span>
@@ -1351,8 +1351,8 @@ export default function SalesPage() {
               );
             })()}
 
-            <div className="flex items-center justify-between border-t border-slate-200 pt-3">
-              <div className="flex gap-2">
+            <div className="flex items-center justify-between border-t border-slate-200 dark:border-slate-700 pt-3">
+              <div className="flex flex-wrap gap-2">
                 <Button
                   variant="secondary"
                   onClick={() => navigate(`/print/invoice/${viewing.id}`)}
@@ -1420,13 +1420,13 @@ export default function SalesPage() {
                   </span>
                 ))}
                 {Number(viewing.discount_amount) > 0 && (
-                  <span className="text-amber-700">
+                  <span className="text-amber-700 dark:text-amber-400">
                     الخصم: {money(viewing.discount_amount)}
                   </span>
                 )}
-                <span className="text-emerald-700">الإجمالي: {money(viewing.total)}</span>
+                <span className="text-emerald-700 dark:text-emerald-400">الإجمالي: {money(viewing.total)}</span>
                 {Number(viewing.returned_total) > 0 && (
-                  <span className="text-rose-700">
+                  <span className="text-rose-700 dark:text-rose-400">
                     المرتجعات: {money(viewing.returned_total)} — الصافي:{" "}
                     {money(Number(viewing.total) - Number(viewing.returned_total))}
                   </span>

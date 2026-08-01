@@ -205,7 +205,7 @@ export default function CashierPage() {
                 label: "",
                 sortable: false,
                 render: (r) => (
-                  <div className="flex gap-2">
+                  <div className="flex flex-wrap gap-2">
                     <Button variant="secondary" onClick={() => setViewing(r)}>
                       عرض
                     </Button>
@@ -299,9 +299,9 @@ export default function CashierPage() {
                     {t.name} ({t.rate}%): {money(t.amount)}
                   </span>
                 ))}
-                <span className="text-emerald-700">الإجمالي: {money(viewing.total)}</span>
+                <span className="text-emerald-700 dark:text-emerald-400">الإجمالي: {money(viewing.total)}</span>
                 {Number(viewing.paid_amount) > 0 && (
-                  <span className="text-amber-700">
+                  <span className="text-amber-700 dark:text-amber-400">
                     محصّل: {money(viewing.paid_amount)} — المتبقي: {money(remaining(viewing))}
                   </span>
                 )}
@@ -320,7 +320,7 @@ export default function CashierPage() {
         {collectingFor && (
           <form onSubmit={submitCollection} className="space-y-4">
             <Alert>{dialogError}</Alert>
-            <div className="rounded-lg bg-slate-50 p-3 text-sm font-bold">
+            <div className="rounded-lg bg-slate-50 dark:bg-slate-800/60 p-3 text-sm font-bold">
               <div>العميل: {customerName(collectingFor.customer_id)}</div>
               <div>الإجمالي: {money(collectingFor.total)}</div>
               {Number(collectingFor.paid_amount) > 0 && (
@@ -339,7 +339,7 @@ export default function CashierPage() {
               required
               autoFocus
             />
-            <p className="text-xs text-slate-500">
+            <p className="text-xs text-slate-500 dark:text-slate-400">
               إذا كان المبلغ المُدخل أقل من المتبقي، تبقى الفاتورة بانتظار استكمال التحصيل
               ولا تُحرَّر لفريق التوزيع إلا بعد تحصيل كامل قيمتها.
             </p>
@@ -363,7 +363,7 @@ export default function CashierPage() {
         {payingFor && (
           <form onSubmit={submitPayment} className="space-y-4">
             <Alert>{dialogError}</Alert>
-            <div className="rounded-lg bg-slate-50 p-3 text-sm font-bold">
+            <div className="rounded-lg bg-slate-50 dark:bg-slate-800/60 p-3 text-sm font-bold">
               <div>{payingFor.description}</div>
               <div>الإجمالي: {money(payingFor.total)}</div>
               {Number(payingFor.paid_amount) > 0 && (
@@ -382,7 +382,7 @@ export default function CashierPage() {
               required
               autoFocus
             />
-            <p className="text-xs text-slate-500">
+            <p className="text-xs text-slate-500 dark:text-slate-400">
               إذا كان المبلغ المُدخل أقل من المتبقي، يبقى المستند بانتظار استكمال السداد.
             </p>
             <div className="flex justify-end gap-2">

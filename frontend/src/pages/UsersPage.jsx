@@ -53,14 +53,14 @@ function CommissionRateCell({ user, canManage, onChanged }) {
           step="0.01"
           min="0"
           max="100"
-          className="w-20 rounded border border-slate-300 px-2 py-1 text-sm"
+          className="w-20 rounded border border-slate-300 dark:border-slate-600 px-2 py-1 text-sm"
           value={value}
           onChange={(e) => setValue(e.target.value)}
           onBlur={save}
           onKeyDown={(e) => e.key === "Enter" && e.target.blur()}
           disabled={saving}
         />
-        <span className="text-xs text-slate-500">%</span>
+        <span className="text-xs text-slate-500 dark:text-slate-400">%</span>
       </div>
       {error && <div className="mt-1 text-xs text-red-600">{error}</div>}
     </div>
@@ -123,22 +123,22 @@ function PermissionsEditor({ user, catalog, onSaved, onClose }) {
     <div className="space-y-4">
       <Alert>{error}</Alert>
       <div className="flex items-center justify-between text-sm">
-        <span className="font-bold text-slate-600">
+        <span className="font-bold text-slate-600 dark:text-slate-400">
           الدور الأساسي: {ROLE_LABELS[user.role]}
           {user.permissions !== null && (
             <Badge tone="amber"> صلاحيات مخصصة</Badge>
           )}
         </span>
-        <span className="text-slate-500">{selected.size} صلاحية مفعّلة</span>
+        <span className="text-slate-500 dark:text-slate-400">{selected.size} صلاحية مفعّلة</span>
       </div>
 
       <div className="max-h-96 space-y-4 overflow-y-auto pe-1">
         {catalog.map((group) => (
-          <div key={group.group} className="rounded-lg border border-slate-200 p-3">
+          <div key={group.group} className="rounded-lg border border-slate-200 dark:border-slate-700 p-3">
             <button
               type="button"
               onClick={() => toggleGroup(group)}
-              className="mb-2 text-sm font-extrabold text-emerald-800 hover:underline"
+              className="mb-2 text-sm font-extrabold text-emerald-800 dark:text-emerald-300 hover:underline"
             >
               {group.group}
             </button>
@@ -161,11 +161,11 @@ function PermissionsEditor({ user, catalog, onSaved, onClose }) {
         ))}
       </div>
 
-      <div className="flex items-center justify-between border-t border-slate-200 pt-3">
+      <div className="flex items-center justify-between border-t border-slate-200 dark:border-slate-700 pt-3">
         <Button variant="secondary" onClick={() => save(true)} disabled={busy}>
           إعادة التعيين حسب الدور
         </Button>
-        <div className="flex gap-2">
+        <div className="flex flex-wrap gap-2">
           <CancelButton onClose={onClose} disabled={busy} />
           <Button onClick={() => save(false)} disabled={busy}>
             حفظ الصلاحيات
@@ -209,7 +209,7 @@ export default function UsersPage() {
 
   return (
     <div className="space-y-6">
-      <div className="flex items-center justify-between">
+      <div className="flex flex-wrap items-center justify-between gap-3">
         <h1 className="text-2xl font-extrabold">المستخدمون والصلاحيات</h1>
         <Button onClick={() => setOpen(true)}>+ مستخدم جديد</Button>
       </div>
@@ -256,7 +256,7 @@ export default function UsersPage() {
                 key: "actions",
                 label: "",
                 render: (r) => (
-                  <div className="flex gap-2">
+                  <div className="flex flex-wrap gap-2">
                     <Button variant="secondary" onClick={() => setPermUser(r)}>
                       🔐 الصلاحيات
                     </Button>

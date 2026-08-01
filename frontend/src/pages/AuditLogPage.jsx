@@ -49,7 +49,7 @@ function ChangesViewer({ entry }) {
   return (
     <table className="w-full text-sm">
       <thead>
-        <tr className="border-b border-slate-200 text-xs font-bold text-slate-500">
+        <tr className="border-b border-slate-200 dark:border-slate-700 text-xs font-bold text-slate-500 dark:text-slate-400">
           <th className="px-2 py-1 text-right">الحقل</th>
           {entry.action === "update" ? (
             <>
@@ -63,12 +63,12 @@ function ChangesViewer({ entry }) {
       </thead>
       <tbody>
         {rows.map(([field, value]) => (
-          <tr key={field} className="border-b border-slate-100 last:border-0">
+          <tr key={field} className="border-b border-slate-100 dark:border-slate-800 last:border-0">
             <td className="px-2 py-1.5 font-bold">{field}</td>
             {entry.action === "update" ? (
               <>
                 <td className="px-2 py-1.5 text-red-700">{String(value[0] ?? "—")}</td>
-                <td className="px-2 py-1.5 text-emerald-700">{String(value[1] ?? "—")}</td>
+                <td className="px-2 py-1.5 text-emerald-700 dark:text-emerald-400">{String(value[1] ?? "—")}</td>
               </>
             ) : (
               <td className="px-2 py-1.5">{String(value ?? "—")}</td>
@@ -112,7 +112,7 @@ export default function AuditLogPage() {
   return (
     <div className="space-y-6">
       <h1 className="text-2xl font-extrabold">سجل تتبع العمليات (Audit Trail)</h1>
-      <p className="text-sm text-slate-500">
+      <p className="text-sm text-slate-500 dark:text-slate-400">
         سجل تلقائي لكل إضافة أو تعديل أو حذف في النظام، مع تحديد من قام بها ومتى.
       </p>
 

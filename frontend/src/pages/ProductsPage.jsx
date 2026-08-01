@@ -54,7 +54,7 @@ function BarcodeCell({ product, canManage, onChanged }) {
   return (
     <div>
       <input
-        className="w-32 rounded border border-slate-300 px-2 py-1 text-sm"
+        className="w-32 rounded border border-slate-300 dark:border-slate-600 px-2 py-1 text-sm"
         value={value}
         onChange={(e) => setValue(e.target.value)}
         onBlur={save}
@@ -89,7 +89,7 @@ function WarehouseCell({ product, warehouses, canManage, onChanged }) {
   }
   return (
     <select
-      className="rounded border border-slate-300 px-2 py-1 text-sm"
+      className="rounded border border-slate-300 dark:border-slate-600 px-2 py-1 text-sm"
       value={product.warehouse_id ?? ""}
       onChange={assign}
       disabled={saving}
@@ -156,7 +156,7 @@ function EditProductForm({ product, warehouses, onSaved, onClose }) {
           ))}
         </Select>
       </div>
-      <label className="flex items-center gap-2 text-sm font-bold text-slate-700">
+      <label className="flex items-center gap-2 text-sm font-bold text-slate-700 dark:text-slate-300">
         <input
           type="checkbox"
           checked={form.is_active}
@@ -224,7 +224,7 @@ export default function ProductsPage() {
 
   return (
     <div className="space-y-6">
-      <div className="flex items-center justify-between">
+      <div className="flex flex-wrap items-center justify-between gap-3">
         <h1 className="text-2xl font-extrabold">الأصناف</h1>
         {can("products.manage") && <Button onClick={() => setOpen(true)}>+ صنف جديد</Button>}
       </div>
@@ -297,7 +297,7 @@ export default function ProductsPage() {
                 key: "actions",
                 label: "",
                 render: (r) => (
-                  <div className="flex gap-2">
+                  <div className="flex flex-wrap gap-2">
                     {can("products.manage") && (
                       <Button variant="secondary" onClick={() => setEditing(r)}>
                         ✏️ تعديل
@@ -382,7 +382,7 @@ export default function ProductsPage() {
 
           <div>
             <div className="mb-2 flex items-center justify-between">
-              <span className="text-sm font-bold text-slate-600">وحدات القياس الإضافية</span>
+              <span className="text-sm font-bold text-slate-600 dark:text-slate-400">وحدات القياس الإضافية</span>
               <Button
                 type="button"
                 variant="secondary"

@@ -187,7 +187,7 @@ function AdjustmentForm({ products, warehouses, onDone }) {
 
       {batchesLoading && <Loading />}
       {!batchesLoading && productId && batches.length === 0 && (
-        <p className="text-sm text-slate-400">لا توجد تشغيلات متوفرة لهذا الصنف.</p>
+        <p className="text-sm text-slate-400 dark:text-slate-500">لا توجد تشغيلات متوفرة لهذا الصنف.</p>
       )}
       {batches.map((b) => (
         <div key={b.id} className="grid grid-cols-2 items-end gap-4">
@@ -198,7 +198,7 @@ function AdjustmentForm({ products, warehouses, onDone }) {
             <Badge tone="blue">
               {warehouses.find((w) => w.id === b.warehouse_id)?.name ?? "مستودع غير معروف"}
             </Badge>
-            <div className="text-xs font-normal text-slate-500">
+            <div className="text-xs font-normal text-slate-500 dark:text-slate-400">
               المتوفر: {qty(b.quantity)} — الانتهاء: {b.expiry_date}
             </div>
           </div>
@@ -271,13 +271,13 @@ export default function StockPage() {
   return (
     <div className="space-y-6">
       <h1 className="text-2xl font-extrabold">حركة المخزون</h1>
-      <div className="flex gap-2">
+      <div className="flex flex-wrap gap-2">
         {TABS.map((t) => (
           <button
             key={t.id}
             onClick={() => setTab(t.id)}
             className={`rounded-lg px-4 py-2 text-sm font-bold ${
-              tab === t.id ? "bg-emerald-700 text-white" : "bg-white text-slate-600 hover:bg-slate-50"
+              tab === t.id ? "bg-emerald-700 text-white" : "bg-white dark:bg-slate-800 text-slate-600 dark:text-slate-400 hover:bg-slate-50"
             }`}
           >
             {t.label}
@@ -353,7 +353,7 @@ export default function StockPage() {
                     render: (r) => (
                       <span>
                         {qty(r.total_quantity)}
-                        <div className="text-xs font-normal text-slate-500">
+                        <div className="text-xs font-normal text-slate-500 dark:text-slate-400">
                           {r.lines
                             .map((l) => `${l.product_name} (${qty(l.quantity)} ${l.base_unit_name})`)
                             .join("، ")}
@@ -369,7 +369,7 @@ export default function StockPage() {
                       r.cost_known ? (
                         money(r.total_cost)
                       ) : (
-                        <span className="text-xs text-amber-700">لا توجد تكلفة مسجلة</span>
+                        <span className="text-xs text-amber-700 dark:text-amber-400">لا توجد تكلفة مسجلة</span>
                       ),
                   },
                   {
@@ -388,7 +388,7 @@ export default function StockPage() {
                     key: "actions",
                     label: "",
                     render: (r) => (
-                      <div className="flex gap-2">
+                      <div className="flex flex-wrap gap-2">
                         <Button
                           variant="secondary"
                           onClick={() => navigate(`/print/adjustment/${r.id}`)}
