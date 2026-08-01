@@ -805,6 +805,37 @@ class SalesService:
         return invoices
 
     # --- Returns ---
+    async def _returned_discount_share(
+        self, invoice: SalesInvoice, this_return_subtotal: Decimal
+    ) -> Decimal:
+        """Portion of the invoice's discount that belongs to the goods being returned.
+
+        Allocated on the running total — the share owed once this return is
+        included, minus what earlier returns already took — so a sequence of
+        partial returns always sums to exactly the invoice's discount and never
+        drifts by rounding.
+        """
+        if invoice.discount_amount <= 0 or invoice.subtotal <= 0:
+            return Decimal("0")
+
+        prior = await self.session.execute(
+            select(
+                func.coalesce(func.sum(SalesReturn.subtotal), 0),
+                func.coalesce(func.sum(SalesReturn.discount_amount), 0),
+            ).where(SalesReturn.invoice_id == invoice.id)
+        )
+        prior_subtotal, prior_discount = prior.one()
+        prior_subtotal = Decimal(str(prior_subtotal))
+        prior_discount = Decimal(str(prior_discount))
+
+        cumulative_subtotal = prior_subtotal + this_return_subtotal
+        target = (
+            invoice.discount_amount * cumulative_subtotal / invoice.subtotal
+        ).quantize(TWO_PLACES, rounding=ROUND_HALF_UP)
+        # Never hand back more discount than the invoice granted.
+        target = min(target, invoice.discount_amount)
+        return max(target - prior_discount, Decimal("0"))
+
     async def create_return(self, data: SalesReturnCreate, user: User) -> SalesReturn:
         """Post a sales return; resellable goods go back to their original batches."""
         invoice = await self.get_invoice(data.invoice_id)
@@ -902,20 +933,39 @@ class SalesService:
             if invoice.vat_amount > 0
             else Decimal("0")
         )
-        sales_return.total = subtotal + sales_return.vat_amount
+        # The customer never paid the discounted portion, so returning goods must
+        # not refund it. Share it across returns in proportion to value returned.
+        #
+        # Computed from the running total rather than this return alone: rounding
+        # each return independently could drift, whereas taking
+        # (target so far - already allocated) guarantees that returning
+        # everything credits exactly what the invoice charged.
+        sales_return.discount_amount = await self._returned_discount_share(
+            invoice, subtotal
+        )
+        sales_return.total = (
+            subtotal + sales_return.vat_amount - sales_return.discount_amount
+        )
 
         self.session.add(sales_return)
         await self.session.flush()
 
-        # Automatic double-entry: reverse revenue + VAT against the customer's receivable.
+        # Automatic double-entry: reverse revenue + VAT against the customer's
+        # receivable. The discount share is given back to contra-revenue, since
+        # that part of the sale was never billed and so is not being credited.
+        return_items = [
+            (SALES_RETURNS, subtotal, Decimal("0")),
+            (VAT, sales_return.vat_amount, Decimal("0")),
+            (ACCOUNTS_RECEIVABLE, Decimal("0"), sales_return.total),
+        ]
+        if sales_return.discount_amount > 0:
+            return_items.append(
+                (SALES_DISCOUNT, Decimal("0"), sales_return.discount_amount)
+            )
         await self.accounting.add_entry_no_commit(
             entry_date=date.today(),
             description=f"مرتجع مبيعات رقم {sales_return.id} عن الفاتورة رقم {invoice.id}",
-            items=[
-                (SALES_RETURNS, subtotal, Decimal("0")),
-                (VAT, sales_return.vat_amount, Decimal("0")),
-                (ACCOUNTS_RECEIVABLE, Decimal("0"), sales_return.total),
-            ],
+            items=return_items,
             reference_type="sales_return",
             reference_id=sales_return.id,
             created_by=user.id,

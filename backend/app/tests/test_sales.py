@@ -705,6 +705,161 @@ class TestInvoiceDiscount:
         assert as_decimal(edited.json()["data"]["total"]) == Decimal("121.80")
 
 
+class TestReturnsOnDiscountedInvoice:
+    """A return must credit what was charged, not the pre-discount value."""
+
+    async def _discounted_sale(
+        self, client: AsyncClient, admin: dict[str, str], collectable: str
+    ):
+        warehouse_id, product = await setup_stocked_catalog(client, admin)
+        customer_id = await create_customer(client, admin, credit_limit="9999")
+        response = await client.post(
+            "/api/v1/sales/invoices",
+            headers=admin,
+            json={
+                "customer_id": customer_id,
+                "payment_method": "credit",
+                "tax_rate_ids": [],
+                "lines": [{"product_id": product["id"], "quantity": "30"}],
+                "collectable_amount": collectable,
+            },
+        )
+        assert response.status_code == 201, response.text
+        return response.json()["data"], product, customer_id
+
+    async def _do_return(self, client, admin, invoice_id, product_id, quantity):
+        return await client.post(
+            "/api/v1/sales/returns",
+            headers=admin,
+            json={
+                "invoice_id": invoice_id,
+                "reason": "resellable",
+                "lines": [{"product_id": product_id, "quantity": quantity}],
+            },
+        )
+
+    async def test_full_return_credits_exactly_what_was_charged(
+        self, client: AsyncClient
+    ) -> None:
+        admin = await login(client, "admin", TEST_ADMIN_PASSWORD)
+        # 30 x 10.50 = 315.00 gross, collect 300.00 -> 15.00 discount.
+        invoice, product, customer_id = await self._discounted_sale(
+            client, admin, "300.00"
+        )
+        assert as_decimal(invoice["total"]) == Decimal("300.00")
+
+        ret = await self._do_return(client, admin, invoice["id"], product["id"], "30")
+        assert ret.status_code == 201, ret.text
+        data = ret.json()["data"]
+
+        assert as_decimal(data["subtotal"]) == Decimal("315.00")
+        assert as_decimal(data["discount_amount"]) == Decimal("15.00")
+        # Credited exactly the invoice total — no phantom credit balance.
+        assert as_decimal(data["total"]) == Decimal("300.00")
+
+        statement = (
+            await client.get(
+                f"/api/v1/sales/customers/{customer_id}/statement", headers=admin
+            )
+        ).json()["data"]
+        assert as_decimal(statement["balance"]) == Decimal("0.00")
+
+    async def test_partial_return_prorates_the_discount(
+        self, client: AsyncClient
+    ) -> None:
+        admin = await login(client, "admin", TEST_ADMIN_PASSWORD)
+        invoice, product, _ = await self._discounted_sale(client, admin, "300.00")
+
+        # Return a third: 10 x 10.50 = 105.00, discount share 15 x (105/315) = 5.00.
+        ret = await self._do_return(client, admin, invoice["id"], product["id"], "10")
+        data = ret.json()["data"]
+        assert as_decimal(data["subtotal"]) == Decimal("105.00")
+        assert as_decimal(data["discount_amount"]) == Decimal("5.00")
+        assert as_decimal(data["total"]) == Decimal("100.00")
+
+    async def test_successive_partial_returns_sum_to_the_invoice_total(
+        self, client: AsyncClient
+    ) -> None:
+        admin = await login(client, "admin", TEST_ADMIN_PASSWORD)
+        # 30 x 10.50 = 315.00 gross, collect 305.00 -> 10.00 discount, which does
+        # not divide evenly by three: the running-total allocation must still land
+        # on exactly 10.00 once everything is returned.
+        invoice, product, customer_id = await self._discounted_sale(
+            client, admin, "305.00"
+        )
+
+        credited = Decimal("0")
+        discount_allocated = Decimal("0")
+        for _ in range(3):
+            ret = await self._do_return(
+                client, admin, invoice["id"], product["id"], "10"
+            )
+            assert ret.status_code == 201, ret.text
+            data = ret.json()["data"]
+            credited += as_decimal(data["total"])
+            discount_allocated += as_decimal(data["discount_amount"])
+
+        assert discount_allocated == Decimal("10.00")
+        assert credited == as_decimal(invoice["total"]) == Decimal("305.00")
+
+        statement = (
+            await client.get(
+                f"/api/v1/sales/customers/{customer_id}/statement", headers=admin
+            )
+        ).json()["data"]
+        assert as_decimal(statement["balance"]) == Decimal("0.00")
+
+    async def test_return_on_undiscounted_invoice_is_unchanged(
+        self, client: AsyncClient
+    ) -> None:
+        admin = await login(client, "admin", TEST_ADMIN_PASSWORD)
+        warehouse_id, product = await setup_stocked_catalog(client, admin)
+        customer_id = await create_customer(client, admin, credit_limit="9999")
+        invoice = (
+            await post_invoice(
+                client, admin, customer_id, warehouse_id, product["id"], "10", "credit"
+            )
+        ).json()["data"]
+
+        ret = await self._do_return(client, admin, invoice["id"], product["id"], "10")
+        data = ret.json()["data"]
+        assert as_decimal(data["discount_amount"]) == Decimal("0.00")
+        assert as_decimal(data["total"]) == as_decimal(invoice["total"])
+
+    async def test_return_journal_balances_with_the_discount_leg(
+        self, client: AsyncClient
+    ) -> None:
+        admin = await login(client, "admin", TEST_ADMIN_PASSWORD)
+        invoice, product, _ = await self._discounted_sale(client, admin, "300.00")
+        ret = await self._do_return(client, admin, invoice["id"], product["id"], "30")
+        return_id = ret.json()["data"]["id"]
+
+        entries = (
+            await client.get(
+                "/api/v1/accounting/journal-entries",
+                headers=admin,
+                params={"reference_type": "sales_return", "reference_id": return_id},
+            )
+        ).json()["data"]
+
+        by_code: dict[str, tuple[Decimal, Decimal]] = {}
+        total_debit = total_credit = Decimal("0")
+        for entry in entries:
+            for item in entry["items"]:
+                code = item["account"]["code"]
+                debit, credit = as_decimal(item["debit"]), as_decimal(item["credit"])
+                prev = by_code.get(code, (Decimal("0"), Decimal("0")))
+                by_code[code] = (prev[0] + debit, prev[1] + credit)
+                total_debit += debit
+                total_credit += credit
+
+        # Receivable is reduced by the net credit, and the unbilled discount goes
+        # back to contra-revenue rather than to the customer.
+        assert by_code["1020"][1] == Decimal("300.00")
+        assert by_code["4030"][1] == Decimal("15.00")
+        assert total_debit == total_credit
+
+
 async def post_quotation(
     client: AsyncClient,
     headers: dict[str, str],

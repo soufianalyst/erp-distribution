@@ -226,6 +226,10 @@ class SalesReturnOut(BaseModel):
     reason: ReturnReason
     subtotal: Decimal
     vat_amount: Decimal
+    # Share of the invoice's discount attributable to the returned goods; it was
+    # never charged, so it is withheld from the credit rather than refunded.
+    discount_amount: Decimal
+    # What the customer is credited: subtotal + vat_amount - discount_amount.
     total: Decimal
     notes: str | None
     created_at: datetime

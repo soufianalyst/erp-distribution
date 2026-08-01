@@ -1235,7 +1235,19 @@ export default function SalesPage() {
                 },
                 { key: "subtotal", label: "قبل الضريبة", render: (r) => money(r.subtotal) },
                 { key: "vat_amount", label: "الضريبة", render: (r) => money(r.vat_amount) },
-                { key: "total", label: "الإجمالي", render: (r) => <b>{money(r.total)}</b> },
+                {
+                  key: "discount_amount",
+                  label: "حصة الخصم",
+                  render: (r) =>
+                    Number(r.discount_amount) > 0 ? (
+                      <span className="font-bold text-amber-700">
+                        − {money(r.discount_amount)}
+                      </span>
+                    ) : (
+                      "—"
+                    ),
+                },
+                { key: "total", label: "صافي الإشعار", render: (r) => <b>{money(r.total)}</b> },
                 { key: "created_at", label: "التاريخ", render: (r) => r.created_at?.slice(0, 10) },
               ]}
               rows={returns.data}
@@ -1324,6 +1336,12 @@ export default function SalesPage() {
                           </tbody>
                         </table>
                         <div className="mt-1 text-right text-xs font-bold text-rose-700">
+                          {Number(ret.discount_amount) > 0 && (
+                            <span className="me-2 font-normal text-amber-700">
+                              (قبل الخصم {money(ret.subtotal)} − حصة الخصم{" "}
+                              {money(ret.discount_amount)})
+                            </span>
+                          )}
                           إجمالي هذا المرتجع: {money(ret.total)}
                         </div>
                       </div>

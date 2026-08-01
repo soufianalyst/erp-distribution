@@ -280,6 +280,12 @@ class SalesReturn(Base):
     )
     subtotal: Mapped[Decimal] = mapped_column(Numeric(14, 2), nullable=False)
     vat_amount: Mapped[Decimal] = mapped_column(Numeric(12, 2), nullable=False)
+    # Share of the invoice's discount attributable to the returned goods. The
+    # customer was never charged this, so it is not credited back to them.
+    discount_amount: Mapped[Decimal] = mapped_column(
+        Numeric(14, 2), nullable=False, default=Decimal("0"), server_default="0"
+    )
+    # What the customer is actually credited: subtotal + vat - discount_amount.
     total: Mapped[Decimal] = mapped_column(Numeric(14, 2), nullable=False)
     notes: Mapped[str | None] = mapped_column(String(300))
     created_by: Mapped[int | None] = mapped_column(ForeignKey("users.id"))
