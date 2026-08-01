@@ -12,6 +12,7 @@ import CustomersPage from "./pages/CustomersPage";
 import DashboardPage from "./pages/DashboardPage";
 import DeliveryPage from "./pages/DeliveryPage";
 import ExpensesPage from "./pages/ExpensesPage";
+import FieldPage from "./pages/FieldPage";
 import LoginPage from "./pages/LoginPage";
 import PrintInvoicePage from "./pages/PrintInvoicePage";
 import PrintPickingPage from "./pages/PrintPickingPage";
@@ -164,6 +165,14 @@ export default function App() {
                 element={
                   <RequirePerm perm="settings.view">
                     <SettingsPage />
+                  </RequirePerm>
+                }
+              />
+              <Route
+                path="/field"
+                element={
+                  <RequirePerm perm="sales.field_sync">
+                    <FieldPage />
                   </RequirePerm>
                 }
               />
