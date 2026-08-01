@@ -8,10 +8,12 @@ from app.api.schemas.common import APIResponse
 from app.api.schemas.settings import (
     CompanySettingsOut,
     CompanySettingsUpdate,
+    CountryOut,
     TaxRateCreate,
     TaxRateOut,
     TaxRateUpdate,
 )
+from app.core.countries import COUNTRIES
 from app.db.session import get_db
 from app.services.settings.settings_service import SettingsService
 
@@ -27,11 +29,37 @@ settings_manage = Depends(require_permissions("settings.manage"))
     dependencies=[settings_view],
 )
 async def list_tax_rates(
-    active_only: bool = False, db: AsyncSession = Depends(get_db)
+    active_only: bool = False,
+    in_scope_only: bool = False,
+    db: AsyncSession = Depends(get_db),
 ) -> APIResponse[list[TaxRateOut]]:
-    """عرض قائمة الضرائب المعرّفة (مع خيار الأنواع المفعّلة فقط)."""
-    tax_rates = await SettingsService(db).list_tax_rates(active_only)
+    """عرض الضرائب المعرّفة.
+
+    `active_only` للمفعّلة فقط، و`in_scope_only` للضرائب التي تنطبق على دولة
+    الشركة فقط (وهو ما تستخدمه شاشات الفواتير)؛ الضريبة بلا دولة تنطبق دائماً.
+    """
+    tax_rates = await SettingsService(db).list_tax_rates(active_only, in_scope_only)
     return APIResponse(data=[TaxRateOut.model_validate(t) for t in tax_rates])
+
+
+@router.get(
+    "/countries",
+    response_model=APIResponse[list[CountryOut]],
+    dependencies=[settings_view],
+)
+async def list_countries() -> APIResponse[list[CountryOut]]:
+    """قائمة الدول المعتمدة لاختيار دولة الشركة ونطاق كل ضريبة."""
+    return APIResponse(
+        data=[
+            CountryOut(
+                code=c.code,
+                name=c.name,
+                currency_code=c.currency_code,
+                currency_symbol=c.currency_symbol,
+            )
+            for c in COUNTRIES
+        ]
+    )
 
 
 @router.post(

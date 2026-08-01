@@ -10,7 +10,8 @@ class TaxRateCreate(BaseModel):
     name: str = Field(min_length=2, max_length=100)
     code: str = Field(min_length=1, max_length=20)
     rate: Decimal = Field(ge=0, le=100, description="نسبة مئوية، مثال: 16 تعني 16%")
-    country: str | None = Field(default=None, max_length=100)
+    # ISO 3166-1 alpha-2; omit for a tax that applies everywhere.
+    country_code: str | None = Field(default=None, min_length=2, max_length=2)
     is_active: bool = True
     is_default: bool = False
 
@@ -18,7 +19,7 @@ class TaxRateCreate(BaseModel):
 class TaxRateUpdate(BaseModel):
     name: str | None = Field(default=None, min_length=2, max_length=100)
     rate: Decimal | None = Field(default=None, ge=0, le=100)
-    country: str | None = Field(default=None, max_length=100)
+    country_code: str | None = Field(default=None, min_length=2, max_length=2)
     is_active: bool | None = None
     is_default: bool | None = None
 
@@ -30,7 +31,9 @@ class TaxRateOut(BaseModel):
     name: str
     code: str
     rate: Decimal
-    country: str | None
+    country_code: str | None
+    # Resolved Arabic name for display; None when the tax applies everywhere.
+    country_name: str | None
     is_active: bool
     is_default: bool
 
@@ -42,6 +45,7 @@ class CompanySettingsUpdate(BaseModel):
     address: str | None = Field(default=None, max_length=300)
     phone: str | None = Field(default=None, max_length=30)
     tax_number: str | None = Field(default=None, max_length=50)
+    country_code: str | None = Field(default=None, min_length=2, max_length=2)
     currency_code: str | None = Field(default=None, max_length=10)
     currency_symbol: str | None = Field(default=None, max_length=10)
 
@@ -55,5 +59,16 @@ class CompanySettingsOut(BaseModel):
     address: str | None
     phone: str | None
     tax_number: str | None
+    country_code: str | None
+    country_name: str | None
+    currency_code: str
+    currency_symbol: str
+
+
+# --- Country reference (for the settings control panel pickers) ---
+class CountryOut(BaseModel):
+    code: str
+    name: str
+    # Suggested when the country is chosen; the user can still override it.
     currency_code: str
     currency_symbol: str

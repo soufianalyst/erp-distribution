@@ -57,7 +57,7 @@ class TestTaxRateCrud:
                 "name": "ضريبة السلع والخدمات",
                 "code": "GST",
                 "rate": "10",
-                "country": "الهند",
+                "country_code": "IN",
             },
         )
         assert response.status_code == 201, response.text
@@ -372,3 +372,193 @@ class TestTaxRateDeletion:
         assert invoice["taxes"][0]["tax_rate_id"] is None
         assert invoice["taxes"][0]["name"] == "ضريبة مؤقتة"
         assert as_decimal(invoice["taxes"][0]["amount"]) == Decimal("10.50")
+
+
+class TestCountryReference:
+    async def test_countries_list_is_available_for_pickers(
+        self, client: AsyncClient
+    ) -> None:
+        admin = await login(client, "admin", TEST_ADMIN_PASSWORD)
+        response = await client.get("/api/v1/settings/countries", headers=admin)
+        assert response.status_code == 200, response.text
+        countries = response.json()["data"]
+        assert len(countries) > 10
+        by_code = {c["code"]: c for c in countries}
+        # Each entry carries the currency so choosing a country can suggest it.
+        assert by_code["SA"]["name"] == "المملكة العربية السعودية"
+        assert by_code["SA"]["currency_code"] == "SAR"
+        assert by_code["JO"]["currency_symbol"] == "د.أ"
+
+    async def test_unknown_country_code_is_rejected(self, client: AsyncClient) -> None:
+        """Free text would drift away from the picker; codes must be known."""
+        admin = await login(client, "admin", TEST_ADMIN_PASSWORD)
+        response = await client.post(
+            "/api/v1/settings/tax-rates",
+            headers=admin,
+            json={"name": "ضريبة وهمية", "code": "FAKE", "rate": "5", "country_code": "ZZ"},
+        )
+        assert response.status_code == 400
+        assert "رمز الدولة" in response.json()["message"]
+
+    async def test_country_code_is_normalised_to_uppercase(
+        self, client: AsyncClient
+    ) -> None:
+        admin = await login(client, "admin", TEST_ADMIN_PASSWORD)
+        response = await client.post(
+            "/api/v1/settings/tax-rates",
+            headers=admin,
+            json={"name": "ضريبة أردنية", "code": "JO_GST", "rate": "16", "country_code": "jo"},
+        )
+        assert response.status_code == 201, response.text
+        assert response.json()["data"]["country_code"] == "JO"
+        assert response.json()["data"]["country_name"] == "الأردن"
+
+    async def test_company_country_is_validated_too(self, client: AsyncClient) -> None:
+        admin = await login(client, "admin", TEST_ADMIN_PASSWORD)
+        bad = await client.put(
+            "/api/v1/settings/company", headers=admin, json={"country_code": "XX"}
+        )
+        assert bad.status_code == 400
+
+        good = await client.put(
+            "/api/v1/settings/company", headers=admin, json={"country_code": "AE"}
+        )
+        assert good.status_code == 200, good.text
+        assert good.json()["data"]["country_code"] == "AE"
+        assert good.json()["data"]["country_name"] == "الإمارات العربية المتحدة"
+
+
+class TestTaxRateCountryScoping:
+    async def _tax_codes(
+        self, client: AsyncClient, admin: dict[str, str], **params
+    ) -> list[str]:
+        response = await client.get(
+            "/api/v1/settings/tax-rates", headers=admin, params=params
+        )
+        assert response.status_code == 200, response.text
+        return [t["code"] for t in response.json()["data"]]
+
+    async def _add_tax(
+        self,
+        client: AsyncClient,
+        admin: dict[str, str],
+        code: str,
+        country_code: str | None,
+    ) -> None:
+        response = await client.post(
+            "/api/v1/settings/tax-rates",
+            headers=admin,
+            json={
+                "name": f"ضريبة {code}",
+                "code": code,
+                "rate": "10",
+                "country_code": country_code,
+            },
+        )
+        assert response.status_code == 201, response.text
+
+    async def test_in_scope_keeps_universal_and_matching_only(
+        self, client: AsyncClient
+    ) -> None:
+        admin = await login(client, "admin", TEST_ADMIN_PASSWORD)
+        await client.put(
+            "/api/v1/settings/company", headers=admin, json={"country_code": "JO"}
+        )
+        await self._add_tax(client, admin, "UNIVERSAL", None)
+        await self._add_tax(client, admin, "JO_LOCAL", "JO")
+        await self._add_tax(client, admin, "SA_LOCAL", "SA")
+
+        # The control panel shows everything so foreign taxes stay manageable.
+        all_codes = await self._tax_codes(client, admin)
+        assert {"UNIVERSAL", "JO_LOCAL", "SA_LOCAL"} <= set(all_codes)
+
+        # Invoicing only offers what applies where the company operates.
+        scoped = await self._tax_codes(client, admin, in_scope_only=True)
+        assert "UNIVERSAL" in scoped
+        assert "JO_LOCAL" in scoped
+        assert "SA_LOCAL" not in scoped
+
+    async def test_changing_company_country_changes_what_applies(
+        self, client: AsyncClient
+    ) -> None:
+        admin = await login(client, "admin", TEST_ADMIN_PASSWORD)
+        await self._add_tax(client, admin, "JO_LOCAL", "JO")
+        await self._add_tax(client, admin, "SA_LOCAL", "SA")
+
+        await client.put(
+            "/api/v1/settings/company", headers=admin, json={"country_code": "JO"}
+        )
+        assert "JO_LOCAL" in await self._tax_codes(client, admin, in_scope_only=True)
+        assert "SA_LOCAL" not in await self._tax_codes(client, admin, in_scope_only=True)
+
+        # Expanding into another market flips which local tax is offered.
+        await client.put(
+            "/api/v1/settings/company", headers=admin, json={"country_code": "SA"}
+        )
+        assert "SA_LOCAL" in await self._tax_codes(client, admin, in_scope_only=True)
+        assert "JO_LOCAL" not in await self._tax_codes(client, admin, in_scope_only=True)
+
+    async def test_without_a_company_country_only_universal_taxes_apply(
+        self, client: AsyncClient
+    ) -> None:
+        """Before the country is set, a country-specific tax is ambiguous."""
+        admin = await login(client, "admin", TEST_ADMIN_PASSWORD)
+        await self._add_tax(client, admin, "JO_LOCAL", "JO")
+
+        scoped = await self._tax_codes(client, admin, in_scope_only=True)
+        assert "JO_LOCAL" not in scoped
+        # The seeded default tax has no country, so it still applies.
+        assert scoped
+
+    async def test_scoping_combines_with_active_only(self, client: AsyncClient) -> None:
+        admin = await login(client, "admin", TEST_ADMIN_PASSWORD)
+        await client.put(
+            "/api/v1/settings/company", headers=admin, json={"country_code": "JO"}
+        )
+        await self._add_tax(client, admin, "JO_OFF", "JO")
+        created = await client.get("/api/v1/settings/tax-rates", headers=admin)
+        jo_off = next(t for t in created.json()["data"] if t["code"] == "JO_OFF")
+        await client.patch(
+            f"/api/v1/settings/tax-rates/{jo_off['id']}",
+            headers=admin,
+            json={"is_active": False},
+        )
+
+        scoped = await self._tax_codes(
+            client, admin, in_scope_only=True, active_only=True
+        )
+        assert "JO_OFF" not in scoped
+
+    async def test_a_foreign_tax_can_still_be_applied_deliberately(
+        self, client: AsyncClient
+    ) -> None:
+        """Scoping decides what the forms *offer*, not what the API accepts — an
+        export invoice may legitimately carry another country's tax."""
+        admin = await login(client, "admin", TEST_ADMIN_PASSWORD)
+        await client.put(
+            "/api/v1/settings/company", headers=admin, json={"country_code": "JO"}
+        )
+        foreign = await client.post(
+            "/api/v1/settings/tax-rates",
+            headers=admin,
+            json={"name": "ضريبة سعودية", "code": "SA_VAT", "rate": "15", "country_code": "SA"},
+        )
+        foreign_id = foreign.json()["data"]["id"]
+
+        warehouse_id = await create_warehouse(client, admin, "الرئيسي")
+        product = await create_product(client, admin, "EXPORT-1", warehouse_id=warehouse_id)
+        await receive(client, admin, product["id"], warehouse_id, "EX-1", 200, "100")
+        customer_id = await create_customer(client, admin, "مشتري خارجي")
+
+        response = await post_invoice(
+            client,
+            admin,
+            customer_id,
+            warehouse_id,
+            product["id"],
+            "10",
+            tax_rate_ids=[foreign_id],
+        )
+        assert response.status_code == 201, response.text
+        taxes = response.json()["data"]["taxes"]
+        assert [t["name"] for t in taxes] == ["ضريبة سعودية"]

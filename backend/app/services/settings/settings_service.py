@@ -8,6 +8,7 @@ from app.api.schemas.settings import (
     TaxRateCreate,
     TaxRateUpdate,
 )
+from app.core.countries import is_valid_country
 from app.core.exceptions import AppException
 from app.domain.models.sales import SalesInvoiceTax
 from app.domain.models.settings import CompanySettings, TaxRate
@@ -24,12 +25,39 @@ class SettingsService:
             raise AppException(404, "الضريبة غير موجودة.")
         return tax_rate
 
-    async def list_tax_rates(self, active_only: bool = False) -> list[TaxRate]:
-        stmt = select(TaxRate).order_by(TaxRate.id)
+    async def list_tax_rates(
+        self, active_only: bool = False, in_scope_only: bool = False
+    ) -> list[TaxRate]:
+        """All configured taxes, or only the ones that apply where we operate.
+
+        `in_scope_only` is what the invoice forms ask for: a tax with no country
+        applies everywhere, while a country-specific one is only offered when it
+        matches the company's own country. The control panel asks without it, so
+        an admin can still see and manage taxes for other countries.
+        """
+        stmt = select(TaxRate).order_by(TaxRate.country_code.nulls_first(), TaxRate.id)
         if active_only:
             stmt = stmt.where(TaxRate.is_active.is_(True))
+        if in_scope_only:
+            company = await self.get_company_settings()
+            if company.country_code is None:
+                # No country set yet: only universal taxes are unambiguous.
+                stmt = stmt.where(TaxRate.country_code.is_(None))
+            else:
+                stmt = stmt.where(
+                    (TaxRate.country_code.is_(None))
+                    | (TaxRate.country_code == company.country_code)
+                )
         result = await self.session.execute(stmt)
         return list(result.scalars().all())
+
+    @staticmethod
+    def _validate_country(code: str | None) -> str | None:
+        """Reject codes outside the reference list so pickers and data stay in sync."""
+        normalised = code.upper() if code else None
+        if not is_valid_country(normalised):
+            raise AppException(400, "رمز الدولة غير معروف؛ اختر دولة من القائمة.")
+        return normalised
 
     async def _clear_other_defaults(self, except_id: int | None = None) -> None:
         result = await self.session.execute(
@@ -50,7 +78,7 @@ class SettingsService:
             name=data.name,
             code=data.code,
             rate=data.rate,
-            country=data.country,
+            country_code=self._validate_country(data.country_code),
             is_active=data.is_active,
             is_default=data.is_default,
         )
@@ -68,8 +96,8 @@ class SettingsService:
             tax_rate.name = data.name
         if data.rate is not None:
             tax_rate.rate = data.rate
-        if data.country is not None:
-            tax_rate.country = data.country
+        if data.country_code is not None:
+            tax_rate.country_code = self._validate_country(data.country_code)
         if data.is_active is not None:
             tax_rate.is_active = data.is_active
         if data.is_default is not None:
@@ -127,6 +155,8 @@ class SettingsService:
             company.phone = data.phone
         if data.tax_number is not None:
             company.tax_number = data.tax_number
+        if data.country_code is not None:
+            company.country_code = self._validate_country(data.country_code)
         if data.currency_code is not None:
             company.currency_code = data.currency_code
         if data.currency_symbol is not None:

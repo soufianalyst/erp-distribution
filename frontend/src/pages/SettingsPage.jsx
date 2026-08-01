@@ -1,5 +1,16 @@
 import { useEffect, useState } from "react";
-import { Alert, Badge, Button, CancelButton, Card, Input, Modal, Table, money } from "../components/Ui";
+import {
+  Alert,
+  Badge,
+  Button,
+  CancelButton,
+  Card,
+  Input,
+  Loading,
+  Modal,
+  Select,
+  Table,
+} from "../components/Ui";
 import { useAuth } from "../context/AuthContext";
 import useFetch from "../hooks/useFetch";
 import api, { apiMessage } from "../services/api";
@@ -8,12 +19,28 @@ const EMPTY_TAX_FORM = {
   name: "",
   code: "",
   rate: "",
-  country: "",
+  country_code: "",
   is_active: true,
   is_default: false,
 };
 
-function TaxRateForm({ onSaved, onClose }) {
+/** Reference list backing every country picker on this page. */
+const useCountries = () => useFetch(() => api.get("/settings/countries"));
+
+function CountrySelect({ label, value, onChange, countries, universalLabel }) {
+  return (
+    <Select label={label} value={value || ""} onChange={onChange}>
+      <option value="">{universalLabel}</option>
+      {countries.map((c) => (
+        <option key={c.code} value={c.code}>
+          {c.name}
+        </option>
+      ))}
+    </Select>
+  );
+}
+
+function TaxRateForm({ onSaved, onClose, countries }) {
   const [form, setForm] = useState(EMPTY_TAX_FORM);
   const [error, setError] = useState(null);
   const set = (key) => (e) =>
@@ -28,7 +55,7 @@ function TaxRateForm({ onSaved, onClose }) {
     try {
       await api.post("/settings/tax-rates", {
         ...form,
-        country: form.country || null,
+        country_code: form.country_code || null,
       });
       onSaved();
     } catch (err) {
@@ -56,11 +83,17 @@ function TaxRateForm({ onSaved, onClose }) {
         onChange={set("rate")}
         required
       />
-      <Input
-        label="الدولة/المنطقة (اختياري)"
-        value={form.country}
-        onChange={set("country")}
+      <CountrySelect
+        label="الدولة التي تنطبق فيها هذه الضريبة"
+        value={form.country_code}
+        onChange={set("country_code")}
+        countries={countries}
+        universalLabel="— تنطبق في كل الدول —"
       />
+      <p className="-mt-2 text-xs font-bold text-slate-500 dark:text-slate-400">
+        الضريبة المرتبطة بدولة لا تُعرض عند إصدار الفواتير إلا إذا كانت هي دولة
+        الشركة؛ اترك الحقل فارغاً لضريبة تنطبق دائماً.
+      </p>
       <label className="flex items-center gap-2 text-sm font-bold text-slate-600 dark:text-slate-400">
         <input type="checkbox" checked={form.is_active} onChange={set("is_active")} />
         مفعّلة
@@ -77,7 +110,7 @@ function TaxRateForm({ onSaved, onClose }) {
   );
 }
 
-function TaxRatesSection({ canManage }) {
+function TaxRatesSection({ canManage, countries, companyCountry }) {
   const { data, loading, error, reload } = useFetch(() => api.get("/settings/tax-rates"));
   const [open, setOpen] = useState(false);
   const [notice, setNotice] = useState(null);
@@ -120,7 +153,25 @@ function TaxRatesSection({ canManage }) {
             { key: "name", label: "اسم الضريبة" },
             { key: "code", label: "الرمز" },
             { key: "rate", label: "النسبة", render: (r) => `${r.rate}%` },
-            { key: "country", label: "الدولة/المنطقة", render: (r) => r.country || "—" },
+            {
+              key: "country_code",
+              label: "الدولة",
+              // A rate for another country is configured but never offered while
+              // the company operates elsewhere — worth showing plainly.
+              render: (r) =>
+                !r.country_code ? (
+                  <Badge tone="blue">كل الدول</Badge>
+                ) : companyCountry && r.country_code !== companyCountry ? (
+                  <span className="flex flex-wrap items-center gap-1">
+                    {r.country_name}
+                    <Badge tone="slate">خارج نطاق الشركة</Badge>
+                  </span>
+                ) : (
+                  r.country_name
+                ),
+              search: (r) => r.country_name ?? "كل الدول",
+              sortValue: (r) => r.country_name ?? "",
+            },
             {
               key: "is_default",
               label: "افتراضية",
@@ -178,6 +229,7 @@ function TaxRatesSection({ canManage }) {
       )}
       <Modal open={open} title="إضافة ضريبة جديدة" onClose={() => setOpen(false)}>
         <TaxRateForm
+          countries={countries}
           onSaved={() => {
             setOpen(false);
             setNotice("تم إضافة الضريبة بنجاح.");
@@ -190,7 +242,7 @@ function TaxRatesSection({ canManage }) {
   );
 }
 
-function CompanySection({ canManage }) {
+function CompanySection({ canManage, countries, onCountrySaved }) {
   const { data, loading, error, reload } = useFetch(() => api.get("/settings/company"));
   const [form, setForm] = useState(null);
   const [notice, setNotice] = useState(null);
@@ -202,14 +254,43 @@ function CompanySection({ canManage }) {
 
   const set = (key) => (e) => setForm({ ...form, [key]: e.target.value });
 
+  // Choosing a country fills in its usual currency, but only when the currency
+  // has not been customised — never silently overwrite a deliberate choice.
+  const setCountry = (e) => {
+    const code = e.target.value;
+    const country = countries.find((c) => c.code === code);
+    setForm((current) => {
+      const previous = countries.find((c) => c.code === current.country_code);
+      // The currency counts as untouched when it is empty, still matches the
+      // country picked before, or no country had been chosen at all — in which
+      // case it is only the install default and safe to replace.
+      const currencyIsSuggestion =
+        !current.currency_code ||
+        !current.country_code ||
+        current.currency_code === previous?.currency_code;
+      return {
+        ...current,
+        country_code: code,
+        ...(country && currencyIsSuggestion
+          ? {
+              currency_code: country.currency_code,
+              currency_symbol: country.currency_symbol,
+            }
+          : {}),
+      };
+    });
+  };
+
   const submit = async (event) => {
     event.preventDefault();
     setSaveError(null);
     setNotice(null);
     try {
-      await api.put("/settings/company", form);
+      await api.put("/settings/company", { ...form, country_code: form.country_code || null });
       setNotice("تم حفظ بيانات الشركة بنجاح.");
       reload();
+      // Tax scoping depends on this, so the tax table has to re-read it.
+      onCountrySaved();
     } catch (err) {
       setSaveError(apiMessage(err));
     }
@@ -236,6 +317,13 @@ function CompanySection({ canManage }) {
               label="الرقم الضريبي"
               value={form.tax_number || ""}
               onChange={set("tax_number")}
+            />
+            <CountrySelect
+              label="دولة العمل — تحدد الضرائب المتاحة عند إصدار الفواتير"
+              value={form.country_code}
+              onChange={setCountry}
+              countries={countries}
+              universalLabel="— لم تُحدد —"
             />
             <div className="grid grid-cols-2 gap-4">
               <Input
@@ -266,15 +354,35 @@ function CompanySection({ canManage }) {
 export default function SettingsPage() {
   const { can } = useAuth();
   const canManage = can("settings.manage");
+  const countries = useCountries();
+  const company = useFetch(() => api.get("/settings/company"));
+  // Bumping this re-mounts the tax table so its "out of scope" markers follow a
+  // change to the company's country.
+  const [scopeVersion, setScopeVersion] = useState(0);
+
+  if (countries.loading || company.loading) return <Loading />;
 
   return (
     <div className="space-y-6">
-      <h1 className="text-2xl font-extrabold">الإعدادات</h1>
+      <h1 className="text-2xl font-extrabold">لوحة الإعدادات</h1>
+      <Alert>{countries.error}</Alert>
       {!canManage && (
         <Alert>لا تملك صلاحية التعديل على هذه الصفحة، يمكنك العرض فقط.</Alert>
       )}
-      <TaxRatesSection canManage={canManage} />
-      <CompanySection canManage={canManage} />
+      <CompanySection
+        canManage={canManage}
+        countries={countries.data || []}
+        onCountrySaved={() => {
+          company.reload();
+          setScopeVersion((v) => v + 1);
+        }}
+      />
+      <TaxRatesSection
+        key={scopeVersion}
+        canManage={canManage}
+        countries={countries.data || []}
+        companyCountry={company.data?.country_code ?? null}
+      />
     </div>
   );
 }

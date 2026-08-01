@@ -1023,7 +1023,7 @@ export default function SalesPage() {
   const customers = useFetch(() => api.get("/sales/customers"));
   const warehouses = useFetch(() => api.get("/inventory/warehouses"));
   const products = useFetch(() => api.get("/inventory/products"));
-  const taxRates = useFetch(() => api.get("/settings/tax-rates", { params: { active_only: true } }));
+  const taxRates = useFetch(() => api.get("/settings/tax-rates", { params: { active_only: true, in_scope_only: true } }));
 
   if (customers.loading || warehouses.loading || products.loading || taxRates.loading) {
     return <Loading />;
