@@ -4,6 +4,7 @@ from fastapi import APIRouter
 
 from app.api.v1 import (
     accounting,
+    alerts,
     analytics,
     audit,
     auth,
@@ -26,5 +27,6 @@ api_router.include_router(expenses.router)
 api_router.include_router(accounting.router)
 api_router.include_router(delivery.router)
 api_router.include_router(analytics.router)
+api_router.include_router(alerts.router)
 api_router.include_router(settings.router)
 api_router.include_router(audit.router)

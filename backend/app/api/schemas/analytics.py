@@ -2,6 +2,7 @@
 
 from datetime import date
 from decimal import Decimal
+from typing import Literal
 
 from pydantic import BaseModel
 
@@ -206,3 +207,36 @@ class DiscountReportOut(BaseModel):
     by_customer: list[DiscountByCustomerOut]
     by_salesman: list[DiscountBySalesmanOut]
     invoices: list[DiscountInvoiceOut]
+
+
+# --- Dashboard alerts ---
+class AlertItemOut(BaseModel):
+    """One example inside an alert group — a preview line, not a full record."""
+
+    label: str
+    detail: str
+    value: str | None = None
+
+
+class AlertGroupOut(BaseModel):
+    """One kind of thing needing attention, with somewhere to go and act on it."""
+
+    key: str
+    label: str
+    # critical = costing money or blocking a sale now; warning = act soon;
+    # info = tidy-up work.
+    severity: Literal["critical", "warning", "info"]
+    count: int
+    # What to actually do about it, in plain Arabic.
+    hint: str
+    # Frontend route where the work gets done.
+    route: str
+    items: list[AlertItemOut]
+
+
+class AlertsOut(BaseModel):
+    generated_at: date
+    critical_count: int
+    warning_count: int
+    # Ordered worst first; only groups the caller has permission to act on.
+    groups: list[AlertGroupOut]
