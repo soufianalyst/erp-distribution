@@ -40,11 +40,28 @@ class StocktakeStatus(str, enum.Enum):
 
 
 class Warehouse(Base):
+    """A place stock can sit — a building, or a salesman's van.
+
+    Modelling a van as a warehouse rather than a separate concept means the whole
+    existing machinery applies to it untouched: batches with their expiry dates,
+    transfers (the morning load-out), FEFO allocation when selling, and
+    stocktakes (the end-of-day reconciliation). It also removes offline sync
+    conflicts by construction, since nobody else draws stock from someone's van.
+    """
+
     __tablename__ = "warehouses"
 
     id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
     name: Mapped[str] = mapped_column(String(100), unique=True, nullable=False)
     location: Mapped[str | None] = mapped_column(String(200))
+    # A vehicle carries stock on a sales round instead of standing still.
+    is_vehicle: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False, server_default="false"
+    )
+    # The salesman who drives it; their field app sells from this warehouse.
+    assigned_to_id: Mapped[int | None] = mapped_column(
+        ForeignKey("users.id"), nullable=True, index=True
+    )
     is_active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=func.now()

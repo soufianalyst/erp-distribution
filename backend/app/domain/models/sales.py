@@ -53,6 +53,13 @@ class Customer(Base):
 
     id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
     name: Mapped[str] = mapped_column(String(150), unique=True, nullable=False)
+    # Identifier minted by the field app before this record ever reaches the
+    # server. Unique, so replaying a sync batch over a flaky connection returns
+    # the record already created instead of duplicating it. NULL for anything
+    # created online.
+    client_uuid: Mapped[str | None] = mapped_column(
+        String(36), unique=True, nullable=True, index=True
+    )
     phone: Mapped[str | None] = mapped_column(String(30))
     address: Mapped[str | None] = mapped_column(String(200))
     price_tier: Mapped[PriceTier] = mapped_column(
@@ -79,6 +86,13 @@ class SalesInvoice(Base):
     __tablename__ = "sales_invoices"
 
     id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    # Identifier minted by the field app before this record ever reaches the
+    # server. Unique, so replaying a sync batch over a flaky connection returns
+    # the record already created instead of duplicating it. NULL for anything
+    # created online.
+    client_uuid: Mapped[str | None] = mapped_column(
+        String(36), unique=True, nullable=True, index=True
+    )
     customer_id: Mapped[int] = mapped_column(
         ForeignKey("customers.id"), nullable=False, index=True
     )
@@ -198,6 +212,13 @@ class SalesQuotation(Base):
     __tablename__ = "sales_quotations"
 
     id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    # Identifier minted by the field app before this record ever reaches the
+    # server. Unique, so replaying a sync batch over a flaky connection returns
+    # the record already created instead of duplicating it. NULL for anything
+    # created online.
+    client_uuid: Mapped[str | None] = mapped_column(
+        String(36), unique=True, nullable=True, index=True
+    )
     customer_id: Mapped[int] = mapped_column(
         ForeignKey("customers.id"), nullable=False, index=True
     )
