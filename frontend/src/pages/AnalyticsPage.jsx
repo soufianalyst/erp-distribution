@@ -1,3 +1,9 @@
+// The analytics dashboard: RFM segmentation of customers and products, revenue
+// trends, waste and expiry risk, credit exposure, delivery performance and
+// salesman results.
+//
+// Read-only throughout — every figure is derived from what the transactional
+// modules already recorded, so nothing here can change the books.
 import { useState } from "react";
 import {
   Area,

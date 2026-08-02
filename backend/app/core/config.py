@@ -45,6 +45,7 @@ class Settings(BaseSettings):
 
 @lru_cache
 def get_settings() -> Settings:
+    """Load settings once, refusing to start on the default secret outside debug."""
     settings = Settings()
     if not settings.DEBUG and settings.SECRET_KEY == INSECURE_DEFAULT_SECRET_KEY:
         raise RuntimeError(

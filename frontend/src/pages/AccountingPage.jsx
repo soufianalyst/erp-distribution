@@ -1,3 +1,11 @@
+// The accountant's workspace: the chart of accounts, the automatic journal
+// entries every module posts, the trial balance, income statement and balance
+// sheet, and bank reconciliation.
+//
+// Nothing here creates business activity — sales, purchases and stock movements
+// post their own entries. This page is where those postings are reviewed,
+// where a manual correcting entry can be made, and where the books are checked
+// against the bank.
 import { useState } from "react";
 import { Alert, Badge, Button, Card, Input, Loading, Modal, Select, Stat, Table, money } from "../components/Ui";
 import useFetch from "../hooks/useFetch";
@@ -24,6 +32,13 @@ const DIRECTION_LABELS = { in: "وارد", out: "صادر" };
 
 const EMPTY_BANK_LINE = { line_date: "", description: "", amount: "", direction: "in" };
 
+/**
+ * Bank reconciliation: the bank's statement on one side, our own bank-account
+ * journal items on the other, matched one to one.
+ *
+ * Both sides must be unmatched before they can be tied together, so one bank
+ * movement can never be reconciled against two entries.
+ */
 function BankReconciliationTab() {
   const [dateFrom, setDateFrom] = useState("");
   const [dateTo, setDateTo] = useState("");
@@ -239,6 +254,10 @@ function BankReconciliationTab() {
 
 const EMPTY_ITEM = { account_code: "", debit: "", credit: "" };
 
+/**
+ * A hand-written journal entry, for corrections and opening balances that no
+ * module produces. Refuses to submit unless debits equal credits.
+ */
 function ManualEntryForm({ accounts, onCreated }) {
   const [description, setDescription] = useState("");
   const [items, setItems] = useState([{ ...EMPTY_ITEM }, { ...EMPTY_ITEM }]);

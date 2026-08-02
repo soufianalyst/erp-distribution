@@ -20,6 +20,7 @@ class SettingsService:
 
     # --- Tax rates ---
     async def get_tax_rate(self, tax_rate_id: int) -> TaxRate:
+        """Fetch a configured tax or raise a 404."""
         tax_rate = await self.session.get(TaxRate, tax_rate_id)
         if tax_rate is None:
             raise AppException(404, "الضريبة غير موجودة.")
@@ -68,6 +69,7 @@ class SettingsService:
                 tax_rate.is_default = False
 
     async def create_tax_rate(self, data: TaxRateCreate) -> TaxRate:
+        """Define a tax; codes are unique, and at most one may be the default."""
         existing = await self.session.execute(
             select(TaxRate).where(TaxRate.code == data.code)
         )
@@ -91,6 +93,7 @@ class SettingsService:
         return tax_rate
 
     async def update_tax_rate(self, tax_rate_id: int, data: TaxRateUpdate) -> TaxRate:
+        """Amend a tax's name, rate, country scope, or active/default flags."""
         tax_rate = await self.get_tax_rate(tax_rate_id)
         if data.name is not None:
             tax_rate.name = data.name
@@ -125,6 +128,7 @@ class SettingsService:
 
     # --- Company settings (singleton) ---
     async def get_company_settings(self) -> CompanySettings:
+        """The singleton company record, created with defaults on first read."""
         result = await self.session.execute(select(CompanySettings).limit(1))
         company = result.scalar_one_or_none()
         if company is None:
@@ -144,6 +148,11 @@ class SettingsService:
     async def update_company_settings(
         self, data: CompanySettingsUpdate
     ) -> CompanySettings:
+        """Amend company identity, country and currency.
+
+        Optional fields distinguish an explicit null (clear it) from an omitted
+        one (leave it), so the panel can empty a field it once set.
+        """
         company = await self.get_company_settings()
         sent = data.model_fields_set
 

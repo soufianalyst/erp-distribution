@@ -33,12 +33,14 @@ class ExpenseService:
 
     # --- Categories ---
     async def get_category(self, category_id: int) -> ExpenseCategory:
+        """Fetch an expense category or raise a 404."""
         category = await self.session.get(ExpenseCategory, category_id)
         if category is None:
             raise AppException(404, "تصنيف المصاريف غير موجود.")
         return category
 
     async def list_categories(self, active_only: bool = False) -> list[ExpenseCategory]:
+        """Expense categories, optionally only the active ones."""
         stmt = select(ExpenseCategory).order_by(ExpenseCategory.id)
         if active_only:
             stmt = stmt.where(ExpenseCategory.is_active.is_(True))
@@ -46,6 +48,7 @@ class ExpenseService:
         return list(result.scalars().all())
 
     async def create_category(self, data: ExpenseCategoryCreate) -> ExpenseCategory:
+        """Add an expense category; names are unique so reports do not split."""
         existing = await self.session.execute(
             select(ExpenseCategory).where(ExpenseCategory.name == data.name)
         )
@@ -60,6 +63,7 @@ class ExpenseService:
     async def update_category(
         self, category_id: int, data: ExpenseCategoryUpdate
     ) -> ExpenseCategory:
+        """Rename a category or retire it from the list offered on new expenses."""
         category = await self.get_category(category_id)
         if data.name is not None:
             category.name = data.name
@@ -71,12 +75,14 @@ class ExpenseService:
 
     # --- Expenses ---
     async def get_expense(self, expense_id: int) -> Expense:
+        """Fetch a recorded expense or raise a 404."""
         expense = await self.session.get(Expense, expense_id)
         if expense is None:
             raise AppException(404, "المصروف غير موجود.")
         return expense
 
     async def list_expenses(self, category_id: int | None = None) -> list[Expense]:
+        """Expenses, newest first, optionally for one category."""
         stmt = select(Expense).order_by(Expense.id.desc())
         if category_id is not None:
             stmt = stmt.where(Expense.category_id == category_id)

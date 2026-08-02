@@ -1,3 +1,9 @@
+// Sales: invoices, returns, quotations and the commission report.
+//
+// Several invoices can be drafted at once as tabs, because a counter often
+// juggles customers. Issuing one deducts stock FEFO, checks the credit limit,
+// applies the selected taxes and posts the accounting entry — all in one
+// transaction that either wholly succeeds or wholly fails.
 import { useEffect, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import {

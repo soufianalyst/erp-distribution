@@ -1,3 +1,8 @@
+// Stock movements: balances, transfers between warehouses, write-offs of
+// damaged or expired goods, physical stocktakes, and the near-expiry watchlist.
+//
+// Receiving lives in purchasing rather than here, so goods always arrive against
+// a supplier document.
 import { useState } from "react";
 import { useNavigate } from "react-router-dom";
 import {

@@ -64,12 +64,15 @@ class PurchaseService:
         return result.scalar_one_or_none()
 
     async def get_supplier(self, supplier_id: int) -> Supplier:
+        """Fetch a supplier or raise a 404 with an Arabic message for the UI."""
         supplier = await self.session.get(Supplier, supplier_id)
         if supplier is None:
             raise AppException(404, "المورد غير موجود.")
         return supplier
 
     async def create_supplier(self, data: SupplierCreate) -> Supplier:
+        """Register a supplier; names are unique so one vendor cannot end up with
+        two separate balances."""
         if await self._get_supplier_by_name(data.name) is not None:
             raise AppException(409, "يوجد مورد بهذا الاسم من قبل.")
         supplier = Supplier(
@@ -84,6 +87,7 @@ class PurchaseService:
         return supplier
 
     async def update_supplier(self, supplier_id: int, data: SupplierUpdate) -> Supplier:
+        """Amend a supplier's details or stop dealing with them."""
         supplier = await self.get_supplier(supplier_id)
         if data.name is not None and data.name != supplier.name:
             if await self._get_supplier_by_name(data.name) is not None:
@@ -100,6 +104,7 @@ class PurchaseService:
         return supplier
 
     async def list_suppliers(self, search: str | None = None) -> list[Supplier]:
+        """All suppliers, optionally filtered by a name search."""
         stmt = select(Supplier).order_by(Supplier.id)
         if search:
             stmt = stmt.where(Supplier.name.ilike(f"%{search}%"))
@@ -399,6 +404,7 @@ class PurchaseService:
         await self.session.commit()
 
     async def get_invoice(self, invoice_id: int) -> PurchaseInvoice:
+        """Fetch a purchase invoice with its lines and taxes, or raise a 404."""
         result = await self.session.execute(
             select(PurchaseInvoice)
             .options(
@@ -414,6 +420,7 @@ class PurchaseService:
     async def list_invoices(
         self, supplier_id: int | None = None
     ) -> list[PurchaseInvoice]:
+        """Purchase invoices, newest first, optionally for one supplier."""
         stmt = (
             select(PurchaseInvoice)
             .options(
@@ -499,6 +506,7 @@ class PurchaseService:
         return await self.get_order(order.id)
 
     async def get_order(self, order_id: int) -> PurchaseOrder:
+        """Fetch a purchase order with its lines and received deliveries, or 404."""
         result = await self.session.execute(
             select(PurchaseOrder)
             .options(
@@ -519,6 +527,7 @@ class PurchaseService:
         supplier_id: int | None = None,
         status: PurchaseOrderStatus | None = None,
     ) -> list[PurchaseOrder]:
+        """Purchase orders, newest first, optionally filtered by supplier or status."""
         stmt = (
             select(PurchaseOrder)
             .options(
@@ -795,6 +804,7 @@ class PurchaseService:
     async def list_returns(
         self, invoice_id: int | None = None
     ) -> list[PurchaseReturn]:
+        """Purchase returns, newest first, optionally for one invoice."""
         stmt = (
             select(PurchaseReturn)
             .options(selectinload(PurchaseReturn.lines))
@@ -809,6 +819,11 @@ class PurchaseService:
     async def create_payment(
         self, data: SupplierPaymentCreate, created_by: int | None = None
     ) -> SupplierPayment:
+        """Record a payment to a supplier (سند صرف).
+
+        Refuses to pay more than is owed, which would otherwise leave the
+        supplier account in credit with no document explaining why.
+        """
         supplier = await self.get_supplier(data.supplier_id)
         balance = await self.supplier_balance(supplier.id)
         if data.amount > balance:
@@ -879,6 +894,8 @@ class PurchaseService:
         )
 
     async def supplier_statement(self, supplier_id: int) -> SupplierStatementOut:
+        """Everything owed to and paid a supplier: invoices, returns, payments and
+        the outstanding balance."""
         from app.api.schemas.purchases import (
             PurchaseInvoiceOut,
             PurchaseReturnOut,

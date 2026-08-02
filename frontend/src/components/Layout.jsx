@@ -1,3 +1,6 @@
+// The application shell: navigation, the collapsible sidebar, the mobile drawer
+// and the day/night switch. Navigation entries are filtered by permission, so
+// each role only sees the modules it can actually use.
 import { useEffect, useState } from "react";
 import { NavLink, Outlet, useLocation } from "react-router-dom";
 import { ROLE_LABELS, useAuth } from "../context/AuthContext";

@@ -14,6 +14,7 @@ class ProductService:
         self.session = session
 
     async def get_product(self, product_id: int) -> Product:
+        """Fetch a product with its units, or raise a 404 (active or not)."""
         result = await self.session.execute(
             select(Product)
             .options(selectinload(Product.units))
@@ -39,12 +40,14 @@ class ProductService:
         return result.scalar_one_or_none()
 
     async def get_by_barcode(self, barcode: str) -> Product:
+        """Find a product by the barcode a scanner read, or raise a 404."""
         product = await self._get_by_barcode(barcode)
         if product is None:
             raise AppException(404, "لا يوجد صنف بهذا الباركود.")
         return await self.get_product(product.id)
 
     async def create_product(self, data: ProductCreate) -> Product:
+        """Add a product with its alternative units; SKU and barcode are unique."""
         existing = await self.session.execute(
             select(Product).where(Product.sku == data.sku)
         )
@@ -77,6 +80,7 @@ class ProductService:
         return await self.get_product(product.id)
 
     async def update_product(self, product_id: int, data: ProductUpdate) -> Product:
+        """Amend a product's details, prices, home warehouse or active flag."""
         product = await self.get_product(product_id)
         if data.name is not None:
             product.name = data.name
@@ -124,6 +128,7 @@ class ProductService:
         await self.session.commit()
 
     async def list_products(self, search: str | None = None) -> list[Product]:
+        """Products, optionally filtered by a search across name, SKU and barcode."""
         stmt = select(Product).options(selectinload(Product.units)).order_by(Product.id)
         if search:
             pattern = f"%{search}%"

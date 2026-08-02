@@ -1,3 +1,8 @@
+// Customer file: who they are, which price tier they buy at, the credit limit
+// they may not exceed, and which salesman owns the relationship.
+//
+// Also where receipts (سند قبض) are recorded against a customer's balance and
+// where their statement is read — the document handed over when settling up.
 import { useState } from "react";
 import {
   CancelButton,
@@ -27,6 +32,7 @@ const EMPTY_FORM = {
   salesman_id: "",
 };
 
+/** Record a receipt against this customer's balance and show their statement. */
 function PaymentSection({ customerId, onPaid }) {
   const [amount, setAmount] = useState("");
   const [method, setMethod] = useState("cash");

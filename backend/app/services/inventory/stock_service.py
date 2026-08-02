@@ -45,6 +45,11 @@ class StockService:
         self.accounting = AccountingService(session)
 
     async def get_active_product(self, product_id: int) -> Product:
+        """Fetch a product with its units, refusing one that has been stopped.
+
+        Centralised so no movement — sale, transfer, write-off — can quietly
+        operate on a discontinued item.
+        """
         result = await self.session.execute(
             select(Product)
             .options(selectinload(Product.units))
@@ -58,6 +63,7 @@ class StockService:
         return product
 
     async def get_active_warehouse(self, warehouse_id: int) -> Warehouse:
+        """Fetch a warehouse, refusing one that has been deactivated."""
         warehouse = await self.session.get(Warehouse, warehouse_id)
         if warehouse is None:
             raise AppException(404, "المستودع غير موجود.")
@@ -231,6 +237,7 @@ class StockService:
     async def list_batches(
         self, product_id: int, warehouse_id: int | None = None
     ) -> list[ProductBatch]:
+        """Batches of a product holding stock, soonest to expire first (FEFO order)."""
         await self.get_active_product(product_id)
         stmt = (
             select(ProductBatch)
@@ -245,6 +252,11 @@ class StockService:
     async def stock_levels(
         self, product_id: int | None = None, warehouse_id: int | None = None
     ) -> list[StockLevelOut]:
+        """Quantity on hand per product and warehouse.
+
+        Inner-joins batches, so a product with no stock anywhere does not appear —
+        see `reorder_suggestions` when the zero-stock ones are what you want.
+        """
         stmt = (
             select(
                 Product.id,
@@ -459,6 +471,7 @@ class StockService:
         )
 
     async def get_adjustment(self, adjustment_id: int) -> StockAdjustment:
+        """Fetch one write-off with its lines, or raise a 404."""
         result = await self.session.execute(
             select(StockAdjustment)
             .options(self._adjustment_loads())
@@ -470,6 +483,7 @@ class StockService:
         return adjustment
 
     async def list_adjustments(self) -> list[StockAdjustment]:
+        """All stock write-offs, newest first."""
         result = await self.session.execute(
             select(StockAdjustment)
             .options(self._adjustment_loads())
@@ -527,6 +541,7 @@ class StockService:
 
     # --- Stocktakes (physical counts) ---
     async def get_stocktake(self, stocktake_id: int) -> Stocktake:
+        """Fetch a count sheet with its lines and deliveries, or raise a 404."""
         result = await self.session.execute(
             select(Stocktake)
             .options(
@@ -545,6 +560,7 @@ class StockService:
         warehouse_id: int | None = None,
         status: StocktakeStatus | None = None,
     ) -> list[Stocktake]:
+        """Stocktakes, newest first, optionally filtered by warehouse or status."""
         stmt = (
             select(Stocktake)
             .options(

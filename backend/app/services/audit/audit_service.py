@@ -21,6 +21,7 @@ class AuditService:
         date_from: date | None = None,
         date_to: date | None = None,
     ) -> list[AuditLog]:
+        """Audit entries, newest first, filtered by table, record, user or action."""
         stmt = select(AuditLog).order_by(AuditLog.id.desc())
         if table_name is not None:
             stmt = stmt.where(AuditLog.table_name == table_name)

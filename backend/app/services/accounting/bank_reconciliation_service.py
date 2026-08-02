@@ -30,6 +30,7 @@ class BankReconciliationService:
     async def create_line(
         self, data: BankStatementLineCreate, created_by: int | None = None
     ) -> dict:
+        """Record one line from the bank statement, ready to be matched."""
         line = BankStatementLine(
             line_date=data.line_date,
             description=data.description,
@@ -43,6 +44,7 @@ class BankReconciliationService:
         return await self.line_out_data(await self.get_line(line.id))
 
     async def get_line(self, line_id: int) -> BankStatementLine:
+        """Fetch a statement line with whatever it is matched to, or raise a 404."""
         result = await self.session.execute(
             select(BankStatementLine)
             .options(
@@ -58,6 +60,7 @@ class BankReconciliationService:
         return line
 
     async def line_out_data(self, line: BankStatementLine) -> dict:
+        """Flatten a line plus its matched journal item into the API shape."""
         matched = None
         if line.matched_journal_item is not None:
             item = line.matched_journal_item
@@ -87,6 +90,7 @@ class BankReconciliationService:
         date_from: date | None = None,
         date_to: date | None = None,
     ) -> list[dict]:
+        """Statement lines, optionally filtered by reconciled state and date range."""
         stmt = (
             select(BankStatementLine)
             .options(
@@ -110,6 +114,11 @@ class BankReconciliationService:
         return [await self.line_out_data(line) for line in lines]
 
     async def list_unmatched_journal_items(self) -> list[UnmatchedJournalItemOut]:
+        """Bank-account journal items no statement line has claimed yet.
+
+        These are the system's side of the reconciliation: movements we recorded
+        that have not yet been found on the bank's statement.
+        """
         bank_account_id = await self._bank_account_id()
         matched_subquery = select(BankStatementLine.matched_journal_item_id).where(
             BankStatementLine.matched_journal_item_id.is_not(None)
@@ -138,6 +147,11 @@ class BankReconciliationService:
     async def match(
         self, line_id: int, journal_item_id: int, matched_by: int | None
     ) -> dict:
+        """Tie a statement line to the journal item that represents it.
+
+        Both sides are checked as unmatched first, so one bank movement can never
+        be reconciled against two different entries.
+        """
         line = await self.get_line(line_id)
         if line.matched_journal_item_id is not None:
             raise AppException(400, "هذا البند مطابق بالفعل.")
@@ -178,6 +192,7 @@ class BankReconciliationService:
         return await self.line_out_data(await self.get_line(line_id))
 
     async def unmatch(self, line_id: int) -> dict:
+        """Undo a match made in error, freeing both sides to be matched again."""
         line = await self.get_line(line_id)
         if line.matched_journal_item_id is None:
             raise AppException(400, "هذا البند غير مطابق أصلاً.")
@@ -191,6 +206,7 @@ class BankReconciliationService:
     async def summary(
         self, date_from: date | None = None, date_to: date | None = None
     ) -> BankReconciliationSummaryOut:
+        """Totals in, out and how much of the statement is still unreconciled."""
         stmt = select(BankStatementLine)
         if date_from is not None:
             stmt = stmt.where(BankStatementLine.line_date >= date_from)

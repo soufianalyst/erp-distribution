@@ -1,3 +1,5 @@
+// Sign-in. The only screen reachable without a token; everything else redirects
+// here when the session expires.
 import { useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { Alert, Button, Input } from "../components/Ui";

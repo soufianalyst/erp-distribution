@@ -25,3 +25,7 @@ frontend/dist/
 
 # Claude Code local tool-permission allowlist (machine/session-specific)
 .claude/settings.local.json
+
+# Local-only capture bootstrap for generating manual screenshots.
+# Seeds a session from the URL into localStorage — must never ship.
+frontend/public/_shot.html

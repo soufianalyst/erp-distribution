@@ -1,3 +1,6 @@
+// Central HTTP client. Attaches the access token to every request and, when one
+// comes back expired, refreshes it and replays the request once — so a long
+// shift never interrupts the user with a surprise logout.
 import axios from "axios";
 
 // Central Axios client: attaches the JWT and refreshes it transparently on expiry.

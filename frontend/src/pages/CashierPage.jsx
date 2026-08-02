@@ -1,3 +1,10 @@
+// The cash desk. Every cash or card invoice waits here until the cashier
+// actually takes the money, and every purchase invoice or expense waits until
+// the cashier actually pays it out.
+//
+// That gate is deliberate: an invoice being issued is not the same event as the
+// money changing hands, and the two are frequently minutes or hours apart. The
+// day is closed with a summary that should match what is physically in the till.
 import { useState } from "react";
 import { Alert, Badge, Button, CancelButton, Card, Input, Modal, Stat, Table, money, qty } from "../components/Ui";
 import useFetch from "../hooks/useFetch";

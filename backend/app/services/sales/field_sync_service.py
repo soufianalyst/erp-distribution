@@ -44,6 +44,7 @@ class FieldSyncService:
 
     # --- The salesman's van ---
     async def get_van(self, user: User) -> Warehouse:
+        """The vehicle assigned to this salesman, or a 404 telling them to ask for one."""
         result = await self.session.execute(
             select(Warehouse).where(
                 Warehouse.assigned_to_id == user.id,
@@ -101,6 +102,7 @@ class FieldSyncService:
 
     # --- Sync ---
     async def sync(self, data: FieldSyncIn, user: User) -> FieldSyncOut:
+        """Upload a whole round: new shops first, then the sales and orders naming them."""
         results: list[FieldSyncItemOut] = []
         # Maps a customer created on the device to its real id, so documents in
         # the same batch can find their buyer.

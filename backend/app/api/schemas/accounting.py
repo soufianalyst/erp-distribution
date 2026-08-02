@@ -35,6 +35,7 @@ class JournalItemIn(BaseModel):
 
     @model_validator(mode="after")
     def one_side_only(self) -> "JournalItemIn":
+        """A journal line is either a debit or a credit — never both, never neither."""
         if (self.debit > 0) == (self.credit > 0):
             raise ValueError("كل سطر يجب أن يكون مديناً أو دائناً وليس كليهما.")
         return self

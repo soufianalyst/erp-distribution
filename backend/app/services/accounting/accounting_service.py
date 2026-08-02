@@ -87,6 +87,7 @@ class AccountingService:
 
     # --- Accounts ---
     async def get_account_by_code(self, code: str) -> Account:
+        """Look up a ledger account by its code, or raise a 404."""
         result = await self.session.execute(select(Account).where(Account.code == code))
         account = result.scalar_one_or_none()
         if account is None:
@@ -94,6 +95,7 @@ class AccountingService:
         return account
 
     async def create_account(self, data: AccountCreate) -> Account:
+        """Add an account to the chart of accounts; codes are unique."""
         result = await self.session.execute(
             select(Account).where(Account.code == data.code)
         )
@@ -106,6 +108,7 @@ class AccountingService:
         return account
 
     async def list_accounts(self) -> list[Account]:
+        """The whole chart of accounts, in code order."""
         result = await self.session.execute(select(Account).order_by(Account.code))
         return list(result.scalars().all())
 
@@ -153,6 +156,7 @@ class AccountingService:
     async def create_manual_entry(
         self, data: ManualEntryCreate, created_by: int | None = None
     ) -> JournalEntry:
+        """Post a hand-written journal entry, balanced and committed as one unit."""
         entry = await self.add_entry_no_commit(
             entry_date=data.entry_date or date.today(),
             description=data.description,
@@ -164,6 +168,7 @@ class AccountingService:
         return await self.get_entry(entry.id)
 
     async def get_entry(self, entry_id: int) -> JournalEntry:
+        """Fetch a journal entry with its items and their accounts, or raise a 404."""
         result = await self.session.execute(
             select(JournalEntry)
             .options(selectinload(JournalEntry.items).selectinload(JournalItem.account))
@@ -179,6 +184,7 @@ class AccountingService:
         reference_type: str | None = None,
         reference_id: int | None = None,
     ) -> list[JournalEntry]:
+        """Journal entries, newest first, optionally filtered by what produced them."""
         stmt = (
             select(JournalEntry)
             .options(selectinload(JournalEntry.items).selectinload(JournalItem.account))

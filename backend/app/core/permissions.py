@@ -237,4 +237,5 @@ def effective_permissions(user: "User") -> set[str]:
 
 
 def has_permission(user: "User", permission: str) -> bool:
+    """Whether this user holds one permission, after role defaults are resolved."""
     return permission in effective_permissions(user)

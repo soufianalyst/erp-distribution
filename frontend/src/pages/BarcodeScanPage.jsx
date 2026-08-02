@@ -1,3 +1,6 @@
+// Barcode lookup. Works with a camera or a keyboard-wedge scanner, which types
+// the code and presses Enter — hence the plain focused input rather than a
+// camera-only interface.
 import { useEffect, useRef, useState } from "react";
 import { BrowserMultiFormatReader } from "@zxing/browser";
 import { Alert, Button, Card, Input, Loading, money, qty } from "../components/Ui";

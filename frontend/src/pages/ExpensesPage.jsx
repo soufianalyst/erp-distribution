@@ -1,3 +1,9 @@
+// Operating expenses — rent, salaries, fuel, utilities — and the categories
+// they are filed under.
+//
+// Recording an expense does not pay it: like a purchase invoice, a cash or card
+// expense waits for the cashier to disburse it, so the till and the books stay
+// in step.
 import { useState } from "react";
 import { Alert, Badge, Button, CancelButton, Card, Input, Modal, Select, Table, money } from "../components/Ui";
 import { useAuth } from "../context/AuthContext";
@@ -34,6 +40,7 @@ function CategoryForm({ onSaved, onClose }) {
   );
 }
 
+/** Manage the categories expenses are filed under; retiring one keeps history. */
 function CategoriesSection({ canManage, categories, onReload }) {
   const [open, setOpen] = useState(false);
   const [notice, setNotice] = useState(null);

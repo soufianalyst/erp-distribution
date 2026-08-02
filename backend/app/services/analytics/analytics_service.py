@@ -81,6 +81,13 @@ class AnalyticsService:
 
     # --- Customer RFM ---
     async def customer_rfm(self) -> list[CustomerRFMOut]:
+        """Score every customer on Recency, Frequency and Monetary value.
+
+        Segments them from "بطل" down to "خامل" so the sales team can see who to
+        keep, who to chase, and who has quietly stopped buying. Measured over the
+        rolling WINDOW_DAYS period, not all time, so an old spender does not look
+        active forever.
+        """
         today = date.today()
         window_start = today - timedelta(days=WINDOW_DAYS)
 
@@ -169,6 +176,11 @@ class AnalyticsService:
 
     # --- Product RFM ---
     async def product_rfm(self) -> list[ProductRFMOut]:
+        """The same RFM treatment applied to products rather than customers.
+
+        Surfaces the fast movers worth keeping deep and the dead stock tying up
+        cash and shelf life — the two that matter most in food distribution.
+        """
         today = date.today()
         window_start = today - timedelta(days=WINDOW_DAYS)
 
@@ -284,6 +296,12 @@ class AnalyticsService:
 
     # --- Sales performance ---
     async def sales_trend(self) -> list[SalesTrendPointOut]:
+        """Monthly revenue, cost and margin over the rolling window.
+
+        Splits cash from credit so the shape of the business is visible, not just
+        its size: growing revenue funded entirely by credit is a different story
+        from the same revenue collected at the door.
+        """
         today = date.today()
         window_start = today - timedelta(days=WINDOW_DAYS)
 
@@ -351,6 +369,7 @@ class AnalyticsService:
         return points
 
     async def revenue_by_warehouse(self) -> list[WarehouseRevenueOut]:
+        """Revenue attributed to each warehouse over the window, biggest first."""
         today = date.today()
         window_start = today - timedelta(days=WINDOW_DAYS)
         result = await self.session.execute(
@@ -374,6 +393,11 @@ class AnalyticsService:
         ]
 
     async def revenue_by_price_tier(self) -> list[PriceTierRevenueOut]:
+        """Revenue split across wholesale, half-wholesale and retail pricing.
+
+        Shows which tier actually carries the business, which is rarely the one
+        people assume.
+        """
         today = date.today()
         window_start = today - timedelta(days=WINDOW_DAYS)
         result = await self.session.execute(
@@ -396,6 +420,12 @@ class AnalyticsService:
         ]
 
     async def returns_trend(self) -> list[ReturnsTrendPointOut]:
+        """Monthly returns against sales, as a value and as a percentage.
+
+        A rising return rate in food distribution usually means an expiry or
+        handling problem upstream, so it is tracked as a ratio rather than a
+        raw figure that simply grows with volume.
+        """
         today = date.today()
         window_start = today - timedelta(days=WINDOW_DAYS)
 
@@ -455,6 +485,11 @@ class AnalyticsService:
 
     # --- Inventory & waste ---
     async def expiry_risk(self, days: int = 30) -> list[ExpiryRiskOut]:
+        """Batches expiring within `days`, valued at cost — the money at risk.
+
+        Quantity alone understates the problem: a thousand cheap units matter
+        less than a hundred expensive ones about to be written off.
+        """
         today = date.today()
         threshold = today + timedelta(days=days)
         result = await self.session.execute(
@@ -482,6 +517,12 @@ class AnalyticsService:
         return out
 
     async def turnover(self) -> list[TurnoverOut]:
+        """How many times each product's stock turned over the window.
+
+        Low turnover on perishable goods is the early warning that stock will
+        expire before it sells; it flags dead stock long before the expiry report
+        does.
+        """
         today = date.today()
         window_start = today - timedelta(days=WINDOW_DAYS)
 
@@ -533,6 +574,11 @@ class AnalyticsService:
 
     # --- Financial / credit ---
     async def ar_aging(self) -> list[ARAgingRowOut]:
+        """Outstanding customer balances bucketed by how overdue they are.
+
+        The classic current / 30 / 60 / 90+ ladder: the further right the money
+        sits, the less likely it is to arrive.
+        """
         today = date.today()
         result = await self.session.execute(
             select(Customer).where(Customer.credit_limit > 0)
@@ -590,6 +636,11 @@ class AnalyticsService:
         return sorted(out, key=lambda r: r.total_outstanding, reverse=True)
 
     async def credit_risk(self) -> list[CreditRiskCustomerOut]:
+        """Customers ranked by how much of their credit limit is used up.
+
+        Combines the balance with their RFM recency, because a customer near
+        their limit who has also stopped buying is the one to worry about.
+        """
         rfm = {r.customer_id: r for r in await self.customer_rfm()}
         result = await self.session.execute(
             select(Customer).where(Customer.credit_limit > 0)
@@ -617,6 +668,7 @@ class AnalyticsService:
 
     # --- Delivery & fulfillment ---
     async def fulfillment_summary(self) -> list[FulfillmentSummaryOut]:
+        """Delivery versus warehouse pickup: volume and completion rate of each."""
         result = await self.session.execute(
             select(
                 SalesInvoice.id,
@@ -657,6 +709,7 @@ class AnalyticsService:
         ]
 
     async def driver_performance(self) -> list[DriverPerformanceOut]:
+        """Per-driver stop counts and delivery success rate across their trips."""
         result = await self.session.execute(
             select(DeliveryTrip.driver_name, DeliveryStop.status, DeliveryTrip.id).join(
                 DeliveryStop, DeliveryStop.trip_id == DeliveryTrip.id
@@ -689,6 +742,11 @@ class AnalyticsService:
 
     # --- Sales rep performance ---
     async def rep_performance(self) -> list[RepPerformanceOut]:
+        """Per-salesman revenue, invoice count, returns and customer reach.
+
+        The counts come from distinct invoices rather than lines, so an invoice
+        with ten items is one sale, not ten.
+        """
         today = date.today()
         window_start = today - timedelta(days=WINDOW_DAYS)
 
@@ -741,6 +799,11 @@ class AnalyticsService:
 
     # --- Top-level KPIs ---
     async def dashboard_summary(self) -> DashboardSummaryOut:
+        """The headline figures for the analytics landing page.
+
+        Deliberately a single call: the page shows these together, and issuing one
+        query per tile would make the first paint wait on all of them.
+        """
         today = date.today()
         window_start = today - timedelta(days=WINDOW_DAYS)
 

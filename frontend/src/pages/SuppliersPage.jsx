@@ -1,3 +1,8 @@
+// Supplier file and their account: what we owe, what we have paid, and the
+// statement that reconciles the two.
+//
+// Payments (سند صرف) are recorded here; the purchase invoices that create the
+// debt live in the purchases module.
 import { useState } from "react";
 import {
   CancelButton,
@@ -16,6 +21,7 @@ import { useAuth } from "../context/AuthContext";
 import useFetch from "../hooks/useFetch";
 import api, { apiMessage } from "../services/api";
 
+/** Record a payment to this supplier and show the statement it settles. */
 function PaymentSection({ supplierId, onPaid }) {
   const [amount, setAmount] = useState("");
   const [method, setMethod] = useState("cash");

@@ -327,6 +327,7 @@ class CashierService:
         movements = list(result.scalars().all())
 
         def total_for(direction: str, method: str) -> Decimal:
+            """Sum the day's movements in one direction and payment method."""
             return sum(
                 (
                     m.amount

@@ -1,3 +1,5 @@
+// The landing page: headline counts and the alerts that need acting on today,
+// each linking to the screen where the work is done.
 import { useNavigate } from "react-router-dom";
 import { Alert, Badge, Button, Card, Loading, Stat, Table, qty } from "../components/Ui";
 import useFetch from "../hooks/useFetch";

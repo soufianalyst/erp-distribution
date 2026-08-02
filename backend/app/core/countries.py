@@ -65,5 +65,6 @@ def is_valid_country(code: str | None) -> bool:
 
 
 def country_name(code: str | None) -> str | None:
+    """Arabic name for a country code; None when unset or unknown."""
     country = COUNTRIES_BY_CODE.get(code) if code else None
     return country.name if country else None

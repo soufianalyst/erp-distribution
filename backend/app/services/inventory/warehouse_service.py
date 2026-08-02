@@ -32,6 +32,7 @@ class WarehouseService:
         return driver.id
 
     async def create_warehouse(self, data: WarehouseCreate) -> Warehouse:
+        """Create a warehouse, or a salesman's van when marked as a vehicle."""
         if await self._get_by_name(data.name) is not None:
             raise AppException(409, "يوجد مستودع بهذا الاسم من قبل.")
         if data.assigned_to_id is not None and not data.is_vehicle:
@@ -50,6 +51,7 @@ class WarehouseService:
     async def update_warehouse(
         self, warehouse_id: int, data: WarehouseUpdate
     ) -> Warehouse:
+        """Amend a warehouse, including promoting it to a vehicle or reassigning it."""
         warehouse = await self.session.get(Warehouse, warehouse_id)
         if warehouse is None:
             raise AppException(404, "المستودع غير موجود.")
@@ -78,5 +80,6 @@ class WarehouseService:
         return warehouse
 
     async def list_warehouses(self) -> list[Warehouse]:
+        """Every warehouse and vehicle, in creation order."""
         result = await self.session.execute(select(Warehouse).order_by(Warehouse.id))
         return list(result.scalars().all())

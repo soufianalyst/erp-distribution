@@ -1,3 +1,9 @@
+// The audit trail: who changed what, when, and what the values were before and
+// after.
+//
+// Entries are written automatically by database-level listeners rather than by
+// each module, so nothing can be changed without leaving a record — which is
+// the whole point of having it.
 import { useState } from "react";
 import { Alert, Badge, Button, Card, Input, Loading, Modal, Select, Table } from "../components/Ui";
 import useFetch from "../hooks/useFetch";
@@ -44,6 +50,7 @@ const TABLE_LABELS = {
 
 const tableLabel = (name) => TABLE_LABELS[name] || name;
 
+/** Before/after values of one audited change, showing only the fields that moved. */
 function ChangesViewer({ entry }) {
   const rows = Object.entries(entry.changes);
   return (

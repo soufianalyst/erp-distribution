@@ -1,3 +1,9 @@
+// The product catalogue: codes, barcodes, the three price tiers, the minimum
+// stock level that drives reorder alerts, and the home warehouse each item
+// sells from.
+//
+// Stopping a product hides it from new invoices without touching its history,
+// which is why it is preferred over deleting.
 import { useState } from "react";
 import {
   CancelButton,
@@ -30,6 +36,7 @@ const EMPTY_FORM = {
 };
 
 // Inline barcode editor for a product row — auto-saves on blur/Enter.
+/** Inline barcode entry, so a scanner can fill it in without opening a dialog. */
 function BarcodeCell({ product, canManage, onChanged }) {
   const [value, setValue] = useState(product.barcode || "");
   const [saving, setSaving] = useState(false);
@@ -68,6 +75,7 @@ function BarcodeCell({ product, canManage, onChanged }) {
 }
 
 // Inline "home warehouse" picker for a product row — auto-saves on change.
+/** Inline home-warehouse picker — where this product is sold and allocated from. */
 function WarehouseCell({ product, warehouses, canManage, onChanged }) {
   const [saving, setSaving] = useState(false);
   const assign = async (e) => {
@@ -109,6 +117,7 @@ function WarehouseCell({ product, warehouses, canManage, onChanged }) {
 // Full edit form: name, prices, min stock, home warehouse, and active status.
 // (SKU is immutable; barcode and home-warehouse also have their own inline
 // cells, but editing them here too is convenient when editing everything else.)
+/** Full product edit: prices, minimum level, barcode and active state. */
 function EditProductForm({ product, warehouses, onSaved, onClose }) {
   const [form, setForm] = useState({
     name: product.name,

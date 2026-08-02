@@ -19,6 +19,7 @@ async def get_current_user(
     credentials: HTTPAuthorizationCredentials | None = Depends(bearer_scheme),
     db: AsyncSession = Depends(get_db),
 ) -> User:
+    """Resolve the bearer token to an active user, or reject the request."""
     if credentials is None:
         raise AppException(401, "يجب تسجيل الدخول للوصول إلى هذه الخدمة.")
     payload = decode_token(credentials.credentials, expected_type="access")
@@ -32,6 +33,7 @@ def require_roles(*roles: UserRole) -> Callable[..., Awaitable[User]]:
     """Dependency factory: allow only users whose role is in `roles`."""
 
     async def checker(current_user: User = Depends(get_current_user)) -> User:
+        """Allow the request through only for one of the listed roles."""
         if current_user.role not in roles:
             raise AppException(403, "ليس لديك الصلاحية اللازمة للقيام بهذه العملية.")
         return current_user
@@ -43,6 +45,7 @@ def require_permissions(*permissions: str) -> Callable[..., Awaitable[User]]:
     """Dependency factory: allow only users holding ALL of the given permissions."""
 
     async def checker(current_user: User = Depends(get_current_user)) -> User:
+        """Allow the request through only when the user holds every permission."""
         if not all(has_permission(current_user, p) for p in permissions):
             raise AppException(403, "ليس لديك الصلاحية اللازمة للقيام بهذه العملية.")
         return current_user

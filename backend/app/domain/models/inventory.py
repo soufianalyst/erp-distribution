@@ -255,22 +255,27 @@ class StockAdjustmentLine(Base):
     # without the caller having to join products/batches/warehouses itself.
     @property
     def product_name(self) -> str:
+        """Read-through label so a line prints without joining products itself."""
         return self.product.name
 
     @property
     def base_unit_name(self) -> str:
+        """The unit the stored quantity is expressed in."""
         return self.product.base_unit_name
 
     @property
     def batch_number(self) -> str:
+        """Read-through label; the batch this line drew from."""
         return self.batch.batch_number
 
     @property
     def expiry_date(self) -> date:
+        """Read-through label; when the batch this line drew from expires."""
         return self.batch.expiry_date
 
     @property
     def warehouse_name(self) -> str:
+        """Read-through label; where the movement happened."""
         return self.warehouse.name
 
 
@@ -320,10 +325,12 @@ class Stocktake(Base):
 
     @property
     def warehouse_name(self) -> str:
+        """Read-through label; where the movement happened."""
         return self.warehouse.name
 
     @property
     def line_count(self) -> int:
+        """How many batches this count sheet covers."""
         return len(self.lines)
 
     @property
@@ -388,12 +395,15 @@ class StocktakeLine(Base):
     # the sheet still reads correctly if the batch is edited after counting.
     @property
     def product_name(self) -> str:
+        """Read-through label so a line prints without joining products itself."""
         return self.product.name
 
     @property
     def sku(self) -> str:
+        """The product code, printed on the count sheet for quick lookup."""
         return self.product.sku
 
     @property
     def base_unit_name(self) -> str:
+        """The unit the stored quantity is expressed in."""
         return self.product.base_unit_name

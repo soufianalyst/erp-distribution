@@ -65,4 +65,5 @@ class CompanySettings(Base):
 
     @property
     def country_name(self) -> str | None:
+        """Arabic country name resolved from the stored code."""
         return country_name(self.country_code)

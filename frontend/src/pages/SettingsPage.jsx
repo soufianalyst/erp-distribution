@@ -1,3 +1,9 @@
+// The control panel: company identity used on printed documents, the country the
+// business trades in, and the tax rates available when invoicing.
+//
+// A tax with no country applies everywhere; one tagged with a country is only
+// offered when it matches the company's own, so a foreign rate can be prepared
+// in advance without appearing on today's invoices.
 import { useEffect, useState } from "react";
 import {
   Alert,

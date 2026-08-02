@@ -111,10 +111,12 @@ class PurchaseOrder(Base):
 
     @property
     def is_fully_received(self) -> bool:
+        """True once every line has been delivered in full."""
         return all(line.received_quantity >= line.quantity for line in self.lines)
 
     @property
     def received_invoice_ids(self) -> list[int]:
+        """Invoices raised by receiving deliveries against this order."""
         return [invoice.id for invoice in self.received_invoices]
 
 

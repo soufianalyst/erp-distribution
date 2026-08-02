@@ -1,3 +1,11 @@
+// User accounts, roles and permissions.
+//
+// Roles are only templates: giving a user an explicit permission list overrides
+// their role entirely, which is why a new permission added to a role does not
+// reach users who already have their own list. The editor makes that explicit
+// rather than hiding it.
+//
+// Salesmen also carry their commission rate here, used by the commission report.
 import { useState } from "react";
 import {
   CancelButton,
@@ -24,6 +32,7 @@ const EMPTY_FORM = {
 };
 
 // Inline commission-rate editor for a user row — auto-saves on blur.
+/** Inline edit of a salesman's commission percentage, used by the commission report. */
 function CommissionRateCell({ user, canManage, onChanged }) {
   const [value, setValue] = useState(user.commission_rate);
   const [saving, setSaving] = useState(false);
@@ -67,6 +76,14 @@ function CommissionRateCell({ user, canManage, onChanged }) {
   );
 }
 
+/**
+ * Per-user permission override.
+ *
+ * Saving an explicit list detaches the user from their role's defaults entirely
+ * — so a permission added to the role later will not reach them. That is the
+ * intended behaviour, but it surprises people, which is why the field app's
+ * permission had to be granted by hand to an existing salesman.
+ */
 function PermissionsEditor({ user, catalog, onSaved, onClose }) {
   const [selected, setSelected] = useState(new Set(user.effective_permissions));
   const [error, setError] = useState(null);

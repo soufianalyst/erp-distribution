@@ -1,3 +1,9 @@
+// Purchasing: supplier invoices, returns, and purchase orders with their
+// deliveries.
+//
+// An order carries no stock or accounting effect until a delivery is received,
+// at which point it raises an ordinary purchase invoice. The order form opens
+// with a worklist of items that are out of stock or below their minimum.
 import { useState } from "react";
 import {
   Alert,

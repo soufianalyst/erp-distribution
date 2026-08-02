@@ -151,6 +151,7 @@ class DeliveryService:
         )
 
     async def get_trip(self, trip_id: int) -> DeliveryTrip:
+        """Fetch a delivery trip with its stops, or raise a 404."""
         result = await self.session.execute(
             select(DeliveryTrip)
             .options(selectinload(DeliveryTrip.stops))
@@ -164,6 +165,7 @@ class DeliveryService:
     async def create_trip(
         self, data: TripCreate, created_by: int | None = None
     ) -> DeliveryTrip:
+        """Plan a trip: a driver, a vehicle and the warehouse goods leave from."""
         await self.stock.get_active_warehouse(data.warehouse_id)
         trip = DeliveryTrip(
             trip_date=data.trip_date or date.today(),
@@ -178,6 +180,7 @@ class DeliveryService:
         return await self.get_trip(trip.id)
 
     async def list_trips(self, status: TripStatus | None = None) -> list[DeliveryTrip]:
+        """Trips, newest first, optionally filtered by status."""
         stmt = (
             select(DeliveryTrip)
             .options(selectinload(DeliveryTrip.stops))
@@ -238,6 +241,7 @@ class DeliveryService:
         return await self.get_trip(trip_id)
 
     async def remove_stop(self, trip_id: int, stop_id: int) -> DeliveryTrip:
+        """Drop a stop while the trip is still being planned."""
         trip = await self.get_trip(trip_id)
         if trip.status != TripStatus.PLANNED:
             raise AppException(400, "لا يمكن تعديل طلبيات رحلة بعد انطلاقها.")
@@ -252,6 +256,7 @@ class DeliveryService:
         return await self.get_trip(trip_id)
 
     async def dispatch_trip(self, trip_id: int) -> DeliveryTrip:
+        """Send a planned trip on the road, freezing its stop list."""
         trip = await self.get_trip(trip_id)
         if trip.status != TripStatus.PLANNED:
             raise AppException(400, "الرحلة ليست في مرحلة التجهيز.")
@@ -264,6 +269,7 @@ class DeliveryService:
     async def update_stop_status(
         self, trip_id: int, stop_id: int, data: StopStatusUpdate
     ) -> DeliveryTrip:
+        """Mark one stop delivered or failed while the trip is in transit."""
         trip = await self.get_trip(trip_id)
         if trip.status != TripStatus.IN_TRANSIT:
             raise AppException(400, "تحديث حالة التسليم متاح فقط أثناء الرحلة.")
@@ -277,6 +283,7 @@ class DeliveryService:
         return await self.get_trip(trip_id)
 
     async def complete_trip(self, trip_id: int) -> DeliveryTrip:
+        """Close a trip once the driver is back and every stop is accounted for."""
         trip = await self.get_trip(trip_id)
         if trip.status != TripStatus.IN_TRANSIT:
             raise AppException(400, "الرحلة ليست قيد التوصيل.")

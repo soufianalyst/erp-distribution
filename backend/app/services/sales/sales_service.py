@@ -69,6 +69,7 @@ class SalesService:
 
     # --- Customers ---
     async def get_customer(self, customer_id: int) -> Customer:
+        """Fetch a customer or raise a 404 with an Arabic message for the UI."""
         customer = await self.session.get(Customer, customer_id)
         if customer is None:
             raise AppException(404, "العميل غير موجود.")
@@ -88,6 +89,8 @@ class SalesService:
         return result.scalar_one_or_none()
 
     async def create_customer(self, data: CustomerCreate) -> Customer:
+        """Register a customer. Names are unique so the same shop cannot be
+        opened twice under two balances, and a named salesman must really be one."""
         if await self._get_customer_by_name(data.name) is not None:
             raise AppException(409, "يوجد عميل بهذا الاسم من قبل.")
         if data.salesman_id is not None:
@@ -109,6 +112,7 @@ class SalesService:
         return customer
 
     async def update_customer(self, customer_id: int, data: CustomerUpdate) -> Customer:
+        """Amend a customer's details, price tier, credit limit or active flag."""
         customer = await self.get_customer(customer_id)
         if data.name is not None and data.name != customer.name:
             if await self._get_customer_by_name(data.name) is not None:
@@ -136,6 +140,12 @@ class SalesService:
     async def list_customers(
         self, user: User, search: str | None = None
     ) -> list[Customer]:
+        """Customers this user may see.
+
+        A salesman is scoped to their own round unless they hold
+        `sales.all_customers`; the filter lives here rather than in the route so
+        no caller can forget it.
+        """
         stmt = select(Customer).order_by(Customer.id)
         if not has_permission(user, "sales.all_customers"):
             stmt = stmt.where(Customer.salesman_id == user.id)
@@ -147,6 +157,7 @@ class SalesService:
     # --- Pricing & balance ---
     @staticmethod
     def tier_price(product: Product, tier: PriceTier) -> Decimal:
+        """The unit price for a customer's tier — wholesale, half, or retail."""
         prices = {
             PriceTier.WHOLESALE: product.wholesale_price,
             PriceTier.HALF_WHOLESALE: product.half_wholesale_price,
@@ -537,6 +548,7 @@ class SalesService:
         return await self.get_quotation(quotation.id)
 
     async def get_quotation(self, quotation_id: int) -> SalesQuotation:
+        """Fetch a quotation with its lines and taxes, or raise a 404."""
         result = await self.session.execute(
             select(SalesQuotation)
             .options(
@@ -552,6 +564,7 @@ class SalesService:
     async def list_quotations(
         self, user: User, customer_id: int | None = None
     ) -> list[SalesQuotation]:
+        """Quotations visible to this user, newest first, optionally per customer."""
         stmt = (
             select(SalesQuotation)
             .options(
@@ -567,6 +580,11 @@ class SalesService:
         return list(result.scalars().all())
 
     async def cancel_quotation(self, quotation_id: int, user: User) -> SalesQuotation:
+        """Withdraw a quotation that will not be converted.
+
+        Cancelling never touches stock: a quotation is a price commitment and
+        moves nothing until it becomes an invoice.
+        """
         quotation = await self.get_quotation(quotation_id)
         customer = await self.get_customer(quotation.customer_id)
         self.ensure_customer_access(user, customer)
@@ -789,6 +807,7 @@ class SalesService:
         return await self.get_invoice(invoice_id)
 
     async def get_invoice(self, invoice_id: int) -> SalesInvoice:
+        """Fetch an invoice with its lines and applied taxes, or raise a 404."""
         result = await self.session.execute(
             select(SalesInvoice)
             .options(
@@ -805,6 +824,7 @@ class SalesService:
     async def list_invoices(
         self, user: User, customer_id: int | None = None
     ) -> list[SalesInvoice]:
+        """Invoices visible to this user, newest first, optionally per customer."""
         stmt = (
             select(SalesInvoice)
             .options(
@@ -1015,6 +1035,7 @@ class SalesService:
     async def list_returns(
         self, user: User, invoice_id: int | None = None
     ) -> list[SalesReturn]:
+        """Sales returns, newest first, optionally limited to one invoice."""
         stmt = (
             select(SalesReturn)
             .options(selectinload(SalesReturn.lines))
@@ -1033,6 +1054,11 @@ class SalesService:
     async def create_payment(
         self, data: CustomerPaymentCreate, user: User
     ) -> CustomerPayment:
+        """Record a receipt against a customer's balance (سند قبض).
+
+        Refuses more than is outstanding, so an overpayment cannot quietly turn
+        into a negative balance that nobody reconciles.
+        """
         customer = await self.get_customer(data.customer_id)
         self.ensure_customer_access(user, customer)
         balance = await self.customer_balance(customer.id)
@@ -1072,6 +1098,8 @@ class SalesService:
     async def customer_statement(
         self, customer_id: int, user: User
     ) -> CustomerStatementOut:
+        """Everything owed and paid for one customer: invoices, returns, receipts
+        and the resulting balance — the document handed over when settling up."""
         from app.api.schemas.sales import (
             CustomerOut,
             CustomerPaymentOut,

@@ -1,3 +1,6 @@
+// Warehouses and vehicles. A warehouse flagged as a vehicle is a salesman's van:
+// stock is transferred onto it in the morning, sold from it through the field
+// app, and reconciled by stocktake at the end of the day.
 import { useState } from "react";
 import {
   Alert,

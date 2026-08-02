@@ -1,3 +1,9 @@
+// Distribution: planning a trip, loading it with invoices, sending the driver
+// out, and recording what was delivered or failed at each stop.
+//
+// Also holds the pickup queue for customers collecting from the warehouse
+// themselves. An invoice only becomes available here once the cashier has
+// confirmed it, so goods never leave against unsettled money.
 import { useState } from "react";
 import { useNavigate } from "react-router-dom";
 import {
@@ -29,6 +35,7 @@ export const STOP_STATUS = {
   failed: { label: "تعذر التسليم", tone: "red" },
 };
 
+/** One trip: its stops, the invoices loaded onto it, and its progress. */
 function TripDetails({ trip, invoices, canManage, onChanged, onError }) {
   const navigate = useNavigate();
   const [invoiceToAdd, setInvoiceToAdd] = useState("");
@@ -202,6 +209,7 @@ function TripDetails({ trip, invoices, canManage, onChanged, onError }) {
   );
 }
 
+/** Customers collecting from the warehouse rather than being delivered to. */
 function PickupQueue({ invoices, canManage, onChanged, onError }) {
   const navigate = useNavigate();
   // Pickup invoices, the ones still awaiting handover first.
