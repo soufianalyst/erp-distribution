@@ -8,10 +8,9 @@ the round, and a van sale must draw on the van rather than the main warehouse.
 from decimal import Decimal
 
 from httpx import AsyncClient
-from sqlalchemy import select, update
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.domain.models.inventory import Warehouse
 from app.domain.models.user import User, UserRole
 from app.tests.conftest import (
     DEFAULT_TAX_RATE_ID,
@@ -49,19 +48,19 @@ async def own_customer(
 async def assign_van(
     client: AsyncClient, admin: dict[str, str], db_session: AsyncSession, name: str = "مركبة المندوب"
 ) -> int:
-    """Create a warehouse, mark it a vehicle, and hand it to the salesman.
-
-    is_vehicle/assigned_to_id are set here rather than through the API because
-    vehicle assignment is an admin setup step outside this module's scope.
-    """
-    van_id = await create_warehouse(client, admin, name)
-    await db_session.execute(
-        update(Warehouse)
-        .where(Warehouse.id == van_id)
-        .values(is_vehicle=True, assigned_to_id=await salesman_id(db_session))
+    """Create a vehicle warehouse and hand it to the salesman, the way an admin
+    does it from the warehouses page."""
+    response = await client.post(
+        "/api/v1/inventory/warehouses",
+        headers=admin,
+        json={
+            "name": name,
+            "is_vehicle": True,
+            "assigned_to_id": await salesman_id(db_session),
+        },
     )
-    await db_session.commit()
-    return van_id
+    assert response.status_code == 201, response.text
+    return int(response.json()["data"]["id"])
 
 
 async def load_van(

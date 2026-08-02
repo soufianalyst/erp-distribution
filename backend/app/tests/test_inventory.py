@@ -674,3 +674,156 @@ class TestReports:
             "/api/v1/inventory/stock/reorder-suggestions", headers=admin
         )
         assert product["sku"] not in [i["sku"] for i in after.json()["data"]]
+
+
+class TestVehicleWarehouses:
+    """A van is a warehouse flagged as a vehicle and handed to a salesman.
+
+    Until this existed the columns could only be set with raw SQL, which made the
+    whole field app unreachable for anyone using the actual product.
+    """
+
+    async def _salesman_id(self, client: AsyncClient, admin: dict[str, str]) -> int:
+        users = (await client.get("/api/v1/auth/users", headers=admin)).json()["data"]
+        return next(u["id"] for u in users if u["role"] == "sales")
+
+    async def test_create_a_van_and_assign_its_driver(self, client: AsyncClient) -> None:
+        admin = await login(client, "admin", TEST_ADMIN_PASSWORD)
+        salesman_id = await self._salesman_id(client, admin)
+
+        response = await client.post(
+            "/api/v1/inventory/warehouses",
+            headers=admin,
+            json={"name": "سيارة ١", "is_vehicle": True, "assigned_to_id": salesman_id},
+        )
+        assert response.status_code == 201, response.text
+        van = response.json()["data"]
+        assert van["is_vehicle"] is True
+        assert van["assigned_to_id"] == salesman_id
+        # Resolved for the list, so the page needs no second call.
+        assert van["assigned_to_name"]
+
+    async def test_plain_warehouse_is_not_a_vehicle(self, client: AsyncClient) -> None:
+        admin = await login(client, "admin", TEST_ADMIN_PASSWORD)
+        warehouse_id = await create_warehouse(client, admin, "مستودع عادي")
+        listed = (await client.get("/api/v1/inventory/warehouses", headers=admin)).json()["data"]
+        row = next(w for w in listed if w["id"] == warehouse_id)
+        assert row["is_vehicle"] is False
+        assert row["assigned_to_id"] is None
+        assert row["assigned_to_name"] is None
+
+    async def test_only_a_salesman_can_be_given_a_van(self, client: AsyncClient) -> None:
+        """Driving a van means selling from it, which is the sales role's job."""
+        admin = await login(client, "admin", TEST_ADMIN_PASSWORD)
+        users = (await client.get("/api/v1/auth/users", headers=admin)).json()["data"]
+        admin_id = next(u["id"] for u in users if u["role"] == "admin")
+
+        response = await client.post(
+            "/api/v1/inventory/warehouses",
+            headers=admin,
+            json={"name": "سيارة خاطئة", "is_vehicle": True, "assigned_to_id": admin_id},
+        )
+        assert response.status_code == 400
+        assert "موظف مبيعات" in response.json()["message"]
+
+    async def test_a_fixed_warehouse_cannot_have_a_driver(
+        self, client: AsyncClient
+    ) -> None:
+        admin = await login(client, "admin", TEST_ADMIN_PASSWORD)
+        salesman_id = await self._salesman_id(client, admin)
+
+        response = await client.post(
+            "/api/v1/inventory/warehouses",
+            headers=admin,
+            json={"name": "مبنى بسائق", "is_vehicle": False, "assigned_to_id": salesman_id},
+        )
+        assert response.status_code == 400
+        assert "مركبة" in response.json()["message"]
+
+    async def test_unknown_driver_is_rejected(self, client: AsyncClient) -> None:
+        admin = await login(client, "admin", TEST_ADMIN_PASSWORD)
+        response = await client.post(
+            "/api/v1/inventory/warehouses",
+            headers=admin,
+            json={"name": "سيارة بلا سائق", "is_vehicle": True, "assigned_to_id": 9999},
+        )
+        assert response.status_code == 400
+
+    async def test_reassigning_and_unassigning_a_van(self, client: AsyncClient) -> None:
+        admin = await login(client, "admin", TEST_ADMIN_PASSWORD)
+        salesman_id = await self._salesman_id(client, admin)
+        van_id = (
+            await client.post(
+                "/api/v1/inventory/warehouses",
+                headers=admin,
+                json={"name": "سيارة ٢", "is_vehicle": True},
+            )
+        ).json()["data"]["id"]
+
+        assigned = await client.patch(
+            f"/api/v1/inventory/warehouses/{van_id}",
+            headers=admin,
+            json={"assigned_to_id": salesman_id},
+        )
+        assert assigned.status_code == 200, assigned.text
+        assert assigned.json()["data"]["assigned_to_id"] == salesman_id
+
+        # Omitting the field leaves the driver in place...
+        renamed = await client.patch(
+            f"/api/v1/inventory/warehouses/{van_id}",
+            headers=admin,
+            json={"location": "خط المدينة"},
+        )
+        assert renamed.json()["data"]["assigned_to_id"] == salesman_id
+
+        # ...while an explicit null takes the van off them.
+        cleared = await client.patch(
+            f"/api/v1/inventory/warehouses/{van_id}",
+            headers=admin,
+            json={"assigned_to_id": None},
+        )
+        assert cleared.json()["data"]["assigned_to_id"] is None
+
+    async def test_demoting_a_van_drops_its_driver(self, client: AsyncClient) -> None:
+        """A building has nobody to drive it, so the assignment cannot linger."""
+        admin = await login(client, "admin", TEST_ADMIN_PASSWORD)
+        salesman_id = await self._salesman_id(client, admin)
+        van_id = (
+            await client.post(
+                "/api/v1/inventory/warehouses",
+                headers=admin,
+                json={"name": "سيارة ٣", "is_vehicle": True, "assigned_to_id": salesman_id},
+            )
+        ).json()["data"]["id"]
+
+        demoted = await client.patch(
+            f"/api/v1/inventory/warehouses/{van_id}",
+            headers=admin,
+            json={"is_vehicle": False},
+        )
+        assert demoted.status_code == 200, demoted.text
+        assert demoted.json()["data"]["is_vehicle"] is False
+        assert demoted.json()["data"]["assigned_to_id"] is None
+
+    async def test_a_van_created_through_the_api_works_in_the_field(
+        self, client: AsyncClient
+    ) -> None:
+        """The point of the whole change: setup with no database access."""
+        admin = await login(client, "admin", TEST_ADMIN_PASSWORD)
+        salesman_id = await self._salesman_id(client, admin)
+        main_id = await create_warehouse(client, admin, "الرئيسي")
+        product = await create_product(client, admin, "VANSETUP-1", warehouse_id=main_id)
+        van_id = (
+            await client.post(
+                "/api/v1/inventory/warehouses",
+                headers=admin,
+                json={"name": "سيارة الجولة", "is_vehicle": True, "assigned_to_id": salesman_id},
+            )
+        ).json()["data"]["id"]
+        await receive(client, admin, product["id"], van_id, "VB-1", 120, "25")
+
+        salesman = await login(client, "salesman", TEST_SALES_PASSWORD)
+        van = await client.get("/api/v1/sales/field/van", headers=salesman)
+        assert van.status_code == 200, van.text
+        assert van.json()["data"]["warehouse_id"] == van_id
+        assert as_decimal(van.json()["data"]["lines"][0]["quantity"]) == Decimal("25")

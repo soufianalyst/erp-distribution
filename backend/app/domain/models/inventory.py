@@ -3,6 +3,7 @@
 import enum
 from datetime import date, datetime
 from decimal import ROUND_HALF_UP, Decimal
+from typing import TYPE_CHECKING
 
 from sqlalchemy import (
     Boolean,
@@ -18,6 +19,9 @@ from sqlalchemy import (
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.db.base import Base
+
+if TYPE_CHECKING:
+    from app.domain.models.user import User
 
 
 class StockAdjustmentReason(str, enum.Enum):
@@ -66,6 +70,15 @@ class Warehouse(Base):
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=func.now()
     )
+
+    # Eager: the warehouse list names the driver, and a lazy load there would
+    # be a query per row — and impossible under an async session anyway.
+    assigned_to: Mapped["User | None"] = relationship(lazy="selectin")
+
+    @property
+    def assigned_to_name(self) -> str | None:
+        """Driver's name for the warehouse list, without a second lookup."""
+        return self.assigned_to.full_name if self.assigned_to else None
 
 
 class Product(Base):

@@ -16,11 +16,18 @@ from app.domain.models.inventory import (
 class WarehouseCreate(BaseModel):
     name: str = Field(min_length=2, max_length=100)
     location: str | None = Field(default=None, max_length=200)
+    # A vehicle carries stock on a sales round rather than standing still; the
+    # salesman it is assigned to sells from it in the field app.
+    is_vehicle: bool = False
+    assigned_to_id: int | None = None
 
 
 class WarehouseUpdate(BaseModel):
     name: str | None = Field(default=None, min_length=2, max_length=100)
     location: str | None = Field(default=None, max_length=200)
+    is_vehicle: bool | None = None
+    # Explicit null unassigns the vehicle; omitting the field leaves it alone.
+    assigned_to_id: int | None = None
     is_active: bool | None = None
 
 
@@ -30,6 +37,10 @@ class WarehouseOut(BaseModel):
     id: int
     name: str
     location: str | None
+    is_vehicle: bool
+    assigned_to_id: int | None
+    # Resolved so the list can name the driver without a second call.
+    assigned_to_name: str | None
     is_active: bool
 
 
