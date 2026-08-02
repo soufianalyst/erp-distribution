@@ -29,3 +29,6 @@ frontend/dist/
 # Local-only capture bootstrap for generating manual screenshots.
 # Seeds a session from the URL into localStorage — must never ship.
 frontend/public/_shot.html
+
+# Generated intermediate HTML for the manual PDF
+docs/user-manual/.build/
