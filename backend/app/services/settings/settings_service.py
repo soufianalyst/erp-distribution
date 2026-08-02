@@ -145,18 +145,22 @@ class SettingsService:
         self, data: CompanySettingsUpdate
     ) -> CompanySettings:
         company = await self.get_company_settings()
+        sent = data.model_fields_set
+
+        # Optional fields distinguish "not sent" from an explicit null, so the
+        # panel can actually clear one — emptying an address, or picking
+        # "— لم تُحدد —" for the country. Treating null as "leave alone" here
+        # would make those fields set-once.
+        for field in ("tagline", "address", "phone", "tax_number"):
+            if field in sent:
+                setattr(company, field, getattr(data, field))
+        if "country_code" in sent:
+            company.country_code = self._validate_country(data.country_code)
+
+        # Name and currency are required columns: null means "leave alone"
+        # because there is no valid empty value to fall back to.
         if data.name is not None:
             company.name = data.name
-        if data.tagline is not None:
-            company.tagline = data.tagline
-        if data.address is not None:
-            company.address = data.address
-        if data.phone is not None:
-            company.phone = data.phone
-        if data.tax_number is not None:
-            company.tax_number = data.tax_number
-        if data.country_code is not None:
-            company.country_code = self._validate_country(data.country_code)
         if data.currency_code is not None:
             company.currency_code = data.currency_code
         if data.currency_symbol is not None:

@@ -562,3 +562,90 @@ class TestTaxRateCountryScoping:
         assert response.status_code == 201, response.text
         taxes = response.json()["data"]["taxes"]
         assert [t["name"] for t in taxes] == ["ضريبة سعودية"]
+
+
+class TestClearingOptionalCompanyFields:
+    """An optional field must be clearable, not set-once.
+
+    Every field here used to apply only when non-null, which silently made
+    "— لم تُحدد —" and an emptied address do nothing at all.
+    """
+
+    async def test_explicit_null_clears_but_omitting_preserves(
+        self, client: AsyncClient
+    ) -> None:
+        admin = await login(client, "admin", TEST_ADMIN_PASSWORD)
+        filled = await client.put(
+            "/api/v1/settings/company",
+            headers=admin,
+            json={
+                "country_code": "SA",
+                "address": "شارع الملك فهد",
+                "phone": "0500000000",
+            },
+        )
+        assert filled.status_code == 200, filled.text
+
+        # Omitting a field leaves it alone.
+        untouched = await client.put(
+            "/api/v1/settings/company", headers=admin, json={"tax_number": "3001"}
+        )
+        data = untouched.json()["data"]
+        assert data["country_code"] == "SA"
+        assert data["address"] == "شارع الملك فهد"
+
+        # Sending null clears it.
+        cleared = await client.put(
+            "/api/v1/settings/company",
+            headers=admin,
+            json={"country_code": None, "address": None, "phone": None},
+        )
+        data = cleared.json()["data"]
+        assert data["country_code"] is None
+        assert data["country_name"] is None
+        assert data["address"] is None
+        assert data["phone"] is None
+        # The one that was not mentioned this time survives.
+        assert data["tax_number"] == "3001"
+
+    async def test_required_fields_ignore_null(self, client: AsyncClient) -> None:
+        """Name and currency have no valid empty value to fall back to."""
+        admin = await login(client, "admin", TEST_ADMIN_PASSWORD)
+        before = (await client.get("/api/v1/settings/company", headers=admin)).json()["data"]
+
+        response = await client.put(
+            "/api/v1/settings/company",
+            headers=admin,
+            json={"name": None, "currency_code": None, "currency_symbol": None},
+        )
+        assert response.status_code == 200, response.text
+        data = response.json()["data"]
+        assert data["name"] == before["name"]
+        assert data["currency_code"] == before["currency_code"]
+        assert data["currency_symbol"] == before["currency_symbol"]
+
+    async def test_clearing_the_country_widens_tax_scope_again(
+        self, client: AsyncClient
+    ) -> None:
+        """With no country set, only universal taxes are unambiguous."""
+        admin = await login(client, "admin", TEST_ADMIN_PASSWORD)
+        await client.post(
+            "/api/v1/settings/tax-rates",
+            headers=admin,
+            json={"name": "ضريبة سعودية", "code": "SA_ONLY", "rate": "15", "country_code": "SA"},
+        )
+        await client.put(
+            "/api/v1/settings/company", headers=admin, json={"country_code": "SA"}
+        )
+        scoped = await client.get(
+            "/api/v1/settings/tax-rates", headers=admin, params={"in_scope_only": True}
+        )
+        assert "SA_ONLY" in [t["code"] for t in scoped.json()["data"]]
+
+        await client.put(
+            "/api/v1/settings/company", headers=admin, json={"country_code": None}
+        )
+        scoped = await client.get(
+            "/api/v1/settings/tax-rates", headers=admin, params={"in_scope_only": True}
+        )
+        assert "SA_ONLY" not in [t["code"] for t in scoped.json()["data"]]
