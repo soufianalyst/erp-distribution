@@ -19,7 +19,7 @@ const TIER_PRICE_FIELD = {
 
 const round2 = (n) => Math.round((Number(n) + Number.EPSILON) * 100) / 100;
 
-function ConnectionBar({ online, pending, syncing, onSync, snapshot }) {
+function ConnectionBar({ online, cacheAvailable, pending, syncing, onSync, snapshot }) {
   const failed = pending.filter((d) => d.last_error).length;
   return (
     <div className="sticky top-0 z-20 -mx-4 mb-4 flex flex-wrap items-center justify-between gap-2 bg-slate-900 px-4 py-3 text-slate-100 sm:-mx-6 sm:px-6">
@@ -32,7 +32,14 @@ function ConnectionBar({ online, pending, syncing, onSync, snapshot }) {
             {pending.length} بانتظار الرفع{failed ? ` (${failed} مرفوض)` : ""}
           </Badge>
         )}
-        {pending.length === 0 && online && <span className="text-xs">كل شيء مرفوع ✓</span>}
+        {pending.length === 0 && online && cacheAvailable && (
+          <span className="text-xs">كل شيء مرفوع ✓</span>
+        )}
+        {/* Without local storage the round cannot survive losing signal, so say
+            so plainly rather than let it fail silently out in the field. */}
+        {!cacheAvailable && (
+          <Badge tone="red">التخزين المحلي غير متاح — العمل بدون اتصال معطّل</Badge>
+        )}
       </div>
       <div className="flex items-center gap-2">
         {snapshot?.saved_at && (
@@ -90,8 +97,17 @@ function NewCustomerForm({ onQueued, onCancel }) {
 
 export default function FieldPage() {
   const { user } = useAuth();
-  const { online, snapshot, pending, syncing, lastResult, error, sync, refreshPending } =
-    useFieldSync();
+  const {
+    online,
+    cacheAvailable,
+    snapshot,
+    pending,
+    syncing,
+    lastResult,
+    error,
+    sync,
+    refreshPending,
+  } = useFieldSync();
 
   const [kind, setKind] = useState("van_sale");
   // A customer is either an existing one (id) or one queued on this device (uuid).
@@ -234,6 +250,7 @@ export default function FieldPage() {
     <div className="space-y-4">
       <ConnectionBar
         online={online}
+        cacheAvailable={cacheAvailable}
         pending={pending}
         syncing={syncing}
         onSync={sync}

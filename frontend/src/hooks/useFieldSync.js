@@ -30,9 +30,16 @@ export default function useFieldSync() {
   const [syncing, setSyncing] = useState(false);
   const [lastResult, setLastResult] = useState(null);
   const [error, setError] = useState(null);
+  // Whether this browser lets us keep a local copy at all. False means the app
+  // is usable, but only while there is a signal.
+  const [cacheAvailable, setCacheAvailable] = useState(true);
 
   const refreshPending = useCallback(async () => {
-    setPending(await queued());
+    try {
+      setPending(await queued());
+    } catch {
+      setCacheAvailable(false);
+    }
   }, []);
 
   /** Pull everything the round needs, so the app keeps working once signal drops. */
@@ -54,13 +61,21 @@ export default function useFieldSync() {
         van: van?.data?.data ?? null,
         taxRates: taxRates.data.data,
       };
-      await Promise.all(
-        Object.entries(SNAPSHOT_KEYS).map(([key, storeKey]) =>
-          saveSnapshot(storeKey, fresh[key])
-        )
-      );
+      // Show it before caching it. Writing to IndexedDB can fail — private
+      // browsing, a full quota, storage switched off — and that must not cost
+      // the salesman a screen whose data has already arrived. The round then
+      // works online only, which the "no cached copy" notice makes plain.
       setSnapshot({ ...fresh, saved_at: new Date().toISOString() });
       setError(null);
+      try {
+        await Promise.all(
+          Object.entries(SNAPSHOT_KEYS).map(([key, storeKey]) =>
+            saveSnapshot(storeKey, fresh[key])
+          )
+        );
+      } catch {
+        setCacheAvailable(false);
+      }
     } catch (err) {
       setError(apiMessage(err));
     }
@@ -68,12 +83,19 @@ export default function useFieldSync() {
 
   /** Load the cached copy first so the screen is usable before any request. */
   const loadCached = useCallback(async () => {
-    const entries = await Promise.all(
-      Object.entries(SNAPSHOT_KEYS).map(async ([key, storeKey]) => [
-        key,
-        await readSnapshot(storeKey),
-      ])
-    );
+    let entries;
+    try {
+      entries = await Promise.all(
+        Object.entries(SNAPSHOT_KEYS).map(async ([key, storeKey]) => [
+          key,
+          await readSnapshot(storeKey),
+        ])
+      );
+    } catch {
+      // No local store to read from; the live fetch below is the only source.
+      setCacheAvailable(false);
+      return;
+    }
     const cached = Object.fromEntries(
       entries.map(([key, row]) => [key, row?.value ?? null])
     );
@@ -160,6 +182,7 @@ export default function useFieldSync() {
 
   return {
     online,
+    cacheAvailable,
     snapshot,
     pending,
     syncing,
