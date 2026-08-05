@@ -18,7 +18,12 @@ from sqlalchemy import select
 
 from app.api.schemas.auth import UserCreate
 from app.api.schemas.delivery import StopStatusUpdate, TripCreate
-from app.api.schemas.inventory import ProductCreate, ProductUnitIn, WarehouseCreate
+from app.api.schemas.inventory import (
+    ProductCreate,
+    ProductUnitIn,
+    StockTransferRequest,
+    WarehouseCreate,
+)
 from app.api.schemas.purchases import (
     PurchaseInvoiceCreate,
     PurchaseLineIn,
@@ -26,6 +31,7 @@ from app.api.schemas.purchases import (
 )
 from app.api.schemas.sales import (
     CustomerCreate,
+    RoundVanSettleIn,
     CustomerPaymentCreate,
     ReturnLineIn,
     SalesInvoiceCreate,
@@ -38,6 +44,9 @@ from app.domain.models.accounting import JournalEntry
 from app.domain.models.inventory import Product
 from app.domain.models.user import User, UserRole
 from app.services.auth.auth_service import AuthService
+from app.services.inventory.stock_service import StockService
+from app.services.cashier.cashier_service import CashierService
+from app.services.sales.round_settlement_service import RoundSettlementService
 from app.services.delivery.delivery_service import DeliveryService
 from app.services.inventory.product_service import ProductService
 from app.services.inventory.warehouse_service import WarehouseService
@@ -741,6 +750,104 @@ async def main() -> None:
                 except AppException:
                     continue
         print(f"  {pickup_count} pickups handed over")
+
+        # --- The salesman's van: field sales and a closed round ---
+        #
+        # Added because the seed predates vans entirely, so a freshly seeded
+        # database demonstrated every screen except the two newest ones — the
+        # field app and the round close both sat empty on a database that was
+        # otherwise full of a year's trading.
+        #
+        # Two rounds are produced on purpose: yesterday's is collected and closed
+        # so the history table has a real record, and today's is left open with
+        # its cash uncollected so the dashboard alert has something to fire on.
+        # A seed that shows only the happy path teaches the wrong thing.
+        print("Setting up a salesman's van...")
+        cashier_service = CashierService(session)
+        stock_service = StockService(session)
+        settlement_service = RoundSettlementService(session)
+
+        van = await warehouse_service.create_warehouse(
+            WarehouseCreate(
+                name="سيارة المندوب أحمد",
+                location="جولة المنطقة الشرقية",
+                is_vehicle=True,
+                assigned_to_id=rep_ids[0],
+            )
+        )
+        rep = await session.get(User, rep_ids[0])
+        main_id = warehouse_ids["الرئيسي"]
+
+        # Load the van from the main store. Fast-moving lines only — a van carries
+        # what sells, not the whole catalogue.
+        loadable = [
+            rec for rec in product_records.values()
+            if rec["spec"]["warehouse"] == "الرئيسي"
+        ][:8]
+        loaded = []
+        for rec in loadable:
+            try:
+                await stock_service.transfer_stock(
+                    StockTransferRequest(
+                        product_id=rec["product"].id,
+                        from_warehouse_id=main_id,
+                        to_warehouse_id=van.id,
+                        quantity=Decimal("40"),
+                    )
+                )
+                loaded.append(rec)
+            except AppException:
+                continue
+        print(f"  van loaded with {len(loaded)} product lines")
+
+        van_customers = [rec["customer"] for rec in customer_records[:6]]
+        rounds_made = 0
+        for day_offset, collect_it in ((1, True), (0, False)):
+            round_date = TODAY - timedelta(days=day_offset)
+            day_invoices = []
+            for customer in van_customers[: 3 if collect_it else 2]:
+                rec = random.choice(loaded) if loaded else None
+                if rec is None:
+                    break
+                try:
+                    invoice = await sales_service.create_invoice(
+                        SalesInvoiceCreate(
+                            customer_id=customer.id,
+                            payment_method="cash",
+                            fulfillment="pickup",
+                            apply_vat=True,
+                            lines=[
+                                SalesLineIn(
+                                    product_id=rec["product"].id,
+                                    quantity=Decimal(str(random.randint(2, 6))),
+                                )
+                            ],
+                        ),
+                        rep,
+                        source_warehouse_id=van.id,
+                    )
+                except AppException:
+                    continue
+                await patch_invoice_date(session, invoice, round_date)
+                day_invoices.append(invoice)
+
+            if not day_invoices:
+                continue
+
+            if collect_it:
+                # Cash reaches the drawer, so the round can legitimately close.
+                for invoice in day_invoices:
+                    await cashier_service.collect_payment(invoice.id, invoice.total, admin)
+                await settlement_service.settle_van(
+                    RoundVanSettleIn(
+                        warehouse_id=van.id,
+                        round_date=round_date,
+                        notes="سُلّم النقد كاملاً ولا فروقات",
+                    ),
+                    admin,
+                )
+                rounds_made += 1
+        print(f"  {rounds_made} round(s) settled, today's left open for the alert")
 
         print("Done.")
 
