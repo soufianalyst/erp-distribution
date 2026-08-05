@@ -9,6 +9,13 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 # real SECRET_KEY in .env.
 INSECURE_DEFAULT_SECRET_KEY = "dev-only-secret-key-change-me-in-production-0123456789"
 
+# The password the first admin is seeded with. Published in .env.example and in
+# this repository, so it is public knowledge — get_settings() refuses to start on
+# it outside debug for the same reason it refuses the default SECRET_KEY. A
+# forgotten secret key is a silent weakness; a forgotten admin password is an
+# unlocked front door to every screen in the system.
+INSECURE_DEFAULT_ADMIN_PASSWORD = "Admin@1234"
+
 
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(
@@ -36,7 +43,7 @@ class Settings(BaseSettings):
 
     # First admin account, seeded on startup when the users table is empty.
     FIRST_ADMIN_USERNAME: str = "admin"
-    FIRST_ADMIN_PASSWORD: str = "Admin@1234"
+    FIRST_ADMIN_PASSWORD: str = INSECURE_DEFAULT_ADMIN_PASSWORD
     FIRST_ADMIN_FULL_NAME: str = "مدير النظام"
 
     # Comma-separated list of allowed CORS origins for the React frontend.
@@ -45,11 +52,41 @@ class Settings(BaseSettings):
 
 @lru_cache
 def get_settings() -> Settings:
-    """Load settings once, refusing to start on the default secret outside debug."""
+    """Load settings once, refusing to start on dev-only defaults outside debug.
+
+    Every check here fails loudly at startup rather than warning, because each one
+    guards something whose absence is invisible once the system is running: nobody
+    notices a weak signing key, a public admin password, or a schema quietly
+    diverging from its migrations until it has already cost something.
+    """
     settings = Settings()
-    if not settings.DEBUG and settings.SECRET_KEY == INSECURE_DEFAULT_SECRET_KEY:
+    if settings.DEBUG:
+        return settings
+
+    problems: list[str] = []
+    if settings.SECRET_KEY == INSECURE_DEFAULT_SECRET_KEY:
+        problems.append(
+            "SECRET_KEY still has its insecure default value — set a real one "
+            "(e.g. `python -c \"import secrets; print(secrets.token_urlsafe(48))\"`)."
+        )
+    if settings.FIRST_ADMIN_PASSWORD == INSECURE_DEFAULT_ADMIN_PASSWORD:
+        problems.append(
+            "FIRST_ADMIN_PASSWORD is still the documented default, which is public "
+            "knowledge — set a real password before the first admin is created."
+        )
+    if settings.AUTO_CREATE_TABLES:
+        # This one is not hypothetical. AUTO_CREATE_TABLES creates *missing*
+        # tables and never alters existing ones, so it hides schema drift instead
+        # of fixing it: the app starts happily against a database that no
+        # migration has ever produced, and the mismatch only surfaces later as a
+        # failing insert. Production schema changes go through Alembic.
+        problems.append(
+            "AUTO_CREATE_TABLES must be false outside debug — it masks schema "
+            "drift instead of migrating. Run `alembic upgrade head` instead."
+        )
+    if problems:
         raise RuntimeError(
-            "SECRET_KEY still has its insecure default value. Set a real "
-            "SECRET_KEY in .env before running with DEBUG=false."
+            "Refusing to start with DEBUG=false and dev-only settings:\n  - "
+            + "\n  - ".join(problems)
         )
     return settings
