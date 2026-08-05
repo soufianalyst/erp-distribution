@@ -23,6 +23,7 @@ import PrintPickupPrepPage from "./pages/PrintPickupPrepPage";
 import PrintStocktakePage from "./pages/PrintStocktakePage";
 import ProductsPage from "./pages/ProductsPage";
 import PurchasesPage from "./pages/PurchasesPage";
+import RoundsPage from "./pages/RoundsPage";
 import SalesPage from "./pages/SalesPage";
 import SettingsPage from "./pages/SettingsPage";
 import StockPage from "./pages/StockPage";
@@ -130,6 +131,14 @@ export default function App() {
                 element={
                   <RequirePerm perm="cashier.view">
                     <CashierPage />
+                  </RequirePerm>
+                }
+              />
+              <Route
+                path="/rounds"
+                element={
+                  <RequirePerm perm="sales.round_settle">
+                    <RoundsPage />
                   </RequirePerm>
                 }
               />

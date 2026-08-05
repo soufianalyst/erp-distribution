@@ -17,6 +17,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from app.api.schemas.analytics import AlertGroupOut, AlertItemOut, AlertsOut
+from app.core import arabic
 from app.domain.models.inventory import Stocktake, StocktakeStatus, Warehouse
 from app.domain.models.purchases import (
     PurchaseOrder,
@@ -25,6 +26,7 @@ from app.domain.models.purchases import (
 )
 from app.services.analytics.analytics_service import AnalyticsService
 from app.services.inventory.stock_service import StockService
+from app.services.sales.round_settlement_service import RoundSettlementService
 
 # How many examples to carry per group; the dashboard shows a preview, not a report.
 PREVIEW_LIMIT = 5
@@ -37,6 +39,7 @@ class AlertsService:
         self.session = session
         self.stock = StockService(session)
         self.analytics = AnalyticsService(session)
+        self.settlements = RoundSettlementService(session)
 
     async def alerts(self, permissions: set[str]) -> AlertsOut:
         """Every alert the caller is able to act on, worst first."""
@@ -49,6 +52,8 @@ class AlertsService:
             groups.extend(await self._overdue_order_group())
         if "stock.stocktake" in permissions:
             groups.extend(await self._open_stocktake_group())
+        if "sales.round_settle" in permissions:
+            groups.extend(await self._unsettled_round_group())
         if "customers.view" in permissions:
             groups.extend(await self._credit_group())
 
@@ -225,6 +230,54 @@ class AlertsService:
                         ),
                     )
                     for stocktake, warehouse_name in rows[:PREVIEW_LIMIT]
+                ],
+            )
+        ]
+
+    async def _unsettled_round_group(self) -> list[AlertGroupOut]:
+        """Vans that sold today and have not been closed off.
+
+        This is the alert the settlement feature exists for. Before it, a round
+        that was never closed looked exactly like a round that had no sales — the
+        absence of a record is invisible by nature, so nothing on any screen could
+        distinguish "nothing happened" from "nobody checked". A van with uncollected
+        cash is the sharper case and is escalated: that is money in a pocket
+        overnight, not paperwork.
+        """
+        pending = await self.settlements.unsettled_rounds()
+        if not pending:
+            return []
+        owing = [r for r in pending if r["cash_outstanding"] > 0]
+        if owing:
+            severity, rows = "critical", owing
+            label = "جولات لم تُسوَّ ونقدها لم يُحصَّل"
+            hint = (
+                "حصّل نقد الجولة من صندوق الكاشير ثم أقفلها — "
+                "النقد غير المحصَّل يمنع الإقفال."
+            )
+        else:
+            severity, rows = "warning", pending
+            label = "جولات مناديب لم تُسوَّ بعد"
+            hint = "اجرد المركبة وأقفل الجولة لتثبيت مبيعات اليوم."
+        return [
+            AlertGroupOut(
+                key="unsettled_rounds",
+                label=label,
+                severity=severity,
+                count=len(rows),
+                hint=hint,
+                route="/rounds",
+                items=[
+                    AlertItemOut(
+                        label=r["warehouse_name"],
+                        detail=f"{r['salesman_name']} — {arabic.invoices(r['invoice_count'])}",
+                        value=(
+                            f"غير محصَّل {r['cash_outstanding']}"
+                            if r["cash_outstanding"] > 0
+                            else "جاهزة للإقفال"
+                        ),
+                    )
+                    for r in rows[:PREVIEW_LIMIT]
                 ],
             )
         ]

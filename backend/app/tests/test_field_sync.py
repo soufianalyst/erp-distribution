@@ -11,6 +11,7 @@ from httpx import AsyncClient
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.domain.models.sales import SalesInvoice, SalesInvoiceLine
 from app.domain.models.user import User, UserRole
 from app.tests.conftest import (
     DEFAULT_TAX_RATE_ID,
@@ -152,6 +153,34 @@ class TestVanSales:
         # 30 came off the van; the main warehouse is untouched.
         assert by_batch["VAN-1"] == Decimal("50")
         assert by_batch["MAIN-1"] == Decimal("500")
+
+        # And the invoice must *say* so, not merely behave so. The stock moving
+        # correctly while the line recorded the product's home warehouse is a real
+        # bug this suite once missed: every field sale was attributed to the main
+        # store, which silently breaks per-warehouse reporting and made it
+        # impossible to tell which invoices belonged to a van's round.
+        lines = (
+            await db_session.execute(
+                select(SalesInvoiceLine).where(
+                    SalesInvoiceLine.product_id == product["id"]
+                )
+            )
+        ).scalars().all()
+        assert lines, "expected the sale to have produced invoice lines"
+        assert {line.warehouse_id for line in lines} == {van_id}
+
+        # And the invoice *header*, not only its lines. DeliveryService reads the
+        # header to decide which warehouse a trip ships from, and refuses an
+        # invoice whose warehouse differs from the trip's — so a van sale carrying
+        # the main store on its header would be rejected from its own van's trip
+        # and accepted onto the main store's.
+        invoice_ids = {line.invoice_id for line in lines}
+        headers = (
+            await db_session.execute(
+                select(SalesInvoice).where(SalesInvoice.id.in_(invoice_ids))
+            )
+        ).scalars().all()
+        assert {header.warehouse_id for header in headers} == {van_id}
 
     async def test_selling_more_than_the_van_holds_is_refused(
         self, client: AsyncClient, db_session: AsyncSession

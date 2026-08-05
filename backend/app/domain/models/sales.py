@@ -337,6 +337,155 @@ class SalesReturnLine(Base):
     sales_return: Mapped[SalesReturn] = relationship(back_populates="lines")
 
 
+class RoundSettlementStatus(str, enum.Enum):
+    OPEN = "open"  # مفتوحة — الجولة جارية أو بانتظار التسوية
+    SETTLED = "settled"  # مُسوّاة — سُلّم النقد وسُوّي المخزون ووُقّعت
+    CANCELLED = "cancelled"  # ملغاة — أُهملت دون تسوية
+
+
+class RoundSettlement(Base):
+    """تسوية جولة مندوب — closing the day for one van.
+
+    A salesman drives off with stock every morning and comes back with cash, an
+    emptier van, and a set of invoices. Each of those three was already tracked
+    separately — the load-out is a transfer, the sales are invoices, the cash is
+    collected by the cashier, the remaining stock is a stocktake — but nothing
+    tied them together, so nobody could say whether a given round was *closed*.
+
+    This record is that missing tie. Two deliberate constraints shape it:
+
+    **It reports and gates; it never posts money.** Cash from van sales already
+    flows through the cashier gate on each invoice, and the cashier's collection
+    is the single place a cash movement is written. If settling also posted cash,
+    every round would be counted twice. So closing a round *requires* that its
+    cash invoices are already collected and records what it found — it does not
+    move a riyal itself.
+
+    **Stock variance belongs to the stocktake.** Posting a count already applies
+    differences per batch and nets one journal entry against 5040. Settlement
+    links to that stocktake rather than reimplementing it, because two code paths
+    adjusting the same batches is how ledgers drift.
+
+    The figures are snapshotted on settling rather than computed on read: they are
+    what was true at sign-off, and must not silently change afterwards if a late
+    invoice is edited.
+    """
+
+    __tablename__ = "round_settlements"
+
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    # The van. Always a warehouse with is_vehicle=true — enforced in the service.
+    warehouse_id: Mapped[int] = mapped_column(
+        ForeignKey("warehouses.id"), nullable=False, index=True
+    )
+    salesman_id: Mapped[int] = mapped_column(
+        ForeignKey("users.id"), nullable=False, index=True
+    )
+    round_date: Mapped[date] = mapped_column(Date, nullable=False, index=True)
+    status: Mapped[RoundSettlementStatus] = mapped_column(
+        # values_callable is not optional here, and the omission was a live bug:
+        # without it SQLAlchemy sends the member *name* ("OPEN") while the type
+        # created by the migration holds the lowercase *values*, so Postgres
+        # rejected every insert. The tests could not catch it — they build the
+        # schema from this same metadata, so the type and the parameter agreed
+        # with each other and disagreed only with the migrated database.
+        Enum(
+            RoundSettlementStatus,
+            name="roundsettlementstatus",
+            values_callable=lambda e: [m.value for m in e],
+        ),
+        nullable=False,
+        default=RoundSettlementStatus.OPEN,
+    )
+
+    # --- Snapshot of the round, filled in on settling ---
+    invoice_count: Mapped[int] = mapped_column(nullable=False, default=0)
+    cash_sales_total: Mapped[Decimal] = mapped_column(
+        Numeric(14, 2), nullable=False, default=Decimal("0")
+    )
+    card_sales_total: Mapped[Decimal] = mapped_column(
+        Numeric(14, 2), nullable=False, default=Decimal("0")
+    )
+    credit_sales_total: Mapped[Decimal] = mapped_column(
+        Numeric(14, 2), nullable=False, default=Decimal("0")
+    )
+    # What the cashier has actually taken in against this round's invoices.
+    cash_collected_total: Mapped[Decimal] = mapped_column(
+        Numeric(14, 2), nullable=False, default=Decimal("0")
+    )
+    # What is still owed — the reason a round cannot be settled while non-zero.
+    cash_outstanding_total: Mapped[Decimal] = mapped_column(
+        Numeric(14, 2), nullable=False, default=Decimal("0")
+    )
+
+    # The count that reconciled the van, when one was done.
+    stocktake_id: Mapped[int | None] = mapped_column(
+        ForeignKey("stocktakes.id"), nullable=True, index=True
+    )
+    # Value of that count's differences: negative is a shortfall on the van.
+    stock_variance_value: Mapped[Decimal] = mapped_column(
+        Numeric(14, 2), nullable=False, default=Decimal("0")
+    )
+    # And the difference in units. Stored alongside the value because the value is
+    # priced at the batch's cost and is therefore *zero whenever that cost is
+    # unknown* — recording only money would leave a genuine shortfall of goods
+    # looking like a perfectly balanced round.
+    stock_variance_qty: Mapped[Decimal] = mapped_column(
+        Numeric(14, 3), nullable=False, default=Decimal("0")
+    )
+
+    notes: Mapped[str | None] = mapped_column(String(500))
+
+    opened_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+    opened_by: Mapped[int | None] = mapped_column(ForeignKey("users.id"))
+    settled_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    settled_by: Mapped[int | None] = mapped_column(ForeignKey("users.id"))
+    cancelled_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    cancelled_by: Mapped[int | None] = mapped_column(ForeignKey("users.id"))
+
+    @property
+    def total_sales(self) -> Decimal:
+        """All sales on the round, however they were paid."""
+        return self.cash_sales_total + self.card_sales_total + self.credit_sales_total
+
+    @property
+    def is_balanced(self) -> bool:
+        """Whether nothing is left hanging: no cash owed and no stock difference.
+
+        Checks the *quantity*, not the value: an unvalued shortfall is still a
+        shortfall, and testing the money alone would call such a round balanced.
+
+        A settled round can still be unbalanced — a shortfall may be accepted and
+        written off deliberately — so this describes the round, it does not gate
+        it. The gate on outstanding cash lives in the service.
+        """
+        return self.cash_outstanding_total == 0 and self.stock_variance_qty == 0
+
+    # Eagerly loaded rather than lazy: the names are wanted on every read of a
+    # settlement, and `lazy="selectin"` both avoids N+1 on the history list and
+    # avoids a lazy load firing outside the async session, which raises.
+    #
+    # `foreign_keys` is required, not decorative — this table has four columns
+    # pointing at users.id (the salesman plus who opened, settled and cancelled
+    # it), so SQLAlchemy cannot tell which one this relationship follows.
+    warehouse: Mapped["Warehouse"] = relationship(  # noqa: F821 — inventory module
+        "Warehouse", lazy="selectin", foreign_keys=[warehouse_id]
+    )
+    salesman: Mapped["User"] = relationship(  # noqa: F821 — user module
+        "User", lazy="selectin", foreign_keys=[salesman_id]
+    )
+
+    @property
+    def warehouse_name(self) -> str | None:
+        return self.warehouse.name if self.warehouse else None
+
+    @property
+    def salesman_name(self) -> str | None:
+        return self.salesman.full_name if self.salesman else None
+
+
 class CustomerPayment(Base):
     """سند قبض — a collection from a customer against outstanding balance."""
 

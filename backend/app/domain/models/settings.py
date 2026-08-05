@@ -62,6 +62,13 @@ class CompanySettings(Base):
     currency_symbol: Mapped[str] = mapped_column(
         String(10), nullable=False, default="ر.س"
     )
+    # Value of stock difference a salesman's round may be settled with before a
+    # supervisor's approval is required. Configurable because "negligible" is a
+    # business judgement: what a grocery shrugs at, a wholesaler investigates.
+    # Zero means every non-zero difference needs approval.
+    round_variance_approval_limit: Mapped[Decimal] = mapped_column(
+        Numeric(14, 2), nullable=False, default=Decimal("50.00"), server_default="50.00"
+    )
 
     @property
     def country_name(self) -> str | None:

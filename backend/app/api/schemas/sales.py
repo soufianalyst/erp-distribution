@@ -11,6 +11,7 @@ from app.domain.models.sales import (
     PriceTier,
     QuotationStatus,
     ReturnReason,
+    RoundSettlementStatus,
     SalesPaymentMethod,
 )
 
@@ -361,3 +362,124 @@ class FieldVanOut(BaseModel):
     warehouse_id: int
     warehouse_name: str
     lines: list[FieldVanStockLineOut]
+
+
+# --- Round settlement (تسوية جولة المندوب) ---
+
+
+class RoundSettlementOpenIn(BaseModel):
+    """Open a round for a van. The date defaults to today on the server."""
+
+    warehouse_id: int
+    round_date: date | None = None
+    notes: str | None = Field(default=None, max_length=500)
+
+
+class RoundSettlementSettleIn(BaseModel):
+    """Close a round.
+
+    `notes` becomes mandatory once there is a stock difference — the service
+    enforces that, not this schema, because whether a difference exists is only
+    knowable by looking at the linked count.
+    """
+
+    stocktake_id: int | None = None
+    notes: str | None = Field(default=None, max_length=500)
+
+
+class RoundVanSettleIn(RoundSettlementSettleIn):
+    """Close a van's day in one step, opening the round first if none is open.
+
+    Opening a round separately stays available for anyone who wants the morning
+    handover recorded explicitly, but it is not required: the step recorded only a
+    date and a note, and the expected-versus-counted comparison it might have
+    justified is already what the stocktake provides.
+    """
+
+    warehouse_id: int
+    round_date: date | None = None
+
+
+class RoundInvoiceOut(BaseModel):
+    """One invoice belonging to the round, with its collection state."""
+
+    model_config = ConfigDict(from_attributes=True)
+
+    id: int
+    customer_name: str
+    payment_method: SalesPaymentMethod
+    total: Decimal
+    collected: Decimal
+    outstanding: Decimal
+    is_collected: bool
+
+
+class RoundPositionOut(BaseModel):
+    """The live position of a round — computed on read, never stored.
+
+    This is what the settlement screen shows *before* closing: what has been
+    sold, what the cashier has taken in, and what is still owed. The settled
+    record keeps its own snapshot of these figures, because they are the numbers
+    that were true at sign-off and must not drift afterwards.
+    """
+
+    warehouse_id: int
+    warehouse_name: str
+    salesman_id: int
+    salesman_name: str
+    round_date: date
+
+    invoice_count: int
+    cash_sales_total: Decimal
+    card_sales_total: Decimal
+    credit_sales_total: Decimal
+    total_sales: Decimal
+
+    # Cash and card both have to reach the drawer; credit is the customer's debt
+    # and is deliberately excluded from what the salesman owes tonight.
+    cash_collected_total: Decimal
+    cash_outstanding_total: Decimal
+
+    stocktake_id: int | None
+    stock_variance_value: Decimal
+    stock_variance_qty: Decimal
+    # Whether any counted quantity differed. Separate from the value because the
+    # value is zero when the batch has no cost — an unvalued shortfall is real.
+    has_stock_variance: bool
+    variance_needs_approval: bool
+    variance_approval_limit: Decimal
+
+    can_settle: bool
+    blockers: list[str]
+
+    invoices: list[RoundInvoiceOut]
+
+
+class RoundSettlementOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: int
+    warehouse_id: int
+    warehouse_name: str | None = None
+    salesman_id: int
+    salesman_name: str | None = None
+    round_date: date
+    status: RoundSettlementStatus
+
+    invoice_count: int
+    cash_sales_total: Decimal
+    card_sales_total: Decimal
+    credit_sales_total: Decimal
+    total_sales: Decimal
+    cash_collected_total: Decimal
+    cash_outstanding_total: Decimal
+
+    stocktake_id: int | None
+    stock_variance_value: Decimal
+    stock_variance_qty: Decimal
+    is_balanced: bool
+
+    notes: str | None
+    opened_at: datetime
+    settled_at: datetime | None
+    cancelled_at: datetime | None

@@ -16,6 +16,7 @@ const NAV_ITEMS = [
   { to: "/customers", label: "العملاء", icon: "🧑‍💼", perm: "customers.view" },
   { to: "/sales", label: "فواتير المبيعات", icon: "🧾", perm: "sales.view" },
   { to: "/field", label: "جولة المندوب", icon: "🚐", perm: "sales.field_sync" },
+  { to: "/rounds", label: "تسوية الجولات", icon: "🧮", perm: "sales.round_settle" },
   { to: "/cashier", label: "الصندوق", icon: "💰", perm: "cashier.view" },
   { to: "/delivery", label: "التوزيع والتسليم", icon: "🚛", perm: "delivery.view" },
   { to: "/suppliers", label: "الموردون", icon: "🚚", perm: "suppliers.view" },

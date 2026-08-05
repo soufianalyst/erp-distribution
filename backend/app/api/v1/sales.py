@@ -11,6 +11,11 @@ from app.api.schemas.sales import (
     FieldSyncIn,
     FieldSyncOut,
     FieldVanOut,
+    RoundPositionOut,
+    RoundSettlementOpenIn,
+    RoundSettlementOut,
+    RoundSettlementSettleIn,
+    RoundVanSettleIn,
     CommissionReportOut,
     CustomerCreate,
     CustomerOut,
@@ -28,7 +33,9 @@ from app.api.schemas.sales import (
 )
 from app.db.session import get_db
 from app.domain.models.user import User
+from app.domain.models.sales import RoundSettlementStatus
 from app.services.sales.field_sync_service import FieldSyncService
+from app.services.sales.round_settlement_service import RoundSettlementService
 from app.services.sales.sales_service import SalesService
 
 router = APIRouter(prefix="/sales", tags=["Sales"])
@@ -358,4 +365,97 @@ async def sync_field_round(
             + (f"، وتعذّر حفظ {result.failed_count}" if result.failed_count else "")
             + "."
         ),
+    )
+
+
+# --- Round settlement (تسوية جولة المندوب) ---
+@router.get("/rounds", response_model=APIResponse[list[RoundSettlementOut]])
+async def list_rounds(
+    warehouse_id: int | None = None,
+    salesman_id: int | None = None,
+    status: RoundSettlementStatus | None = None,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(require_permissions("sales.round_settle")),
+) -> APIResponse[list[RoundSettlementOut]]:
+    """تسويات جولات المناديب، الأحدث أولاً، مع إمكانية التصفية بالمركبة أو الحالة."""
+    rounds = await RoundSettlementService(db).list_settlements(
+        warehouse_id=warehouse_id, salesman_id=salesman_id, status=status
+    )
+    return APIResponse(data=[RoundSettlementOut.model_validate(r) for r in rounds])
+
+
+@router.get("/rounds/position", response_model=APIResponse[RoundPositionOut])
+async def round_position(
+    warehouse_id: int,
+    round_date: date | None = None,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(require_permissions("sales.round_settle")),
+) -> APIResponse[RoundPositionOut]:
+    """موقف الجولة الآن: ما بيع، وما حُصّل، وما بقي — وأسباب تعذّر الإقفال إن وُجدت."""
+    position = await RoundSettlementService(db).position(warehouse_id, round_date)
+    return APIResponse(data=position)
+
+
+@router.post("/rounds", response_model=APIResponse[RoundSettlementOut], status_code=201)
+async def open_round(
+    body: RoundSettlementOpenIn,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(require_permissions("sales.round_settle")),
+) -> APIResponse[RoundSettlementOut]:
+    """فتح جولة لمركبة. جولة مفتوحة واحدة لكل مركبة في وقت واحد."""
+    settlement = await RoundSettlementService(db).open_round(body, current_user)
+    return APIResponse(
+        data=RoundSettlementOut.model_validate(settlement),
+        message="تم فتح الجولة.",
+    )
+
+
+@router.post("/rounds/{settlement_id}/settle", response_model=APIResponse[RoundSettlementOut])
+async def settle_round(
+    settlement_id: int,
+    body: RoundSettlementSettleIn,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(require_permissions("sales.round_settle")),
+) -> APIResponse[RoundSettlementOut]:
+    """إقفال الجولة وتثبيت أرقامها.
+
+    يُرفض الإقفال إن بقي نقد غير محصَّل. وفرق المخزون يمرّ بسبب مكتوب، ويحتاج
+    صلاحية إقرار إن تجاوز الحدّ المضبوط في الإعدادات.
+    """
+    settlement = await RoundSettlementService(db).settle(settlement_id, body, current_user)
+    return APIResponse(
+        data=RoundSettlementOut.model_validate(settlement),
+        message="تمت تسوية الجولة.",
+    )
+
+
+@router.post("/rounds/{settlement_id}/cancel", response_model=APIResponse[RoundSettlementOut])
+async def cancel_round(
+    settlement_id: int,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(require_permissions("sales.round_settle")),
+) -> APIResponse[RoundSettlementOut]:
+    """إلغاء جولة مفتوحة. الجولة المسوّاة سجلّ موقّع ولا تُلغى."""
+    settlement = await RoundSettlementService(db).cancel(settlement_id, current_user)
+    return APIResponse(
+        data=RoundSettlementOut.model_validate(settlement),
+        message="تم إلغاء الجولة.",
+    )
+
+
+@router.post("/rounds/settle-van", response_model=APIResponse[RoundSettlementOut])
+async def settle_van_round(
+    body: RoundVanSettleIn,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(require_permissions("sales.round_settle")),
+) -> APIResponse[RoundSettlementOut]:
+    """إقفال يوم المركبة في خطوة واحدة — تُفتح الجولة تلقائياً إن لم تكن مفتوحة.
+
+    نفس بوابات الإقفال تنطبق: النقد غير المحصَّل يمنع، وفرق المخزون يحتاج سبباً
+    مكتوباً وإقراراً إن تجاوز الحدّ.
+    """
+    settlement = await RoundSettlementService(db).settle_van(body, current_user)
+    return APIResponse(
+        data=RoundSettlementOut.model_validate(settlement),
+        message="تمت تسوية الجولة.",
     )

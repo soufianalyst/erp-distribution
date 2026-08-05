@@ -250,7 +250,15 @@ class SalesService:
                         product_id=product.id,
                         batch_id=batch.id,
                         batch_number=batch.batch_number,
-                        warehouse_id=product.warehouse_id,
+                        # Where the goods actually left from, taken from the batch
+                        # rather than the product's home warehouse. A van sale
+                        # draws on the vehicle, and recording the home warehouse
+                        # instead mis-attributed every field sale to the main
+                        # store — the stock moved correctly, the attribution lied.
+                        # The batch is authoritative because FEFO already chose it
+                        # from the right warehouse, and it stays correct even if a
+                        # single line were ever filled from more than one place.
+                        warehouse_id=batch.warehouse_id,
                         quantity=take,
                         unit_price=unit_price,
                         unit_cost=batch.unit_cost,

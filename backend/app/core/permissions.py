@@ -56,6 +56,16 @@ PERMISSION_GROUPS: list[dict] = [
                 "code": "sales.commission_view",
                 "label": "عرض تقرير عمولات المناديب",
             },
+            {
+                "code": "sales.round_settle",
+                "label": "فتح وتسوية جولات المناديب",
+            },
+            {
+                # Separated from sales.round_settle on purpose: whoever counted the
+                # van should not be the one who signs off a shortfall on it.
+                "code": "sales.round_settle_variance",
+                "label": "إقرار فروقات المخزون في تسوية الجولة",
+            },
         ],
     },
     {
@@ -159,6 +169,10 @@ ROLE_DEFAULT_PERMISSIONS: dict[str, frozenset[str]] = {
             "delivery.view",
             "delivery.manage",
             "delivery.deliver",
+            # The storekeeper is who receives the van back and counts it, so they
+            # close the round — but approving a shortfall above the limit is
+            # deliberately withheld from them.
+            "sales.round_settle",
             "settings.view",
         }
     ),
@@ -220,6 +234,10 @@ ROLE_DEFAULT_PERMISSIONS: dict[str, frozenset[str]] = {
             "analytics.view",
             "expenses.view",
             "expenses.manage",
+            # The accountant both closes rounds and is the one who may accept a
+            # stock shortfall beyond the configured limit.
+            "sales.round_settle",
+            "sales.round_settle_variance",
             "settings.view",
         }
     ),

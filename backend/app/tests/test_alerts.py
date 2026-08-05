@@ -16,7 +16,9 @@ from app.tests.conftest import (
 )
 from app.tests.test_inventory import create_product, create_warehouse, days_from_now, receive
 from app.tests.test_purchases import create_supplier
+from app.tests.test_round_settlement import a_van_with_one_cash_sale
 from app.tests.test_sales import create_customer, post_invoice
+from app.tests.test_cashier import collect
 
 
 async def fetch_alerts(client: AsyncClient, headers: dict[str, str]) -> dict:
@@ -262,6 +264,63 @@ class TestStocktakeAlerts:
             f"/api/v1/inventory/stocktakes/{stocktake['id']}/post", headers=admin
         )
         assert group(await fetch_alerts(client, admin), "open_stocktakes") is None
+
+
+class TestUnsettledRoundAlerts:
+    async def test_a_van_that_sold_and_was_not_closed_is_flagged(
+        self, client: AsyncClient, db_session: AsyncSession
+    ) -> None:
+        """The whole point of the feature: an unclosed round is otherwise invisible.
+
+        Nothing distinguishes "the van had no sales" from "nobody checked the van"
+        except this alert — an absent record shows up on no screen by itself.
+        """
+        admin = await login(client, "admin", TEST_ADMIN_PASSWORD)
+        van_id, _, invoice = await a_van_with_one_cash_sale(client, admin, db_session)
+        await collect(client, admin, invoice["id"], invoice["total"])
+
+        rounds = group(await fetch_alerts(client, admin), "unsettled_rounds")
+        assert rounds is not None
+        assert rounds["severity"] == "warning"
+        assert rounds["count"] == 1
+        assert rounds["items"][0]["value"] == "جاهزة للإقفال"
+
+    async def test_uncollected_cash_escalates_it_to_critical(
+        self, client: AsyncClient, db_session: AsyncSession
+    ) -> None:
+        """Money in a pocket overnight outranks missing paperwork."""
+        admin = await login(client, "admin", TEST_ADMIN_PASSWORD)
+        await a_van_with_one_cash_sale(client, admin, db_session)
+
+        rounds = group(await fetch_alerts(client, admin), "unsettled_rounds")
+        assert rounds is not None
+        assert rounds["severity"] == "critical"
+        assert "غير محصَّل" in rounds["items"][0]["value"]
+
+    async def test_a_settled_round_clears_the_alert(
+        self, client: AsyncClient, db_session: AsyncSession
+    ) -> None:
+        """It has to go away once acted on, or people learn to ignore alerts."""
+        admin = await login(client, "admin", TEST_ADMIN_PASSWORD)
+        van_id, _, invoice = await a_van_with_one_cash_sale(client, admin, db_session)
+        await collect(client, admin, invoice["id"], invoice["total"])
+        settled = await client.post(
+            "/api/v1/sales/rounds/settle-van", headers=admin, json={"warehouse_id": van_id}
+        )
+        assert settled.status_code == 200, settled.text
+
+        assert group(await fetch_alerts(client, admin), "unsettled_rounds") is None
+
+    async def test_a_van_with_no_sales_raises_nothing(
+        self, client: AsyncClient, db_session: AsyncSession
+    ) -> None:
+        """A van that stayed parked is not a problem to solve."""
+        from app.tests.test_field_sync import assign_van
+
+        admin = await login(client, "admin", TEST_ADMIN_PASSWORD)
+        await assign_van(client, admin, db_session)
+
+        assert group(await fetch_alerts(client, admin), "unsettled_rounds") is None
 
 
 class TestCreditAlerts:

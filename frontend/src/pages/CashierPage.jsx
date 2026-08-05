@@ -6,7 +6,7 @@
 // money changing hands, and the two are frequently minutes or hours apart. The
 // day is closed with a summary that should match what is physically in the till.
 import { useState } from "react";
-import { Alert, Badge, Button, CancelButton, Card, Input, Modal, Stat, Table, money, qty } from "../components/Ui";
+import { Alert, Badge, Button, CancelButton, Card, Input, Modal, Stat, Table, money, qty, todayStr } from "../components/Ui";
 import useFetch from "../hooks/useFetch";
 import api, { apiMessage } from "../services/api";
 
@@ -19,7 +19,6 @@ const REFERENCE_TYPE_LABELS = {
   expense: "مصروف",
 };
 
-const todayStr = () => new Date().toISOString().slice(0, 10);
 const remaining = (doc) => (Number(doc.total) - Number(doc.paid_amount)).toFixed(2);
 const payableRemaining = (payable) => Number(payable.remaining).toFixed(2);
 

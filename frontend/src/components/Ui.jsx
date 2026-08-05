@@ -90,6 +90,22 @@ export const qty = (value) => {
   return Number.isInteger(n) ? n.toLocaleString("en-US") : n.toLocaleString("en-US", { maximumFractionDigits: 3 });
 };
 
+/**
+ * Today, as the user's calendar sees it — "YYYY-MM-DD" in local time.
+ *
+ * Deliberately not `new Date().toISOString().slice(0, 10)`, which returns the
+ * *UTC* day and is therefore the wrong day for part of every 24 hours. That
+ * matters most in exactly the screens that use it: end-of-day closes. It was
+ * caught on the round-settlement screen, where a van sale posted minutes earlier
+ * — dated by the server's own local today — did not appear at all, because the
+ * screen had defaulted to asking about yesterday.
+ */
+export const todayStr = () => {
+  const now = new Date();
+  const pad = (n) => String(n).padStart(2, "0");
+  return `${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())}`;
+};
+
 const BUTTON_VARIANTS = {
   primary: "bg-emerald-700 text-white hover:bg-emerald-800 dark:bg-emerald-600 dark:hover:bg-emerald-500",
   secondary:
