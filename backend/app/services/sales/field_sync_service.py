@@ -46,11 +46,18 @@ class FieldSyncService:
     async def get_van(self, user: User) -> Warehouse:
         """The vehicle assigned to this salesman, or a 404 telling them to ask for one."""
         result = await self.session.execute(
-            select(Warehouse).where(
+            select(Warehouse)
+            .where(
                 Warehouse.assigned_to_id == user.id,
                 Warehouse.is_vehicle.is_(True),
                 Warehouse.is_active.is_(True),
             )
+            # A salesman may hold only one active vehicle, enforced when it is
+            # assigned and by a unique index. The ordering is belt-and-braces: an
+            # unordered `.first()` on legacy data with two vans would return
+            # whichever row the planner happened to produce, so the same salesman
+            # could sell off a different vehicle from one request to the next.
+            .order_by(Warehouse.id)
         )
         van = result.scalars().first()
         if van is None:

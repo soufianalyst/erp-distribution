@@ -453,3 +453,113 @@ class TestFieldAccess:
             "failed_count": 0,
             "results": [],
         }
+
+
+class TestOneVanPerSalesman:
+    """A salesman drives one vehicle, and the field app depends on that.
+
+    Found by driving the system end to end rather than by a unit test: a second
+    van was assigned to a salesman who already had one — an ordinary mistake, a
+    new vehicle with the old one never unassigned — and every field sale silently
+    went to whichever van the query happened to return first. The app showed van
+    A's stock, the sales came off van B, and the round settled for the van he
+    actually drove reported nothing at all.
+    """
+
+    async def test_a_second_van_is_refused(
+        self, client: AsyncClient, db_session: AsyncSession
+    ) -> None:
+        admin = await login(client, "admin", TEST_ADMIN_PASSWORD)
+        first = await assign_van(client, admin, db_session, name="مركبة أولى")
+
+        response = await client.post(
+            "/api/v1/inventory/warehouses",
+            headers=admin,
+            json={
+                "name": "مركبة ثانية",
+                "is_vehicle": True,
+                "assigned_to_id": await salesman_id(db_session),
+            },
+        )
+        assert response.status_code == 400, response.text
+        message = response.json()["message"]
+        # The message has to name the van already held, or the admin cannot act on it.
+        assert "مركبة أولى" in message, message
+
+    async def test_reassigning_by_update_is_refused_too(
+        self, client: AsyncClient, db_session: AsyncSession
+    ) -> None:
+        """The create path is not the only way in."""
+        admin = await login(client, "admin", TEST_ADMIN_PASSWORD)
+        await assign_van(client, admin, db_session, name="مركبة قائمة")
+        spare = await client.post(
+            "/api/v1/inventory/warehouses",
+            headers=admin,
+            json={"name": "مركبة احتياطية", "is_vehicle": True},
+        )
+        assert spare.status_code == 201, spare.text
+
+        response = await client.patch(
+            f"/api/v1/inventory/warehouses/{spare.json()['data']['id']}",
+            headers=admin,
+            json={"assigned_to_id": await salesman_id(db_session)},
+        )
+        assert response.status_code == 400, response.text
+        assert "مركبة قائمة" in response.json()["message"]
+
+    async def test_saving_the_same_van_unchanged_still_works(
+        self, client: AsyncClient, db_session: AsyncSession
+    ) -> None:
+        """The rule must not fire against the van being edited.
+
+        Re-saving the warehouses form without changing the driver is the most
+        ordinary action there is; a guard that rejected it would be worse than the
+        bug it fixes.
+        """
+        admin = await login(client, "admin", TEST_ADMIN_PASSWORD)
+        van_id = await assign_van(client, admin, db_session)
+        rep = await salesman_id(db_session)
+
+        response = await client.patch(
+            f"/api/v1/inventory/warehouses/{van_id}",
+            headers=admin,
+            json={"assigned_to_id": rep, "location": "مسار الشرق"},
+        )
+        assert response.status_code == 200, response.text
+        assert response.json()["data"]["assigned_to_id"] == rep
+
+    async def test_a_van_can_be_handed_over_after_unassigning(
+        self, client: AsyncClient, db_session: AsyncSession
+    ) -> None:
+        """The rule constrains, it must not trap: freeing the first van releases him."""
+        admin = await login(client, "admin", TEST_ADMIN_PASSWORD)
+        old = await assign_van(client, admin, db_session, name="المركبة القديمة")
+        rep = await salesman_id(db_session)
+        new = await client.post(
+            "/api/v1/inventory/warehouses",
+            headers=admin,
+            json={"name": "المركبة الجديدة", "is_vehicle": True},
+        )
+        new_id = new.json()["data"]["id"]
+
+        unassign = await client.patch(
+            f"/api/v1/inventory/warehouses/{old}", headers=admin,
+            json={"assigned_to_id": None})
+        assert unassign.status_code == 200, unassign.text
+
+        handover = await client.patch(
+            f"/api/v1/inventory/warehouses/{new_id}", headers=admin,
+            json={"assigned_to_id": rep})
+        assert handover.status_code == 200, handover.text
+        assert handover.json()["data"]["assigned_to_id"] == rep
+
+    async def test_the_field_app_resolves_the_one_van(
+        self, client: AsyncClient, db_session: AsyncSession
+    ) -> None:
+        """What the whole rule is for: /field/van must name the van he was given."""
+        admin = await login(client, "admin", TEST_ADMIN_PASSWORD)
+        van_id = await assign_van(client, admin, db_session, name="مركبة الجولة")
+
+        salesman = await login(client, "salesman", TEST_SALES_PASSWORD)
+        van = (await client.get("/api/v1/sales/field/van", headers=salesman)).json()["data"]
+        assert van["warehouse_id"] == van_id

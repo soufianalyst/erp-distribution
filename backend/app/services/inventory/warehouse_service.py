@@ -19,9 +19,22 @@ class WarehouseService:
         )
         return result.scalar_one_or_none()
 
-    async def _validate_driver(self, user_id: int | None) -> int | None:
-        """Only an active salesman may be given a vehicle — their field app sells
-        from it, and that permission belongs to the sales role."""
+    async def _validate_driver(
+        self, user_id: int | None, *, excluding_warehouse_id: int | None = None
+    ) -> int | None:
+        """Only an active salesman may be given a vehicle, and only one vehicle each.
+
+        The one-vehicle rule is not tidiness, it is correctness. The field app asks
+        "which van is mine?" and answers it by looking up the vehicle assigned to
+        the signed-in salesman. With two assigned, that question has no answer, and
+        the app silently picks one: the salesman's app loads van A's stock while his
+        sales come off van B, the round settled for the van he actually drove shows
+        nothing, and both vehicles' books are wrong.
+
+        This was found by driving the system end to end — a second van was assigned
+        to a salesman who already had one (an ordinary mistake: new vehicle, old one
+        never unassigned) and every field sale quietly went to the wrong vehicle.
+        """
         if user_id is None:
             return None
         driver = await self.session.get(User, user_id)
@@ -29,6 +42,22 @@ class WarehouseService:
             raise AppException(400, "الموظف المحدد غير موجود أو معطل.")
         if driver.role is not UserRole.SALES:
             raise AppException(400, "لا يمكن إسناد المركبة إلا لموظف مبيعات.")
+
+        stmt = select(Warehouse).where(
+            Warehouse.assigned_to_id == user_id,
+            Warehouse.is_vehicle.is_(True),
+            Warehouse.is_active.is_(True),
+        )
+        if excluding_warehouse_id is not None:
+            stmt = stmt.where(Warehouse.id != excluding_warehouse_id)
+        held = (await self.session.execute(stmt)).scalars().first()
+        if held is not None:
+            raise AppException(
+                400,
+                f"({driver.full_name}) مسندة إليه المركبة ({held.name}) بالفعل؛ "
+                "المندوب يقود مركبة واحدة فقط. ألغِ إسناد المركبة الحالية أولاً "
+                "أو عطّلها.",
+            )
         return driver.id
 
     async def create_warehouse(self, data: WarehouseCreate) -> Warehouse:
@@ -72,7 +101,11 @@ class WarehouseService:
                 raise AppException(
                     400, "لا يمكن إسناد سائق لمستودع ثابت؛ حدده كمركبة أولاً."
                 )
-            warehouse.assigned_to_id = await self._validate_driver(data.assigned_to_id)
+            # Excluding this warehouse, or re-saving the form unchanged would trip
+            # the one-vehicle rule against the very van being edited.
+            warehouse.assigned_to_id = await self._validate_driver(
+                data.assigned_to_id, excluding_warehouse_id=warehouse.id
+            )
         if data.is_active is not None:
             warehouse.is_active = data.is_active
         await self.session.commit()
