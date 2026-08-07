@@ -7,6 +7,7 @@ from typing import TYPE_CHECKING
 
 from sqlalchemy import (
     Boolean,
+    CheckConstraint,
     Date,
     DateTime,
     Enum,
@@ -145,6 +146,16 @@ class ProductBatch(Base):
         UniqueConstraint(
             "product_id", "warehouse_id", "batch_number", name="uq_batch_per_warehouse"
         ),
+        # Stock on hand cannot be less than nothing.
+        #
+        # Declared on the model rather than only in the migration so it is enforced
+        # everywhere the schema is built — including the test database, which is
+        # created from this metadata and not from the migrations. It is a backstop
+        # for the fifteen places that read a quantity, change it in Python and write
+        # it back: the row lock in StockService.fefo_allocate is the actual fix for
+        # concurrent oversell, and only two of those fifteen go through it. What
+        # this takes away from the rest is the ability to fail silently.
+        CheckConstraint("quantity >= 0", name="ck_product_batches_quantity_non_negative"),
     )
 
     id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)

@@ -201,14 +201,27 @@ async def main() -> None:
                     admin, "/inventory/warehouses",
                     {"name": f"{TAG} {n}", "location": "منطقة صناعية"},
                     wh_index, "name"))
-            van = await ensure(admin, "/inventory/warehouses", {
-                "name": f"{TAG} سيارة توزيع ١",
-                "is_vehicle": True,
-                "assigned_to_id": users["rep1"]["id"],
-            }, wh_index, "name")
+            # Whoever has no van yet gets this one. A salesman may hold only one
+            # active vehicle, so the scenario cannot simply demand rep1 — on a
+            # re-run, or on a database where rep1 already drives something, that
+            # would be refused. Ask which reps are free instead of assuming.
+            all_wh = await admin.get("/inventory/warehouses")
+            taken = {w["assigned_to_id"] for w in all_wh
+                     if w["is_vehicle"] and w["is_active"] and w["assigned_to_id"]}
+            free = [r for r in ("rep1", "rep2") if users[r]["id"] not in taken]
+            van_body = {"name": f"{TAG} سيارة توزيع ١", "is_vehicle": True}
+            if free:
+                van_body["assigned_to_id"] = users[free[0]]["id"]
+            van = await ensure(admin, "/inventory/warehouses", van_body, wh_index, "name")
             wh.append(van)
             fixed = [w for w in wh if not w["is_vehicle"]]
-            print(f"  {len(fixed)} fixed + 1 van (id {van['id']})")
+
+            # The van's driver is whoever the record says, not whoever we asked for.
+            van_driver = next(
+                (api for api in reps
+                 if users[api.username]["id"] == van.get("assigned_to_id")), None)
+            print(f"  {len(fixed)} fixed + 1 van (id {van['id']}), "
+                  f"driven by {van_driver.username if van_driver else 'nobody'}")
 
         # --- Products (admin/storekeeper builds the catalogue) ---
         with phase(f"3. {TARGET_PRODUCTS} products"):
@@ -382,9 +395,14 @@ async def main() -> None:
         with phase("8. Van sales"):
             van_invoices = []
             van_errors: list[str] = []
-            for cust in customers[:12]:
+            if van_driver is None:
+                print("  no salesman holds this van — skipping (assign one to "
+                      "exercise the field app)")
+            own = [c for c in customers
+                   if van_driver and c["salesman_id"] == users[van_driver.username]["id"]]
+            for cust in own[:12]:
                 p = random.choice(van_load)
-                r = await reps[0].post("/sales/field/sync", {
+                r = await van_driver.post("/sales/field/sync", {
                     "documents": [{
                         "client_uuid": f"sc-van-{cust['id']}",
                         "kind": "van_sale",
@@ -393,14 +411,23 @@ async def main() -> None:
                         "lines": [{"product_id": p["id"], "quantity": "3"}],
                     }]
                 }, expect_ok=False)
-                if r.status_code < 400:
-                    van_invoices.append(r.json()["data"])
-                elif not van_errors:
-                    van_errors.append(f"{r.status_code} {r.text[:200]}")
-            print(f"  {len(van_invoices)} field sync batches accepted")
+                if r.status_code >= 400:
+                    if not van_errors:
+                        van_errors.append(f"HTTP {r.status_code} {r.text[:200]}")
+                    continue
+                result = r.json()["data"]
+                van_invoices.extend(
+                    x for x in result["results"] if x["status"] == "created")
+                for x in result["results"]:
+                    if x["status"] == "failed" and not van_errors:
+                        van_errors.append(f"{x['client_uuid']}: {x['message']}")
+            print(f"  {len(van_invoices)} van sales created")
             if van_errors:
                 print(f"  first rejection: {van_errors[0]}")
-            check("field sync accepted the van sales", not van_errors, van_errors[0] if van_errors else "")
+            if van_driver is not None:
+                check("field sync created the van sales",
+                      van_invoices and not van_errors,
+                      van_errors[0] if van_errors else "nothing created")
 
         # --- The cashier collects, sometimes partially ---
         with phase("9. Cashier collections"):

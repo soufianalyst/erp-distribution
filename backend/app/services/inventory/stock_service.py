@@ -147,12 +147,61 @@ class StockService:
         await self.session.refresh(batch)
         return batch
 
+    async def lock_batches_in_order(self, pairs: set[tuple[int, int]]) -> None:
+        """Take the row locks a multi-line document needs, in a fixed global order.
+
+        Locks acquired in different orders deadlock: a document touching products
+        [9, 4] and another touching [4, 9] each end up holding what the other is
+        waiting for. Sorting by product id means every document in the system
+        acquires its locks in the same sequence, so one simply waits for the other
+        and neither dies.
+
+        One statement per product rather than one combined query, because
+        PostgreSQL locks rows as it produces them and an `ORDER BY` on a combined
+        query is no guarantee of lock order — the planner may sort after locking.
+        Separate statements make the ordering ours to control.
+
+        Called before allocation. The `FOR UPDATE` inside fefo_allocate then re-locks
+        rows this session already holds, which costs nothing.
+        """
+        for product_id, warehouse_id in sorted(pairs):
+            await self.session.execute(
+                select(ProductBatch.id)
+                .where(
+                    ProductBatch.product_id == product_id,
+                    ProductBatch.warehouse_id == warehouse_id,
+                    ProductBatch.quantity > 0,
+                )
+                .order_by(ProductBatch.id)
+                .with_for_update()
+            )
+
     async def fefo_allocate(
         self, product_id: int, warehouse_id: int, base_quantity: Decimal
     ) -> list[tuple[ProductBatch, Decimal]]:
         """Pick batches First-Expired-First-Out. Does NOT commit — callers own the transaction.
 
         Expired batches are excluded; they must go through the damaged-goods flow instead.
+
+        The rows are locked (`FOR UPDATE`), and that is not optional. Without it
+        this method was the site of a demonstrated stock-corrupting race: the read
+        here, the `quantity -= take` the caller performs in Python, and the UPDATE
+        at commit form a read-modify-write, and PostgreSQL's default READ COMMITTED
+        lets two sessions both read 100, both compute 90, and both write 90. Four
+        salesmen invoicing the same product at the same instant sold 120 units out
+        of 100 and left the batch reading 70; a single unit in stock was sold to
+        four different customers, with no error raised to anyone.
+
+        Note the direction of the damage, which is what made it dangerous: the
+        absolute write leaves stock *overstated*, never negative. Nothing fails and
+        no number looks wrong — the system simply believes it still holds goods it
+        has already sold, until a stocktake weeks later books the difference as a
+        shortfall and somebody is suspected of theft.
+
+        Locking makes each session wait its turn and then re-read. PostgreSQL
+        re-evaluates this WHERE clause after the lock is granted, so a batch another
+        session has just emptied drops out of the result and allocation moves to the
+        next batch or refuses honestly.
         """
         result = await self.session.execute(
             select(ProductBatch)
@@ -163,6 +212,7 @@ class StockService:
                 ProductBatch.expiry_date > date.today(),
             )
             .order_by(ProductBatch.expiry_date, ProductBatch.id)
+            .with_for_update()
         )
         batches = list(result.scalars().all())
 

@@ -217,6 +217,20 @@ class SalesService:
         `source_warehouse_id` overrides where the goods come from: a van sale draws
         on the salesman's own vehicle rather than the product's home warehouse.
         """
+        # Take every row lock this invoice needs up front, in product-id order.
+        # FEFO locks the batches it allocates from; acquiring those locks in the
+        # order the salesman happened to type the lines would let two invoices
+        # sharing two products deadlock against each other. See
+        # StockService.lock_batches_in_order.
+        to_lock: set[tuple[int, int]] = set()
+        for line in data.lines:
+            product = await self.stock.get_active_product(line.product_id)
+            if product.warehouse_id is not None or source_warehouse_id is not None:
+                to_lock.add(
+                    (product.id, source_warehouse_id or product.warehouse_id)
+                )
+        await self.stock.lock_batches_in_order(to_lock)
+
         subtotal = Decimal("0")
         cost_total = Decimal("0")
         for line in data.lines:
