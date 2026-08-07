@@ -81,42 +81,96 @@ class AnalyticsService:
         self.sales = SalesService(session)
 
     # --- Customer RFM ---
-    async def customer_rfm(self) -> list[CustomerRFMOut]:
+    async def customer_rfm(self, product_id: int | None = None) -> list[CustomerRFMOut]:
         """Score every customer on Recency, Frequency and Monetary value.
 
         Segments them from "بطل" down to "خامل" so the sales team can see who to
         keep, who to chase, and who has quietly stopped buying. Measured over the
         rolling WINDOW_DAYS period, not all time, so an old spender does not look
         active forever.
+
+        `product_id` narrows all three scores to one product: who buys it, how
+        recently, and how much of it. The three have to move together — asking "who
+        buys olive oil" and answering with the date they last bought *anything* would
+        be worse than not offering the filter, so an invoice that does not contain the
+        product is excluded from the recency and the count as well as the money.
+
+        Customers who never bought it stay in the list, scored zero. That is the
+        point: filtered by product, this report doubles as a prospect list.
+
+        One thing to know when reading it: unfiltered, the money is the invoice total
+        the customer owes — VAT included, discount deducted. Filtered, it is the value
+        of that product's lines, before VAT and before any invoice-level discount,
+        because a discount belongs to an invoice and cannot be attributed to one line
+        of it. The filtered figure therefore matches the product RFM report's basis,
+        not the unfiltered one here. Both are honest answers to different questions;
+        they are simply not the same number.
         """
         today = date.today()
         window_start = today - timedelta(days=WINDOW_DAYS)
+
+        # Aggregate per customer first, then hang the result off Customer with an outer
+        # join. Filtering inside a subquery keeps the window and product conditions on
+        # an inner join, where a row that fails them is genuinely gone — attaching them
+        # to an outer join instead lets non-qualifying rows survive with NULLs and go
+        # on contributing to the sums, which is exactly the bug fixed in product_rfm
+        # below.
+        if product_id is None:
+            frequency = func.count(SalesInvoice.id)
+            money = func.coalesce(func.sum(SalesInvoice.total), 0)
+        else:
+            # FEFO can split one product across several lines of the same invoice, so
+            # the invoice counts once however many batches it was drawn from.
+            frequency = func.count(func.distinct(SalesInvoice.id))
+            money = func.coalesce(func.sum(SalesInvoiceLine.line_total), 0)
+
+        sales = select(
+            SalesInvoice.customer_id.label("customer_id"),
+            func.max(SalesInvoice.invoice_date).label("last_date"),
+            frequency.label("frequency"),
+            money.label("money"),
+        ).where(SalesInvoice.invoice_date >= window_start)
+        if product_id is not None:
+            # The join is what drops invoices that never contained this product, so
+            # recency and frequency narrow with the money rather than lagging behind it.
+            sales = sales.join(
+                SalesInvoiceLine,
+                (SalesInvoiceLine.invoice_id == SalesInvoice.id)
+                & (SalesInvoiceLine.product_id == product_id),
+            )
+        sales = sales.group_by(SalesInvoice.customer_id).subquery()
 
         result = await self.session.execute(
             select(
                 Customer.id,
                 Customer.name,
                 User.full_name,
-                func.max(SalesInvoice.invoice_date),
-                func.count(SalesInvoice.id),
-                func.coalesce(func.sum(SalesInvoice.total), 0),
+                sales.c.last_date,
+                func.coalesce(sales.c.frequency, 0),
+                func.coalesce(sales.c.money, 0),
             )
             .outerjoin(User, Customer.salesman_id == User.id)
-            .outerjoin(
-                SalesInvoice,
-                (SalesInvoice.customer_id == Customer.id)
-                & (SalesInvoice.invoice_date >= window_start),
-            )
-            .group_by(Customer.id, Customer.name, User.full_name)
+            .outerjoin(sales, sales.c.customer_id == Customer.id)
         )
         rows = result.all()
 
-        returns_result = await self.session.execute(
-            select(
+        # Returns come off on the same basis as the sales they reverse, or the filter
+        # would credit back a whole invoice's worth against one product's revenue.
+        if product_id is None:
+            returns_stmt = select(
                 SalesReturn.customer_id, func.coalesce(func.sum(SalesReturn.total), 0)
             )
-            .where(SalesReturn.created_at >= window_start, posted())
-            .group_by(SalesReturn.customer_id)
+        else:
+            returns_stmt = select(
+                SalesReturn.customer_id,
+                func.coalesce(func.sum(SalesReturnLine.line_total), 0),
+            ).join(SalesReturnLine, SalesReturnLine.return_id == SalesReturn.id).where(
+                SalesReturnLine.product_id == product_id
+            )
+        returns_result = await self.session.execute(
+            returns_stmt.where(
+                SalesReturn.created_at >= window_start, posted()
+            ).group_by(SalesReturn.customer_id)
         )
         returns_by_customer = {cid: _d(t) for cid, t in returns_result.all()}
 
@@ -176,45 +230,78 @@ class AnalyticsService:
         return "خامل (Lost)"
 
     # --- Product RFM ---
-    async def product_rfm(self) -> list[ProductRFMOut]:
+    async def product_rfm(self, customer_id: int | None = None) -> list[ProductRFMOut]:
         """The same RFM treatment applied to products rather than customers.
 
         Surfaces the fast movers worth keeping deep and the dead stock tying up
         cash and shelf life — the two that matter most in food distribution.
+
+        `customer_id` narrows the sales side to one customer: what they buy, how
+        recently, how much, and at what margin. Products they have never bought stay
+        in the list scored zero, which is the cross-sell list for that customer.
+
+        Stock on hand and nearest expiry stay company-wide, because they are facts
+        about the warehouse rather than about the customer — the shelf does not change
+        depending on who you are looking at.
+
+        **Fixed here:** the join let pre-window sales into the frequency and the money
+        while the recency correctly ignored them. An outer join keeps its left rows, so
+        a line whose invoice fell outside the window survived with a NULL invoice and
+        its `line_total` was still summed. Product 47 in the dev database read
+        "لم يُباع بعد" — no recency at all — while carrying 802.50 and a frequency of 1,
+        its only sale being older than the window. Restricting the *line* join to
+        in-scope invoices means a line that does not qualify never arrives, so all
+        three scores now cover the same period the docstring claims.
         """
         today = date.today()
         window_start = today - timedelta(days=WINDOW_DAYS)
 
+        sales = (
+            select(
+                SalesInvoiceLine.product_id.label("product_id"),
+                func.max(SalesInvoice.invoice_date).label("last_date"),
+                func.count(SalesInvoiceLine.id).label("frequency"),
+                func.coalesce(func.sum(SalesInvoiceLine.line_total), 0).label("revenue"),
+                func.coalesce(
+                    func.sum(SalesInvoiceLine.quantity * SalesInvoiceLine.unit_cost), 0
+                ).label("cost"),
+            )
+            # Inner join: a line whose invoice falls outside the window is dropped
+            # here, rather than surviving with a NULL invoice and still being summed.
+            .join(SalesInvoice, SalesInvoice.id == SalesInvoiceLine.invoice_id)
+            .where(SalesInvoice.invoice_date >= window_start)
+        )
+        if customer_id is not None:
+            sales = sales.where(SalesInvoice.customer_id == customer_id)
+        sales = sales.group_by(SalesInvoiceLine.product_id).subquery()
+
         result = await self.session.execute(
+            # Outer join so products with no sales in scope stay in the list at zero —
+            # dead stock unfiltered, and the cross-sell list when a customer is chosen.
             select(
                 Product.id,
                 Product.name,
                 Product.sku,
-                func.max(SalesInvoice.invoice_date),
-                func.count(SalesInvoiceLine.id),
-                func.coalesce(func.sum(SalesInvoiceLine.line_total), 0),
-                func.coalesce(
-                    func.sum(SalesInvoiceLine.quantity * SalesInvoiceLine.unit_cost), 0
-                ),
-            )
-            .outerjoin(SalesInvoiceLine, SalesInvoiceLine.product_id == Product.id)
-            .outerjoin(
-                SalesInvoice,
-                (SalesInvoice.id == SalesInvoiceLine.invoice_id)
-                & (SalesInvoice.invoice_date >= window_start),
-            )
-            .group_by(Product.id, Product.name, Product.sku)
+                sales.c.last_date,
+                func.coalesce(sales.c.frequency, 0),
+                func.coalesce(sales.c.revenue, 0),
+                func.coalesce(sales.c.cost, 0),
+            ).outerjoin(sales, sales.c.product_id == Product.id)
         )
         rows = result.all()
 
-        returns_result = await self.session.execute(
+        returns_stmt = (
             select(
                 SalesReturnLine.product_id,
                 func.coalesce(func.sum(SalesReturnLine.line_total), 0),
             )
             .join(SalesReturn, SalesReturnLine.return_id == SalesReturn.id)
             .where(SalesReturn.created_at >= window_start, posted())
-            .group_by(SalesReturnLine.product_id)
+        )
+        if customer_id is not None:
+            returns_stmt = returns_stmt.where(SalesReturn.customer_id == customer_id)
+        returns_result = await self.session.execute(
+            returns_stmt.group_by(SalesReturnLine.product_id)
         )
         returns_by_product = {pid: _d(t) for pid, t in returns_result.all()}
 

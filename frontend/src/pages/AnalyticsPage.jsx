@@ -4,7 +4,7 @@
 //
 // Read-only throughout — every figure is derived from what the transactional
 // modules already recorded, so nothing here can change the books.
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import {
   Area,
   AreaChart,
@@ -26,7 +26,7 @@ import {
   ZAxis,
 } from "recharts";
 import { useNavigate } from "react-router-dom";
-import { Alert, Badge, Button, Card, Input, Loading, Table, money, qty } from "../components/Ui";
+import { Alert, Badge, Button, Card, Input, Loading, Select, Table, money, qty } from "../components/Ui";
 import useFetch from "../hooks/useFetch";
 import api from "../services/api";
 
@@ -126,14 +126,34 @@ const TABS = [
 
 export default function AnalyticsPage() {
   const [tab, setTab] = useState("overview");
+  // RFM slicers. "" means no filter — the params are omitted rather than sent
+  // empty, because the API types them as optional integers and rejects "".
+  const [rfmProductId, setRfmProductId] = useState("");
+  const [rfmCustomerId, setRfmCustomerId] = useState("");
 
   const summary = useFetch(() => api.get("/analytics/summary"));
   const salesTrend = useFetch(() => api.get("/analytics/sales/trend"));
   const byWarehouse = useFetch(() => api.get("/analytics/sales/by-warehouse"));
   const byPriceTier = useFetch(() => api.get("/analytics/sales/by-price-tier"));
   const returnsTrend = useFetch(() => api.get("/analytics/returns/trend"));
-  const customerRfm = useFetch(() => api.get("/analytics/customers/rfm"));
-  const productRfm = useFetch(() => api.get("/analytics/products/rfm"));
+  const customerRfm = useFetch(
+    () =>
+      api.get("/analytics/customers/rfm", {
+        params: rfmProductId ? { product_id: rfmProductId } : {},
+      }),
+    [rfmProductId]
+  );
+  const productRfm = useFetch(
+    () =>
+      api.get("/analytics/products/rfm", {
+        params: rfmCustomerId ? { customer_id: rfmCustomerId } : {},
+      }),
+    [rfmCustomerId]
+  );
+  // The slicer option lists. Products are picked by typing (there are over a
+  // thousand); customers fit a dropdown.
+  const products = useFetch(() => api.get("/inventory/products"));
+  const customers = useFetch(() => api.get("/sales/customers"));
   const expiryRisk = useFetch(() => api.get("/analytics/inventory/expiry-risk"));
   const turnover = useFetch(() => api.get("/analytics/inventory/turnover"));
   const arAging = useFetch(() => api.get("/analytics/credit/aging"));
@@ -174,11 +194,25 @@ export default function AnalyticsPage() {
       )}
 
       {tab === "customers" && (
-        <CustomerRfmTab rows={customerRfm.data || []} loading={customerRfm.loading} />
+        <CustomerRfmTab
+          rows={customerRfm.data || []}
+          loading={customerRfm.loading}
+          error={customerRfm.error}
+          products={products.data || []}
+          productId={rfmProductId}
+          onProductChange={setRfmProductId}
+        />
       )}
 
       {tab === "products" && (
-        <ProductRfmTab rows={productRfm.data || []} loading={productRfm.loading} />
+        <ProductRfmTab
+          rows={productRfm.data || []}
+          loading={productRfm.loading}
+          error={productRfm.error}
+          customers={customers.data || []}
+          customerId={rfmCustomerId}
+          onCustomerChange={setRfmCustomerId}
+        />
       )}
 
       {tab === "inventory" && (
@@ -362,8 +396,14 @@ function segmentCounts(rows) {
   return Object.entries(counts).map(([segment, count]) => ({ segment, count }));
 }
 
-function CustomerRfmTab({ rows, loading }) {
-  if (loading) return <Loading />;
+function CustomerRfmTab({
+  rows,
+  loading,
+  error,
+  products,
+  productId,
+  onProductChange,
+}) {
   const segments = segmentCounts(rows);
   const scatterData = rows.map((r) => ({
     x: r.recency_days ?? 400,
@@ -374,6 +414,30 @@ function CustomerRfmTab({ rows, loading }) {
 
   return (
     <div className="space-y-6">
+      <RfmSlicer
+        label="الصنف"
+        hint={
+          productId
+            ? "المؤشرات الثلاثة محسوبة على هذا الصنف وحده. القيمة هي قيمة أسطر الصنف قبل الضريبة."
+            : "كل الأصناف. القيمة هي إجمالي الفاتورة بعد الخصم ومع الضريبة."
+        }
+        onClear={() => onProductChange("")}
+        cleared={!productId}
+      >
+        <ProductPicker
+          products={products}
+          value={productId}
+          onChange={onProductChange}
+        />
+      </RfmSlicer>
+
+      <Alert>{error}</Alert>
+      {/* The slicer stays mounted while the new figures load, so the control the
+          user just touched does not vanish underneath them on every change. */}
+      {loading ? (
+        <Loading />
+      ) : (
+      <>
       <div className="grid grid-cols-1 gap-6 md:grid-cols-2">
         <Card title="توزيع شرائح العملاء">
           <div className="h-64 w-full" dir="ltr">
@@ -441,19 +505,31 @@ function CustomerRfmTab({ rows, loading }) {
               render: (r) => (r.recency_days === null ? "—" : `${r.recency_days} يوم`),
             },
             { key: "frequency", label: "التكرار" },
-            { key: "monetary", label: "القيمة النقدية", render: (r) => money(r.monetary) },
+            {
+              key: "monetary",
+              label: productId ? "قيمة الصنف" : "القيمة النقدية",
+              render: (r) => money(r.monetary),
+            },
             { key: "segment", label: "الشريحة", render: (r) => segmentBadge(r.segment) },
           ]}
           rows={rows}
           keyField="customer_id"
         />
       </Card>
+      </>
+      )}
     </div>
   );
 }
 
-function ProductRfmTab({ rows, loading }) {
-  if (loading) return <Loading />;
+function ProductRfmTab({
+  rows,
+  loading,
+  error,
+  customers,
+  customerId,
+  onCustomerChange,
+}) {
   const segments = segmentCounts(rows);
   // Waste-risk highlight: dead stock still sitting on soon-to-expire batches.
   const wasteRisk = rows
@@ -462,6 +538,35 @@ function ProductRfmTab({ rows, loading }) {
 
   return (
     <div className="space-y-6">
+      <RfmSlicer
+        label="العميل"
+        hint={
+          customerId
+            ? "المبيعات والهامش لهذا العميل وحده. المخزون وأقرب صلاحية على مستوى الشركة."
+            : "كل العملاء."
+        }
+        onClear={() => onCustomerChange("")}
+        cleared={!customerId}
+      >
+        <Select
+          value={customerId}
+          onChange={(e) => onCustomerChange(e.target.value)}
+          aria-label="العميل"
+        >
+          <option value="">كل العملاء</option>
+          {customers.map((c) => (
+            <option key={c.id} value={c.id}>
+              {c.name}
+            </option>
+          ))}
+        </Select>
+      </RfmSlicer>
+
+      <Alert>{error}</Alert>
+      {loading ? (
+        <Loading />
+      ) : (
+      <>
       <div className="grid grid-cols-1 gap-6 md:grid-cols-2">
         <Card title="توزيع شرائح الأصناف">
           <div className="h-64 w-full" dir="ltr">
@@ -552,9 +657,87 @@ function ProductRfmTab({ rows, loading }) {
           keyField="product_id"
         />
       </Card>
+      </>
+      )}
     </div>
   );
 }
+
+// The filter bar shared by both RFM tabs. The hint under it spells out what the
+// figures mean once a filter is on, because "القيمة النقدية" changes basis between
+// the unfiltered and filtered views and a column header alone cannot say so.
+function RfmSlicer({ label, hint, children, onClear, cleared }) {
+  return (
+    <Card>
+      <div className="flex flex-wrap items-end gap-3">
+        <div className="min-w-[16rem] flex-1">
+          <label className="mb-1 block text-sm font-bold text-slate-700 dark:text-slate-300">
+            {label}
+          </label>
+          {children}
+        </div>
+        {!cleared && (
+          <Button variant="secondary" onClick={onClear}>
+            إلغاء التصفية
+          </Button>
+        )}
+      </div>
+      <p className="mt-2 text-xs font-semibold text-slate-500 dark:text-slate-400">
+        {hint}
+      </p>
+    </Card>
+  );
+}
+
+// Over a thousand products, so the same type-to-search datalist the invoice form
+// uses rather than a dropdown nobody can scroll.
+function ProductPicker({ products, value, onChange }) {
+  const selected = products.find((p) => String(p.id) === String(value));
+  const [text, setText] = useState(selected ? productOptionLabel(selected) : "");
+
+  // Follow the filter when it changes from outside — "إلغاء التصفية" has to empty
+  // the box too, or the screen would show a product name next to unfiltered figures.
+  // Partial typing never reaches here, because it does not change `value`.
+  useEffect(() => {
+    if (!value) return setText("");
+    const current = products.find((p) => String(p.id) === String(value));
+    if (current) setText(productOptionLabel(current));
+  }, [value, products]);
+
+  const handle = (raw) => {
+    setText(raw);
+    const typed = raw.trim();
+    if (!typed) return onChange("");
+    // Commit only on an exact hit, so half-typed text neither fires a request per
+    // keystroke nor silently leaves a stale filter applied. The SKU and the bare
+    // name count as hits too: warehouse and office staff type codes from memory,
+    // and making them reproduce " — " to be understood would be pointless.
+    const key = typed.toLowerCase();
+    const match =
+      products.find((p) => productOptionLabel(p).toLowerCase() === key) ||
+      products.find((p) => (p.sku || "").toLowerCase() === key) ||
+      products.find((p) => (p.name || "").toLowerCase() === key);
+    if (match) onChange(String(match.id));
+  };
+
+  return (
+    <>
+      <Input
+        list="rfm-product-options"
+        placeholder="كل الأصناف — اكتب الرمز أو الاسم للتصفية..."
+        value={text}
+        onChange={(e) => handle(e.target.value)}
+      />
+      <datalist id="rfm-product-options">
+        {products.map((p) => (
+          <option key={p.id} value={productOptionLabel(p)} />
+        ))}
+      </datalist>
+    </>
+  );
+}
+
+const productOptionLabel = (p) => `${p.sku} — ${p.name}`;
 
 const DAMAGE_REASON_LABELS = {
   expired: "منتهي الصلاحية",

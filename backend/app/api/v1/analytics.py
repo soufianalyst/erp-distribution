@@ -45,18 +45,32 @@ async def summary(
 
 @router.get("/customers/rfm", response_model=APIResponse[list[CustomerRFMOut]])
 async def customer_rfm(
+    product_id: int | None = Query(
+        default=None, description="حصر التحليل بصنف واحد؛ اتركه فارغاً لكل الأصناف"
+    ),
     db: AsyncSession = Depends(get_db),
 ) -> APIResponse[list[CustomerRFMOut]]:
-    """تحليل RFM للعملاء: الحداثة، التكرار، والقيمة النقدية مع تصنيف الشرائح."""
-    return APIResponse(data=await AnalyticsService(db).customer_rfm())
+    """تحليل RFM للعملاء: الحداثة، التكرار، والقيمة النقدية مع تصنيف الشرائح.
+
+    عند تحديد صنف، تُحسب المؤشرات الثلاثة على مشتريات ذلك الصنف وحده، ويبقى
+    العملاء الذين لم يشتروه في القائمة بقيمة صفر — فتصبح قائمة استهداف.
+    """
+    return APIResponse(data=await AnalyticsService(db).customer_rfm(product_id))
 
 
 @router.get("/products/rfm", response_model=APIResponse[list[ProductRFMOut]])
 async def product_rfm(
+    customer_id: int | None = Query(
+        default=None, description="حصر التحليل بعميل واحد؛ اتركه فارغاً لكل العملاء"
+    ),
     db: AsyncSession = Depends(get_db),
 ) -> APIResponse[list[ProductRFMOut]]:
-    """تحليل RFM للأصناف مع الربط بالمخزون الحالي وأقرب تاريخ انتهاء صلاحية."""
-    return APIResponse(data=await AnalyticsService(db).product_rfm())
+    """تحليل RFM للأصناف مع الربط بالمخزون الحالي وأقرب تاريخ انتهاء صلاحية.
+
+    عند تحديد عميل، تُحسب المبيعات والهامش لذلك العميل وحده، ويبقى المخزون
+    وأقرب صلاحية على مستوى الشركة لأنهما وصف للرفّ لا للعميل.
+    """
+    return APIResponse(data=await AnalyticsService(db).product_rfm(customer_id))
 
 
 @router.get("/sales/trend", response_model=APIResponse[list[SalesTrendPointOut]])
