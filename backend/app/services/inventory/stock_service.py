@@ -101,11 +101,18 @@ class StockService:
             )
 
         result = await self.session.execute(
-            select(ProductBatch).where(
+            select(ProductBatch)
+            .where(
                 ProductBatch.product_id == product_id,
                 ProductBatch.warehouse_id == warehouse_id,
                 ProductBatch.batch_number == batch_number,
             )
+            # Locked for the same reason FEFO locks: this reads a quantity, adds to
+            # it in Python and writes it back. Two receipts of the same batch
+            # arriving together would otherwise both read the old value and one
+            # would be lost — understating stock rather than overstating it, but
+            # just as wrong and just as quiet.
+            .with_for_update()
         )
         batch = result.scalar_one_or_none()
 
@@ -129,8 +136,27 @@ class StockService:
             self.session.add(batch)
         return batch
 
-    async def receive_stock(self, data: StockReceiveRequest) -> ProductBatch:
-        """Direct warehouse receipt (outside a purchase invoice), committed immediately."""
+    async def receive_stock(
+        self, data: StockReceiveRequest, user_id: int | None = None
+    ) -> ProductBatch:
+        """Direct warehouse receipt (outside a purchase invoice), committed immediately.
+
+        Posts to the ledger, which it previously did not. Goods with a cost arriving
+        in a warehouse are an increase in assets, and this path recorded the quantity
+        while writing no journal entry at all — so the inventory account drifted
+        below the physical stock by the value of every direct receipt ever made. The
+        dev database was understated by 8,025.24 this way, and the gap only grows,
+        silently, because nothing compares the two figures.
+
+        The entry mirrors a stocktake surplus exactly — debit inventory, credit the
+        inventory-variance account — because that is the same event: stock appearing
+        without a purchase behind it. Reusing that account rather than inventing one
+        keeps every non-trading inventory movement in a single place a bookkeeper can
+        review.
+
+        No cost, no entry: there is nothing to value, and the physical valuation is
+        likewise zero, so the two records still agree.
+        """
         product = await self.get_active_product(data.product_id)
         await self.get_active_warehouse(data.warehouse_id)
 
@@ -143,9 +169,58 @@ class StockService:
             base_quantity=base_quantity,
             unit_cost=data.unit_cost,
         )
+        if data.unit_cost is not None and data.unit_cost > 0:
+            # Flush first: a brand-new batch has no id yet, and the entry references it.
+            await self.session.flush()
+            value = (base_quantity * data.unit_cost).quantize(
+                Decimal("0.01"), rounding=ROUND_HALF_UP
+            )
+            if value > 0:
+                await self.accounting.add_entry_no_commit(
+                    entry_date=date.today(),
+                    description=(
+                        f"استلام مباشر للمخزون: {product.name} "
+                        f"تشغيلة {data.batch_number}"
+                    ),
+                    items=[
+                        (INVENTORY, value, Decimal("0")),
+                        (STOCKTAKE_VARIANCE, Decimal("0"), value),
+                    ],
+                    reference_type="stock_receipt",
+                    reference_id=batch.id,
+                    created_by=user_id,
+                )
         await self.session.commit()
         await self.session.refresh(batch)
         return batch
+
+
+    async def get_batch_locked(self, batch_id: int) -> ProductBatch | None:
+        """Fetch one batch with its row locked, for callers about to change it.
+
+        Every place that adds stock back or takes it away reads the quantity,
+        changes it in Python and writes it at commit. Unlocked, two of those running
+        together both read the old value and one is lost — silently, and in the
+        direction that leaves the books disagreeing with the shelf. The FEFO path was
+        fixed first because it is the busiest; this is the same fix for the rest:
+        returns, damage, stocktake postings, purchase edits and purchase returns.
+
+        Callers holding several batches should take them in ascending id order (see
+        lock_batch_ids) so two documents touching the same batches cannot deadlock.
+        """
+        result = await self.session.execute(
+            select(ProductBatch).where(ProductBatch.id == batch_id).with_for_update()
+        )
+        return result.scalar_one_or_none()
+
+    async def lock_batch_ids(self, batch_ids: set[int]) -> None:
+        """Lock a document's batches up front, ascending, so nothing deadlocks."""
+        for batch_id in sorted(b for b in batch_ids if b is not None):
+            await self.session.execute(
+                select(ProductBatch.id)
+                .where(ProductBatch.id == batch_id)
+                .with_for_update()
+            )
 
     async def lock_batches_in_order(self, pairs: set[tuple[int, int]]) -> None:
         """Take the row locks a multi-line document needs, in a fixed global order.
@@ -457,7 +532,7 @@ class StockService:
 
         total_cost = Decimal("0")
         for line in data.lines:
-            batch = await self.session.get(ProductBatch, line.batch_id)
+            batch = await self.get_batch_locked(line.batch_id)
             if batch is None:
                 raise AppException(404, f"التشغيلة رقم {line.batch_id} غير موجودة.")
             product = await self.get_active_product(batch.product_id)
@@ -558,7 +633,7 @@ class StockService:
             raise AppException(400, "هذا السجل ملغى من قبل.")
 
         for line in adjustment.lines:
-            batch = await self.session.get(ProductBatch, line.batch_id)
+            batch = await self.get_batch_locked(line.batch_id)
             if batch is None:
                 raise AppException(
                     400,
@@ -735,7 +810,7 @@ class StockService:
             variance = line.variance
             if variance == 0:
                 continue
-            batch = await self.session.get(ProductBatch, line.batch_id)
+            batch = await self.get_batch_locked(line.batch_id)
             if batch is None:
                 raise AppException(
                     404, f"التشغيلة ({line.batch_number}) لم تعد موجودة."

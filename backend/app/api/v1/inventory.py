@@ -199,10 +199,15 @@ async def list_product_batches(
     dependencies=[stock_receive],
 )
 async def receive_stock(
-    body: StockReceiveRequest, db: AsyncSession = Depends(get_db)
+    body: StockReceiveRequest,
+    db: AsyncSession = Depends(get_db),
+    # Taken from the permission check rather than a second auth dependency: a
+    # direct receipt now posts a journal entry, and an entry with no author is a
+    # hole in the audit trail.
+    current_user: User = Depends(require_permissions("stock.receive")),
 ) -> APIResponse[BatchOut]:
     """استلام بضاعة في المستودع؛ رقم التشغيلة وتاريخ الانتهاء إلزاميان."""
-    batch = await StockService(db).receive_stock(body)
+    batch = await StockService(db).receive_stock(body, current_user.id)
     return APIResponse(
         data=BatchOut.model_validate(batch), message="تم استلام البضاعة بنجاح."
     )

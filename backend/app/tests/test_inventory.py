@@ -69,6 +69,7 @@ async def receive(
     expiry_days: int,
     quantity: str,
     unit_id: int | None = None,
+    unit_cost: str | None = None,
 ) -> dict:
     response = await client.post(
         "/api/v1/inventory/stock/receive",
@@ -80,6 +81,7 @@ async def receive(
             "expiry_date": days_from_now(expiry_days),
             "quantity": quantity,
             "unit_id": unit_id,
+            "unit_cost": unit_cost,
         },
     )
     assert response.status_code == 201, response.text

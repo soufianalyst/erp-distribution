@@ -315,7 +315,7 @@ class PurchaseService:
 
         # 1) Reverse the previously received quantities; block if some was already sold.
         for line in invoice.lines:
-            batch = await self.session.get(ProductBatch, line.batch_id)
+            batch = await self.stock.get_batch_locked(line.batch_id)
             if batch is not None:
                 if batch.quantity < line.quantity:
                     raise AppException(
@@ -380,14 +380,14 @@ class PurchaseService:
         invoice = await self.get_invoice(invoice_id)
 
         for line in invoice.lines:
-            batch = await self.session.get(ProductBatch, line.batch_id)
+            batch = await self.stock.get_batch_locked(line.batch_id)
             if batch is not None and batch.quantity < line.quantity:
                 raise AppException(
                     400, "لا يمكن حذف الفاتورة؛ تم بيع جزء من هذه البضاعة بالفعل."
                 )
 
         for line in invoice.lines:
-            batch = await self.session.get(ProductBatch, line.batch_id)
+            batch = await self.stock.get_batch_locked(line.batch_id)
             if batch is not None:
                 batch.quantity -= line.quantity
 
@@ -729,7 +729,7 @@ class PurchaseService:
                     continue
                 take = min(returnable, remaining)
 
-                batch = await self.session.get(ProductBatch, inv_line.batch_id)
+                batch = await self.stock.get_batch_locked(inv_line.batch_id)
                 if batch is not None:
                     if batch.quantity < take:
                         raise AppException(

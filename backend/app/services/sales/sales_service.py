@@ -697,7 +697,7 @@ class SalesService:
 
         # 1) Give the previously sold quantities back to their original batches.
         for line in invoice.lines:
-            batch = await self.session.get(ProductBatch, line.batch_id)
+            batch = await self.stock.get_batch_locked(line.batch_id)
             if batch is not None:
                 batch.quantity += line.quantity
 
@@ -806,7 +806,7 @@ class SalesService:
 
         # Give the sold quantities back to their original batches.
         for line in invoice.lines:
-            batch = await self.session.get(ProductBatch, line.batch_id)
+            batch = await self.stock.get_batch_locked(line.batch_id)
             if batch is not None:
                 batch.quantity += line.quantity
 
@@ -1032,7 +1032,7 @@ class SalesService:
                 take = min(returnable, remaining)
 
                 if data.reason == ReturnReason.RESELLABLE:
-                    batch = await self.session.get(ProductBatch, inv_line.batch_id)
+                    batch = await self.stock.get_batch_locked(inv_line.batch_id)
                     if batch is not None:
                         batch.quantity += take
 
