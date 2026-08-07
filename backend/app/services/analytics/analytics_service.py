@@ -55,6 +55,7 @@ from app.domain.models.sales import (
     SalesReturnLine,
 )
 from app.domain.models.user import User
+from app.services.sales.returns_query import posted
 from app.services.sales.sales_service import SalesService
 
 TWO_PLACES = Decimal("0.01")
@@ -114,7 +115,7 @@ class AnalyticsService:
             select(
                 SalesReturn.customer_id, func.coalesce(func.sum(SalesReturn.total), 0)
             )
-            .where(SalesReturn.created_at >= window_start)
+            .where(SalesReturn.created_at >= window_start, posted())
             .group_by(SalesReturn.customer_id)
         )
         returns_by_customer = {cid: _d(t) for cid, t in returns_result.all()}
@@ -212,7 +213,7 @@ class AnalyticsService:
                 func.coalesce(func.sum(SalesReturnLine.line_total), 0),
             )
             .join(SalesReturn, SalesReturnLine.return_id == SalesReturn.id)
-            .where(SalesReturn.created_at >= window_start)
+            .where(SalesReturn.created_at >= window_start, posted())
             .group_by(SalesReturnLine.product_id)
         )
         returns_by_product = {pid: _d(t) for pid, t in returns_result.all()}
@@ -440,7 +441,7 @@ class AnalyticsService:
 
         returns_result = await self.session.execute(
             select(SalesReturn.created_at, SalesReturn.total, SalesReturn.reason).where(
-                SalesReturn.created_at >= window_start
+                SalesReturn.created_at >= window_start, posted()
             )
         )
         returns_by_month: dict[str, dict] = defaultdict(
@@ -769,7 +770,7 @@ class AnalyticsService:
             select(User.id, func.coalesce(func.sum(SalesReturn.total), 0))
             .join(Customer, Customer.salesman_id == User.id)
             .join(SalesReturn, SalesReturn.customer_id == Customer.id)
-            .where(SalesReturn.created_at >= window_start)
+            .where(SalesReturn.created_at >= window_start, posted())
             .group_by(User.id)
         )
         returns_by_rep = {uid: _d(t) for uid, t in returns_result.all()}
@@ -834,7 +835,7 @@ class AnalyticsService:
 
         returns_result = await self.session.execute(
             select(func.coalesce(func.sum(SalesReturn.total), 0)).where(
-                SalesReturn.created_at >= window_start
+                SalesReturn.created_at >= window_start, posted()
             )
         )
         total_returns = _d(returns_result.scalar_one())
@@ -865,7 +866,9 @@ class AnalyticsService:
         all_returned = _d(
             (
                 await self.session.execute(
-                    select(func.coalesce(func.sum(SalesReturn.total), 0))
+                    select(func.coalesce(func.sum(SalesReturn.total), 0)).where(
+                        posted()
+                    )
                 )
             ).scalar_one()
         )

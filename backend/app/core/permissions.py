@@ -57,6 +57,12 @@ PERMISSION_GROUPS: list[dict] = [
                 "label": "عرض تقرير عمولات المناديب",
             },
             {
+                # Reversing a credit note moves stock and money back, so it is held
+                # apart from recording one — the same separation the damage flow uses.
+                "code": "sales.returns_cancel",
+                "label": "إلغاء مرتجع مبيعات (عكس القيد والكمية)",
+            },
+            {
                 # Handing cash back is a different authority from booking the
                 # return: whoever records the returned goods must not be the one
                 # who pays themselves for them.
@@ -231,6 +237,7 @@ ROLE_DEFAULT_PERMISSIONS: dict[str, frozenset[str]] = {
             "suppliers.view",
             "suppliers.manage",
             "sales.refund_customer",
+            "sales.returns_cancel",
             "purchases.view",
             "purchases.create",
             "purchases.orders",

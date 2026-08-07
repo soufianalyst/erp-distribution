@@ -42,6 +42,17 @@ class ReturnReason(str, enum.Enum):
     DAMAGED_TRANSPORT = "damaged_transport"  # تالف بسبب النقل
 
 
+class ReturnStatus(str, enum.Enum):
+    """A credit note stands, or it was entered by mistake and reversed.
+
+    Cancelled rather than deleted: the mistake itself is part of the record, and a
+    credit note that simply vanishes leaves a customer statement nobody can explain.
+    """
+
+    POSTED = "posted"
+    CANCELLED = "cancelled"
+
+
 class QuotationStatus(str, enum.Enum):
     DRAFT = "draft"  # مسودة — بانتظار قرار العميل
     CONVERTED = "converted"  # تم تحويلها إلى فاتورة
@@ -309,6 +320,15 @@ class SalesReturn(Base):
     # What the customer is actually credited: subtotal + vat - discount_amount.
     total: Mapped[Decimal] = mapped_column(Numeric(14, 2), nullable=False)
     notes: Mapped[str | None] = mapped_column(String(300))
+    status: Mapped[ReturnStatus] = mapped_column(
+        Enum(ReturnStatus, values_callable=lambda e: [m.value for m in e]),
+        nullable=False,
+        default=ReturnStatus.POSTED,
+        server_default=ReturnStatus.POSTED.value,
+    )
+    cancelled_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    cancelled_by: Mapped[int | None] = mapped_column(ForeignKey("users.id"))
+    cancel_reason: Mapped[str | None] = mapped_column(String(300))
     created_by: Mapped[int | None] = mapped_column(ForeignKey("users.id"))
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=func.now()

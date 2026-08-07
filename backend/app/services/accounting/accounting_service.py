@@ -1,7 +1,7 @@
 """Accounting business logic: chart of accounts, double-entry journal, trial balance."""
 
 from datetime import date
-from decimal import Decimal
+from decimal import ROUND_HALF_UP, Decimal
 
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -22,7 +22,8 @@ from app.api.schemas.accounting import (
 from app.core.exceptions import AppException
 from app.domain.models.accounting import Account, AccountType, JournalEntry, JournalItem
 from app.domain.models.purchases import PurchaseInvoice, PurchaseInvoiceTax
-from app.domain.models.sales import SalesInvoice, SalesInvoiceTax
+from app.domain.models.sales import SalesInvoice, SalesInvoiceTax, SalesReturn
+from app.services.sales.returns_query import posted
 
 # System account codes used by automatic postings.
 CASH = "1010"
@@ -278,10 +279,62 @@ class AccountingService:
             )
         purchases_result = await self.session.execute(purchases_stmt)
 
+        # Credit notes reduce the tax owed, and this report used to ignore them
+        # entirely. Sell 1,000 with 160 of VAT, take the whole lot back, and it still
+        # showed 160 collected — so the company would file and pay tax on sales that
+        # no longer existed. The journal entry was always right; the report simply
+        # read from a different place than the ledger, which is how the two came to
+        # disagree.
+        #
+        # A return stores one combined `vat_amount` rather than a row per rate, so it
+        # is allocated across the invoice's own tax rows in proportion to what each
+        # one charged. That keeps the credit against the same rate that collected it —
+        # which matters as soon as an invoice carries VAT plus a local tax, because
+        # the two are declared separately.
+        returns_stmt = (
+            select(
+                SalesInvoiceTax.name,
+                SalesInvoiceTax.rate,
+                SalesInvoiceTax.amount,
+                SalesInvoice.vat_amount,
+                SalesReturn.vat_amount,
+            )
+            .join(SalesReturn, SalesReturn.invoice_id == SalesInvoiceTax.invoice_id)
+            .join(SalesInvoice, SalesInvoice.id == SalesInvoiceTax.invoice_id)
+            .where(SalesReturn.vat_amount > 0, posted())
+        )
+        # Dated by the *return*, not the invoice: a credit note issued in March
+        # against a January sale belongs to March's declaration.
+        if date_from is not None:
+            returns_stmt = returns_stmt.where(
+                func.date(SalesReturn.created_at) >= date_from
+            )
+        if date_to is not None:
+            returns_stmt = returns_stmt.where(
+                func.date(SalesReturn.created_at) <= date_to
+            )
+        credited: dict[tuple[str, Decimal], Decimal] = {}
+        for name, rate, tax_amount, invoice_vat, return_vat in (
+            await self.session.execute(returns_stmt)
+        ).all():
+            invoice_vat = Decimal(str(invoice_vat))
+            if invoice_vat <= 0:
+                continue
+            share = (Decimal(str(tax_amount)) / invoice_vat) * Decimal(str(return_vat))
+            key = (name, Decimal(str(rate)))
+            credited[key] = credited.get(key, Decimal("0")) + share.quantize(
+                Decimal("0.01"), rounding=ROUND_HALF_UP
+            )
+
         collected = {
             (name, Decimal(str(rate))): Decimal(str(amount))
+            - credited.get((name, Decimal(str(rate))), Decimal("0"))
             for name, rate, amount in sales_result.all()
         }
+        # A rate that only ever appeared on a credit note in this period still owes a
+        # (negative) line, or the declaration silently omits it.
+        for key, amount in credited.items():
+            collected.setdefault(key, -amount)
         paid = {
             (name, Decimal(str(rate))): Decimal(str(amount))
             for name, rate, amount in purchases_result.all()

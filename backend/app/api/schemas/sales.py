@@ -8,6 +8,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from app.domain.models.sales import (
     CreditResolution,
+    ReturnStatus,
     FulfillmentType,
     PriceTier,
     QuotationStatus,
@@ -256,6 +257,12 @@ class ReturnLineOut(BaseModel):
     line_total: Decimal
 
 
+class ReturnCancelIn(BaseModel):
+    """Why it is being reversed — optional, but it is what makes the record readable."""
+
+    cancel_reason: str | None = Field(default=None, max_length=300)
+
+
 class SalesReturnOut(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
@@ -272,6 +279,9 @@ class SalesReturnOut(BaseModel):
     total: Decimal
     notes: str | None
     created_at: datetime
+    status: ReturnStatus = ReturnStatus.POSTED
+    cancelled_at: datetime | None = None
+    cancel_reason: str | None = None
     lines: list[ReturnLineOut]
     # Set when this return left the invoice paid for more than it is now worth, so
     # the screen can ask what to do with the difference. Without it the API knew a

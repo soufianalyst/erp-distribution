@@ -23,11 +23,17 @@ from app.api.schemas.sales import (
 from app.core.exceptions import AppException
 from app.core.permissions import has_permission
 from app.domain.models.accounting import JournalEntry
-from app.domain.models.delivery import DeliveryStop, DeliveryTrip
+from app.domain.models.delivery import (
+    DeliveryStop,
+    DeliveryTrip,
+    StopStatus,
+    TripStatus,
+)
 from app.domain.models.inventory import Product, ProductBatch
 from app.domain.models.sales import (
     CreditResolution,
     CustomerCredit,
+    ReturnStatus,
     Customer,
     CustomerPayment,
     FulfillmentType,
@@ -46,6 +52,11 @@ from app.domain.models.sales import (
 )
 from app.domain.models.settings import TaxRate
 from app.domain.models.user import User, UserRole
+from app.services.sales.returns_query import (
+    posted,
+    returned_total_for,
+    returned_totals,
+)
 from app.services.accounting.accounting_service import (
     ACCOUNTS_RECEIVABLE,
     COGS,
@@ -181,7 +192,7 @@ class SalesService:
 
         returns = await self.session.execute(
             select(func.coalesce(func.sum(SalesReturn.total), 0)).where(
-                SalesReturn.customer_id == customer_id
+                SalesReturn.customer_id == customer_id, posted()
             )
         )
         total_returns = returns.scalar_one()
@@ -684,7 +695,7 @@ class SalesService:
         returns_count = await self.session.execute(
             select(func.count())
             .select_from(SalesReturn)
-            .where(SalesReturn.invoice_id == invoice_id)
+            .where(SalesReturn.invoice_id == invoice_id, posted())
         )
         if returns_count.scalar_one() > 0:
             raise AppException(
@@ -762,19 +773,14 @@ class SalesService:
         return await self.get_invoice(invoice.id)
 
     async def _attach_return_totals(self, invoices: list[SalesInvoice]) -> None:
-        """Expose how much of each invoice was credited back via returns."""
-        ids = [invoice.id for invoice in invoices]
-        if not ids:
+        """Set `returned_total` on each invoice for read models.
+
+        Delegated to services/sales/returns_query — this was a fourth private copy of
+        the same per-invoice sum, found by the test that forbids exactly that.
+        """
+        if not invoices:
             return
-        result = await self.session.execute(
-            select(
-                SalesReturn.invoice_id,
-                func.coalesce(func.sum(SalesReturn.total), 0),
-            )
-            .where(SalesReturn.invoice_id.in_(ids))
-            .group_by(SalesReturn.invoice_id)
-        )
-        totals = {invoice_id: Decimal(str(total)) for invoice_id, total in result.all()}
+        totals = await returned_totals(self.session, [i.id for i in invoices])
         for invoice in invoices:
             invoice.returned_total = totals.get(invoice.id, Decimal("0"))
 
@@ -788,7 +794,7 @@ class SalesService:
         returns_count = await self.session.execute(
             select(func.count())
             .select_from(SalesReturn)
-            .where(SalesReturn.invoice_id == invoice_id)
+            .where(SalesReturn.invoice_id == invoice_id, posted())
         )
         if returns_count.scalar_one() > 0:
             raise AppException(400, "لا يمكن حذف فاتورة مسجل عليها مرتجعات.")
@@ -847,13 +853,8 @@ class SalesService:
 
 
     async def _returned_total_for(self, invoice_id: int) -> Decimal:
-        """Everything credited back against one invoice, this return included."""
-        result = await self.session.execute(
-            select(func.coalesce(func.sum(SalesReturn.total), 0)).where(
-                SalesReturn.invoice_id == invoice_id
-            )
-        )
-        return Decimal(str(result.scalar_one()))
+        """Everything credited back against one invoice. See services/sales/returns_query."""
+        return await returned_total_for(self.session, invoice_id)
 
     async def list_customer_credits(
         self, resolution: CreditResolution | None = None
@@ -968,7 +969,7 @@ class SalesService:
             select(
                 func.coalesce(func.sum(SalesReturn.subtotal), 0),
                 func.coalesce(func.sum(SalesReturn.discount_amount), 0),
-            ).where(SalesReturn.invoice_id == invoice.id)
+            ).where(SalesReturn.invoice_id == invoice.id, posted())
         )
         prior_subtotal, prior_discount = prior.one()
         prior_subtotal = Decimal(str(prior_subtotal))
@@ -984,9 +985,57 @@ class SalesService:
 
     async def create_return(self, data: SalesReturnCreate, user: User) -> SalesReturn:
         """Post a sales return; resellable goods go back to their original batches."""
+        # Lock the invoice row for the whole of this return.
+        #
+        # Everything below rests on "how much of this invoice has already been sent
+        # back", read a few lines down and then compared against what each line sold.
+        # Read without a lock, two returns arriving together each saw nothing returned
+        # yet and both passed: proved by firing 6 and 6 at a line of 10, which credited
+        # 120 against a 100 invoice and put 12 units back from a sale of 10. Money and
+        # stock created out of nothing.
+        #
+        # Locking the invoice — not the batches, which are locked separately — is what
+        # serialises the *decision*. The batch lock added earlier protects the
+        # quantities; this protects the entitlement to return them at all.
+        locked = await self.session.execute(
+            select(SalesInvoice.id)
+            .where(SalesInvoice.id == data.invoice_id)
+            .with_for_update()
+        )
+        if locked.scalar_one_or_none() is None:
+            raise AppException(404, "فاتورة المبيعات غير موجودة.")
+
         invoice = await self.get_invoice(data.invoice_id)
         customer = await self.get_customer(invoice.customer_id)
         self.ensure_customer_access(user, customer)
+
+        # A return before the goods leave reduces the picking documents, so the
+        # warehouse hands over the right quantity. Once the trip has left, those
+        # documents are printed and on the seat beside the driver, and no amount of
+        # netting reaches him — he is carrying the original count. Recording the
+        # return anyway would credit the customer for goods about to be handed to
+        # them, which is the give-away this whole change exists to stop.
+        #
+        # So it is refused, with the instruction that makes it correct: take the
+        # delivery in full, then record the return. That turns it into the
+        # after-delivery case, where the goods really do come back and everything
+        # already works.
+        in_transit = await self.session.execute(
+            select(DeliveryTrip.id)
+            .join(DeliveryStop, DeliveryStop.trip_id == DeliveryTrip.id)
+            .where(
+                DeliveryStop.invoice_id == invoice.id,
+                DeliveryStop.status == StopStatus.PENDING,
+                DeliveryTrip.status == TripStatus.IN_TRANSIT,
+            )
+            .limit(1)
+        )
+        if in_transit.scalar_one_or_none() is not None:
+            raise AppException(
+                400,
+                "بضاعة هذه الفاتورة على الطريق مع السائق؛ لا يمكن تسجيل مرتجع الآن. "
+                "استلم الكمية كاملة ثم سجّل المرتجع بعد التسليم.",
+            )
 
         # Quantities already returned against this invoice, per batch.
         returned_result = await self.session.execute(
@@ -995,7 +1044,7 @@ class SalesService:
                 func.coalesce(func.sum(SalesReturnLine.quantity), 0),
             )
             .join(SalesReturn, SalesReturnLine.return_id == SalesReturn.id)
-            .where(SalesReturn.invoice_id == invoice.id)
+            .where(SalesReturn.invoice_id == invoice.id, posted())
             .group_by(SalesReturnLine.batch_id)
         )
         returned_per_batch: dict[int, Decimal] = {
@@ -1145,6 +1194,22 @@ class SalesService:
         overpaid = (invoice.paid_amount - (invoice.total - returned_so_far)).quantize(
             TWO_PLACES, rounding=ROUND_HALF_UP
         )
+        # Nothing left to deliver? Take the stop off the trip. A driver sent to a
+        # customer with an empty picking line is a wasted journey and an invitation
+        # to hand over something to justify the visit.
+        if await self._returned_total_for(invoice.id) >= invoice.total:
+            dropped = await self.session.execute(
+                select(DeliveryStop)
+                .join(DeliveryTrip, DeliveryTrip.id == DeliveryStop.trip_id)
+                .where(
+                    DeliveryStop.invoice_id == invoice.id,
+                    DeliveryStop.status == StopStatus.PENDING,
+                    DeliveryTrip.status == TripStatus.PLANNED,
+                )
+            )
+            for stop in dropped.scalars().all():
+                await self.session.delete(stop)
+
         credit: CustomerCredit | None = None
         if overpaid > 0:
             credit = CustomerCredit(
@@ -1169,6 +1234,147 @@ class SalesService:
             saved.pending_credit_id = credit.id
             saved.pending_credit_amount = credit.amount
         return saved
+
+    async def cancel_return(
+        self, return_id: int, user: User, cancel_reason: str | None = None
+    ) -> SalesReturn:
+        """Undo a credit note entered by mistake — stock, ledger and credit together.
+
+        Kept and marked cancelled rather than deleted: a credit note that simply
+        vanishes leaves a customer statement nobody can explain, and the mistake is
+        itself part of the record.
+
+        Three things it refuses, each for a different reason:
+
+        * **Already cancelled** — reversing twice would take the goods out twice.
+        * **The refund has been paid** — the customer is holding the cash. Undoing the
+          credit note while they keep the money would quietly turn a correction into a
+          debt they were never told about. The refund has to be dealt with first, by a
+          person, which is deliberately not something this method will decide.
+        * **The goods have since been sold** — a resellable return put them back on the
+          shelf and they may have left again. Taking out stock that is no longer there
+          is exactly the negative-quantity case the database now rejects, so it is
+          caught here with an explanation instead of an integrity error.
+        """
+        # Lock the credit note before reading its status. Two clerks pressing cancel
+        # at the same moment would otherwise both see "posted", and the goods would
+        # come out of stock twice — the same lost update the batch locks closed
+        # elsewhere, one level up.
+        locked = await self.session.execute(
+            select(SalesReturn.id).where(SalesReturn.id == return_id).with_for_update()
+        )
+        if locked.scalar_one_or_none() is None:
+            raise AppException(404, "مرتجع المبيعات غير موجود.")
+
+        sales_return = await self.get_return(return_id)
+        if sales_return.status is ReturnStatus.CANCELLED:
+            raise AppException(400, "هذا المرتجع ملغى من قبل.")
+
+        customer = await self.get_customer(sales_return.customer_id)
+        self.ensure_customer_access(user, customer)
+
+        credit = (
+            await self.session.execute(
+                select(CustomerCredit).where(CustomerCredit.return_id == sales_return.id)
+            )
+        ).scalar_one_or_none()
+        if credit is not None and credit.resolution is CreditResolution.REFUNDED:
+            raise AppException(
+                400,
+                f"تم ردّ مبلغ {credit.amount} للعميل نقداً عن هذا المرتجع؛ "
+                "لا يمكن إلغاؤه قبل استرجاع المبلغ من العميل وتسجيل ذلك.",
+            )
+
+        # Take the goods back out, if they were ever put back.
+        cost_total = Decimal("0")
+        if sales_return.reason is ReturnReason.RESELLABLE:
+            for line in sorted(sales_return.lines, key=lambda ln: ln.batch_id or 0):
+                batch = await self.stock.get_batch_locked(line.batch_id)
+                if batch is None:
+                    raise AppException(400, "تشغيلة المرتجع غير موجودة.")
+                if batch.quantity < line.quantity:
+                    raise AppException(
+                        400,
+                        f"لا يمكن إلغاء المرتجع: المتوفر من التشغيلة "
+                        f"({batch.batch_number}) هو {batch.quantity} "
+                        f"والمطلوب سحبه {line.quantity} — بِيعت البضاعة بعد إرجاعها.",
+                    )
+                batch.quantity -= line.quantity
+        # A return line records what the customer was charged, not what the goods cost
+        # us — the cost lives on the invoice line it came from, matched by batch, which
+        # is exactly how create_return valued it in the first place. Reversing has to
+        # read it from the same place, or the COGS put back differs from the COGS taken
+        # out and inventory drifts by the margin.
+        invoice = await self.get_invoice(sales_return.invoice_id)
+        unit_cost_by_batch = {
+            inv_line.batch_id: inv_line.unit_cost
+            for inv_line in invoice.lines
+            if inv_line.unit_cost is not None
+        }
+        for line in sales_return.lines:
+            unit_cost = unit_cost_by_batch.get(line.batch_id)
+            if unit_cost is not None:
+                cost_total += (line.quantity * unit_cost).quantize(
+                    TWO_PLACES, rounding=ROUND_HALF_UP
+                )
+
+        # Mirror of the original postings, in the opposite direction.
+        reverse_items = [
+            (SALES_RETURNS, Decimal("0"), sales_return.subtotal),
+            (VAT, Decimal("0"), sales_return.vat_amount),
+            (ACCOUNTS_RECEIVABLE, sales_return.total, Decimal("0")),
+        ]
+        if sales_return.discount_amount > 0:
+            reverse_items.append(
+                (SALES_DISCOUNT, sales_return.discount_amount, Decimal("0"))
+            )
+        await self.accounting.add_entry_no_commit(
+            entry_date=date.today(),
+            description=f"إلغاء مرتجع المبيعات رقم {sales_return.id}",
+            items=reverse_items,
+            reference_type="sales_return_cancel",
+            reference_id=sales_return.id,
+            created_by=user.id,
+        )
+        if cost_total > 0:
+            credited_account = (
+                INVENTORY
+                if sales_return.reason is ReturnReason.RESELLABLE
+                else DAMAGE_LOSS
+            )
+            await self.accounting.add_entry_no_commit(
+                entry_date=date.today(),
+                description=f"إلغاء تكلفة مرتجع المبيعات رقم {sales_return.id}",
+                items=[
+                    (COGS, cost_total, Decimal("0")),
+                    (credited_account, Decimal("0"), cost_total),
+                ],
+                reference_type="sales_return_cancel",
+                reference_id=sales_return.id,
+                created_by=user.id,
+            )
+
+        # An unpaid credit is void with the note that caused it.
+        if credit is not None:
+            await self.session.delete(credit)
+
+        sales_return.status = ReturnStatus.CANCELLED
+        sales_return.cancelled_at = datetime.now(timezone.utc)
+        sales_return.cancelled_by = user.id
+        sales_return.cancel_reason = cancel_reason
+        await self.session.commit()
+        return await self.get_return(return_id)
+
+    async def get_return(self, return_id: int) -> SalesReturn:
+        result = await self.session.execute(
+            select(SalesReturn)
+            .options(selectinload(SalesReturn.lines))
+            .where(SalesReturn.id == return_id)
+        )
+        sales_return = result.scalar_one_or_none()
+        if sales_return is None:
+            raise AppException(404, "مرتجع المبيعات غير موجود.")
+        return sales_return
 
     async def list_returns(
         self, user: User, invoice_id: int | None = None
@@ -1252,7 +1458,10 @@ class SalesService:
         returns_result = await self.session.execute(
             select(SalesReturn)
             .options(selectinload(SalesReturn.lines))
-            .where(SalesReturn.customer_id == customer_id)
+            # The statement's own balance excludes cancelled notes, so its lines have
+            # to as well — otherwise the movements listed do not add up to the total
+            # printed underneath them, which is the one thing a statement must do.
+            .where(SalesReturn.customer_id == customer_id, posted())
             .order_by(SalesReturn.id)
         )
         returns = list(returns_result.scalars().all())
@@ -1316,7 +1525,7 @@ class SalesService:
                 func.sum(SalesReturn.subtotal).label("total_returns"),
             )
             .join(SalesInvoice, SalesReturn.invoice_id == SalesInvoice.id)
-            .where(SalesInvoice.salesman_id.is_not(None))
+            .where(SalesInvoice.salesman_id.is_not(None), posted())
             .group_by(SalesInvoice.salesman_id)
         )
         if date_from is not None:

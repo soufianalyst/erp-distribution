@@ -11,7 +11,7 @@ once the full amount has moved.
 from datetime import date, datetime, time, timedelta, timezone
 from decimal import Decimal
 
-from sqlalchemy import func, select
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
@@ -29,9 +29,9 @@ from app.domain.models.sales import (
     CustomerCredit,
     SalesInvoice,
     SalesPaymentMethod,
-    SalesReturn,
 )
 from app.domain.models.user import User
+from app.services.sales.returns_query import returned_totals
 from app.services.accounting.accounting_service import (
     ACCOUNTS_PAYABLE,
     ACCOUNTS_RECEIVABLE,
@@ -62,25 +62,8 @@ class CashierService:
         return invoice
 
     async def returned_totals(self, invoice_ids: list[int]) -> dict[int, Decimal]:
-        """How much has been credited back per invoice via sales returns.
-
-        Read live rather than stored on the invoice, because the invoice is an
-        issued document and must not be rewritten. Its `total` is what was billed;
-        what is still *owed* is a derived figure, and this is the missing term.
-        """
-        if not invoice_ids:
-            return {}
-        result = await self.session.execute(
-            select(
-                SalesReturn.invoice_id,
-                func.coalesce(func.sum(SalesReturn.total), 0),
-            )
-            .where(SalesReturn.invoice_id.in_(invoice_ids))
-            .group_by(SalesReturn.invoice_id)
-        )
-        return {
-            invoice_id: Decimal(str(total)) for invoice_id, total in result.all()
-        }
+        """Credited back per invoice. Delegated — see services/sales/returns_query."""
+        return await returned_totals(self.session, invoice_ids)
 
     async def net_due(self, invoice: SalesInvoice) -> Decimal:
         """What the customer still owes on this invoice, after returns.

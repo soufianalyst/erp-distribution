@@ -8,6 +8,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.api.deps import require_permissions
 from app.api.schemas.common import APIResponse
 from app.api.schemas.sales import (
+    ReturnCancelIn,
     CustomerCreditOut,
     CustomerCreditResolveIn,
     FieldSyncIn,
@@ -499,4 +500,25 @@ async def resolve_customer_credit(
             if body.resolution == "refunded"
             else "بقي المبلغ رصيداً في حساب العميل."
         ),
+    )
+
+
+@router.post("/returns/{return_id}/cancel", response_model=APIResponse[SalesReturnOut])
+async def cancel_return(
+    return_id: int,
+    body: ReturnCancelIn | None = None,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(require_permissions("sales.returns_cancel")),
+) -> APIResponse[SalesReturnOut]:
+    """إلغاء مرتجع سُجّل بالخطأ: تُسحب الكمية من المخزون ويُعكس القيد.
+
+    يُرفض إن كان مبلغ المرتجع قد رُدّ للعميل نقداً، أو إن بِيعت البضاعة بعد إرجاعها.
+    السجل يبقى محفوظاً بعلامة «ملغى» لأن الخطأ نفسه جزء من التوثيق.
+    """
+    sales_return = await SalesService(db).cancel_return(
+        return_id, current_user, body.cancel_reason if body else None
+    )
+    return APIResponse(
+        data=SalesReturnOut.model_validate(sales_return),
+        message="تم إلغاء المرتجع وعكس أثره.",
     )

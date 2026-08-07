@@ -1105,6 +1105,29 @@ export default function SalesPage() {
 
   const invoices = useFetch(() => api.get("/sales/invoices"));
   const returns = useFetch(() => api.get("/sales/returns"));
+
+  // Cancelling a credit note moves stock and money back, so the invoice list and the
+  // customer figures both go stale — reload them, not just the returns table.
+  const cancelReturn = async (sales_return) => {
+    const reason = window.prompt(
+      `إلغاء المرتجع رقم ${sales_return.id}؟\n` +
+        "ستُسحب الكمية من المخزون ويُعكس القيد المحاسبي، وتعود الفاتورة مستحقة بكاملها.\n" +
+        "سبب الإلغاء (اختياري):"
+    );
+    // prompt returns null when dismissed, "" when confirmed with nothing typed.
+    if (reason === null) return;
+    try {
+      const { data } = await api.post(`/sales/returns/${sales_return.id}/cancel`, {
+        cancel_reason: reason || null,
+      });
+      setNotice(data.message);
+      returns.reload();
+      invoices.reload();
+    } catch (err) {
+      alert(apiMessage(err));
+    }
+  };
+
   const customers = useFetch(() => api.get("/sales/customers"));
   const warehouses = useFetch(() => api.get("/inventory/warehouses"));
   const products = useFetch(() => api.get("/inventory/products"));
@@ -1115,6 +1138,7 @@ export default function SalesPage() {
   }
 
   const canViewCommissions = can("sales.commission_view");
+  const canCancelReturn = can("sales.returns_cancel");
   const canQuote = can("sales.quotations");
   const TABS = [
     { id: "list", label: "القائمة" },
@@ -1332,8 +1356,44 @@ export default function SalesPage() {
                       "—"
                     ),
                 },
-                { key: "total", label: "صافي الإشعار", render: (r) => <b>{money(r.total)}</b> },
+                {
+                  key: "total",
+                  label: "صافي الإشعار",
+                  render: (r) =>
+                    r.status === "cancelled" ? (
+                      <span className="text-slate-400 line-through">{money(r.total)}</span>
+                    ) : (
+                      <b>{money(r.total)}</b>
+                    ),
+                },
                 { key: "created_at", label: "التاريخ", render: (r) => r.created_at?.slice(0, 10) },
+                {
+                  key: "status",
+                  label: "الحالة",
+                  render: (r) =>
+                    r.status === "cancelled" ? (
+                      <div>
+                        <Badge tone="red">ملغى</Badge>
+                        {r.cancel_reason && (
+                          <div className="mt-1 text-xs text-slate-500 dark:text-slate-400">
+                            {r.cancel_reason}
+                          </div>
+                        )}
+                      </div>
+                    ) : (
+                      <Badge tone="green">مُثبَّت</Badge>
+                    ),
+                },
+                {
+                  key: "actions",
+                  label: "",
+                  render: (r) =>
+                    r.status !== "cancelled" && canCancelReturn ? (
+                      <Button variant="danger" onClick={() => cancelReturn(r)}>
+                        إلغاء
+                      </Button>
+                    ) : null,
+                },
               ]}
               rows={returns.data}
               empty="لا توجد مرتجعات بعد."

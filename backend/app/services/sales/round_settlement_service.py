@@ -46,6 +46,7 @@ from app.api.schemas.sales import (
     RoundVanSettleIn,
 )
 from app.core import arabic
+from app.services.sales.returns_query import returned_totals
 from app.core.exceptions import AppException
 from app.core.permissions import has_permission
 from app.domain.models.cashier import CashMovement
@@ -225,14 +226,25 @@ class RoundSettlementService:
         drawer_in = Decimal("0")
         rows: list[RoundInvoiceOut] = []
 
+        # Net of credit notes, or the round can never close. The cashier correctly
+        # collects total-minus-returns, while this computed what was owed from the
+        # gross totals — so a van sale that was partly returned left the round showing
+        # cash outstanding that nobody owes, blocking the close permanently, with the
+        # cashier unable to collect it either because their own gate refuses money
+        # that is not due. The same missing term as the cashier bug, in a second place
+        # that recalculated the figure instead of asking for it.
+        credited = await returned_totals(self.session, [i.id for i in invoices])
+
         for invoice in invoices:
-            totals[invoice.payment_method] += invoice.total
+            back = credited.get(invoice.id, Decimal("0"))
+            net_total = invoice.total - back
+            totals[invoice.payment_method] += net_total
             got = collected.get(invoice.id, Decimal("0"))
             customer = await self.session.get(Customer, invoice.customer_id)
             if invoice.payment_method in DRAWER_METHODS:
-                drawer_due += invoice.total
+                drawer_due += net_total
                 drawer_in += got
-                outstanding = invoice.total - got
+                outstanding = net_total - got
             else:
                 # Credit sales are not the salesman's to hand over tonight.
                 outstanding = Decimal("0")
@@ -241,7 +253,7 @@ class RoundSettlementService:
                     id=invoice.id,
                     customer_name=customer.name if customer else "—",
                     payment_method=invoice.payment_method,
-                    total=invoice.total,
+                    total=net_total,
                     collected=got,
                     outstanding=outstanding,
                     is_collected=outstanding <= 0,

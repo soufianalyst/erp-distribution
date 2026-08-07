@@ -27,6 +27,8 @@ from app.domain.models.delivery import (
 )
 from app.domain.models.inventory import Product
 from app.domain.models.sales import (
+    SalesReturn,
+    SalesReturnLine,
     Customer,
     FulfillmentType,
     SalesInvoice,
@@ -34,6 +36,7 @@ from app.domain.models.sales import (
     SalesPaymentMethod,
 )
 from app.services.inventory.stock_service import StockService
+from app.services.sales.returns_query import posted
 
 
 class DeliveryService:
@@ -97,6 +100,76 @@ class DeliveryService:
             for invoice, customer_name in rows
         ]
 
+    async def _net_lines_to_pick(
+        self, invoice_ids: list[int]
+    ) -> list[tuple[int, str, int | None, Decimal]]:
+        """What is actually still owed per (product, batch), after returns.
+
+        Returns [(product_id, batch_number, warehouse_id, quantity)] with anything
+        fully returned dropped entirely.
+
+        Both picking documents used to sum the invoice lines as issued, which meant a
+        return recorded before the goods left told the warehouse to hand over the
+        original quantity anyway. That is not a reporting nicety: the customer
+        receives goods that have already been credited to them, and the shelf ends up
+        permanently short of what the system believes it holds. Proved end to end —
+        sell 10, return 3 before dispatch, and the picking list still said 10.
+
+        Netting here rather than at the two call sites so the trip's picking list and
+        the single-invoice prep sheet can never disagree about the same goods.
+
+        Quantities throughout are base units, both on the invoice line and on the
+        return line, so no unit conversion is involved — a carton sold and a piece
+        returned are already expressed in the same terms by the time they are stored.
+        """
+        if not invoice_ids:
+            return []
+
+        lines = (
+            await self.session.execute(
+                select(
+                    SalesInvoiceLine.invoice_id,
+                    SalesInvoiceLine.product_id,
+                    SalesInvoiceLine.batch_id,
+                    SalesInvoiceLine.batch_number,
+                    SalesInvoiceLine.warehouse_id,
+                    SalesInvoiceLine.quantity,
+                ).where(SalesInvoiceLine.invoice_id.in_(invoice_ids))
+            )
+        ).all()
+
+        # Returned quantity per (invoice, batch) — the same key the sale used, so a
+        # partial return comes off the batch it was actually sold from.
+        returned_rows = (
+            await self.session.execute(
+                select(
+                    SalesReturn.invoice_id,
+                    SalesReturnLine.batch_id,
+                    func.coalesce(func.sum(SalesReturnLine.quantity), 0),
+                )
+                .join(SalesReturn, SalesReturnLine.return_id == SalesReturn.id)
+                .where(SalesReturn.invoice_id.in_(invoice_ids), posted())
+                .group_by(SalesReturn.invoice_id, SalesReturnLine.batch_id)
+            )
+        ).all()
+        returned = {
+            (invoice_id, batch_id): Decimal(str(qty))
+            for invoice_id, batch_id, qty in returned_rows
+        }
+
+        netted: dict[tuple[int, str, int | None], Decimal] = {}
+        for invoice_id, product_id, batch_id, batch_number, warehouse_id, quantity in lines:
+            credited = returned.get((invoice_id, batch_id), Decimal("0"))
+            take = min(Decimal(str(quantity)), credited)
+            remaining = Decimal(str(quantity)) - take
+            if take:
+                returned[(invoice_id, batch_id)] = credited - take
+            if remaining <= 0:
+                continue
+            key = (product_id, batch_number, warehouse_id)
+            netted[key] = netted.get(key, Decimal("0")) + remaining
+        return [(pid, bn, wid, qty) for (pid, bn, wid), qty in netted.items()]
+
     async def invoice_prep(self, invoice_id: int) -> InvoicePrepOut:
         """Batch-level prep sheet so staff pick the exact FEFO batches — no prices."""
         result = await self.session.execute(
@@ -109,37 +182,35 @@ class DeliveryService:
             raise AppException(404, "فاتورة المبيعات غير موجودة.")
         invoice, customer_name = row
 
-        lines_result = await self.session.execute(
-            select(
-                Product.name,
-                SalesInvoiceLine.batch_number,
-                func.sum(SalesInvoiceLine.quantity),
-                Product.base_unit_name,
-                SalesInvoiceLine.warehouse_id,
-            )
-            .join(Product, SalesInvoiceLine.product_id == Product.id)
-            .where(SalesInvoiceLine.invoice_id == invoice_id)
-            .group_by(
-                Product.name,
-                SalesInvoiceLine.batch_number,
-                Product.base_unit_name,
-                SalesInvoiceLine.warehouse_id,
-            )
-            .order_by(
-                SalesInvoiceLine.warehouse_id,
-                Product.name,
-                SalesInvoiceLine.batch_number,
-            )
+        netted = await self._net_lines_to_pick([invoice_id])
+        names = dict(
+            (
+                await self.session.execute(
+                    select(Product.id, Product.name).where(
+                        Product.id.in_([n[0] for n in netted] or [0])
+                    )
+                )
+            ).all()
         )
+        units = dict(
+            (
+                await self.session.execute(
+                    select(Product.id, Product.base_unit_name).where(
+                        Product.id.in_([n[0] for n in netted] or [0])
+                    )
+                )
+            ).all()
+        )
+        netted.sort(key=lambda n: (n[2] or 0, names.get(n[0], ""), n[1]))
         lines = [
             PrepLineOut(
-                product_name=name,
+                product_name=names.get(product_id, ""),
                 batch_number=batch_number,
-                quantity=Decimal(str(quantity)),
-                unit=unit,
+                quantity=quantity,
+                unit=units.get(product_id, ""),
                 warehouse_id=warehouse_id,
             )
-            for name, batch_number, quantity, unit, warehouse_id in lines_result.all()
+            for product_id, batch_number, warehouse_id, quantity in netted
         ]
         return InvoicePrepOut(
             invoice_id=invoice.id,
@@ -300,27 +371,19 @@ class DeliveryService:
 
         lines: list[PickingLineOut] = []
         total = Decimal("0")
-        if invoice_ids:
-            result = await self.session.execute(
-                select(
-                    Product.id,
-                    Product.name,
-                    Product.base_unit_name,
-                    SalesInvoiceLine.batch_number,
-                    func.sum(SalesInvoiceLine.quantity),
+        netted = await self._net_lines_to_pick(invoice_ids)
+        if netted:
+            product_rows = (
+                await self.session.execute(
+                    select(Product.id, Product.name, Product.base_unit_name).where(
+                        Product.id.in_([n[0] for n in netted])
+                    )
                 )
-                .join(Product, SalesInvoiceLine.product_id == Product.id)
-                .where(SalesInvoiceLine.invoice_id.in_(invoice_ids))
-                .group_by(
-                    Product.id,
-                    Product.name,
-                    Product.base_unit_name,
-                    SalesInvoiceLine.batch_number,
-                )
-                .order_by(Product.name, SalesInvoiceLine.batch_number)
-            )
-            for product_id, name, unit, batch_number, quantity in result.all():
-                quantity = Decimal(str(quantity))
+            ).all()
+            info = {pid: (name, unit) for pid, name, unit in product_rows}
+            netted.sort(key=lambda n: (info.get(n[0], ("", ""))[0], n[1]))
+            for product_id, batch_number, _warehouse_id, quantity in netted:
+                name, unit = info.get(product_id, ("", ""))
                 lines.append(
                     PickingLineOut(
                         product_id=product_id,
