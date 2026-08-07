@@ -57,6 +57,13 @@ PERMISSION_GROUPS: list[dict] = [
                 "label": "عرض تقرير عمولات المناديب",
             },
             {
+                # Handing cash back is a different authority from booking the
+                # return: whoever records the returned goods must not be the one
+                # who pays themselves for them.
+                "code": "sales.refund_customer",
+                "label": "ردّ نقدي للعميل عن مرتجع",
+            },
+            {
                 "code": "sales.round_settle",
                 "label": "فتح وتسوية جولات المناديب",
             },
@@ -205,6 +212,7 @@ ROLE_DEFAULT_PERMISSIONS: dict[str, frozenset[str]] = {
             "cashier.view",
             "cashier.collect",
             "cashier.pay",
+            "sales.refund_customer",
             "customers.view",
             "suppliers.view",
             "settings.view",
@@ -222,6 +230,7 @@ ROLE_DEFAULT_PERMISSIONS: dict[str, frozenset[str]] = {
             "sales.all_customers",
             "suppliers.view",
             "suppliers.manage",
+            "sales.refund_customer",
             "purchases.view",
             "purchases.create",
             "purchases.orders",

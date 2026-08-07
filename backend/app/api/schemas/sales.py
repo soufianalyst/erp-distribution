@@ -7,6 +7,7 @@ from typing import Literal
 from pydantic import BaseModel, ConfigDict, Field
 
 from app.domain.models.sales import (
+    CreditResolution,
     FulfillmentType,
     PriceTier,
     QuotationStatus,
@@ -128,8 +129,45 @@ class SalesInvoiceOut(BaseModel):
     created_at: datetime
     # Total credited back via returns; net = total - returned_total.
     returned_total: Decimal = Decimal("0")
+    # What is still owed: total - returned_total - paid_amount.
+    #
+    # Derived, never stored. `total` is what the invoice billed and must not change
+    # once issued — the document is in the customer's hands, its journal entries are
+    # posted, and its tax period may already be filed. What a return changes is the
+    # amount *due*, which is this. Populated by the cashier's pending list; elsewhere
+    # it defaults to the full unpaid amount.
+    amount_due: Decimal | None = None
     lines: list[SalesLineOut]
     taxes: list[SalesInvoiceTaxOut]
+
+
+# --- Customer credits (money owed back after a return) ---
+class CustomerCreditOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: int
+    customer_id: int
+    customer_name: str | None = None
+    invoice_id: int
+    return_id: int | None
+    amount: Decimal
+    resolution: CreditResolution
+    notes: str | None
+    created_at: datetime
+    resolved_at: datetime | None
+
+
+class CustomerCreditResolveIn(BaseModel):
+    """Hand the money back, or leave it on the customer's account.
+
+    No default. A walk-in who paid cash usually wants the money and a wholesale
+    account usually prefers it against the next invoice, and only the person at the
+    counter knows which — so the software refuses to guess.
+    """
+
+    resolution: Literal["refunded", "credited"]
+    notes: str | None = Field(default=None, max_length=300)
+
 
 
 # --- Quotations ---
@@ -235,6 +273,12 @@ class SalesReturnOut(BaseModel):
     notes: str | None
     created_at: datetime
     lines: list[ReturnLineOut]
+    # Set when this return left the invoice paid for more than it is now worth, so
+    # the screen can ask what to do with the difference. Without it the API knew a
+    # decision was owed and the user was never asked — the obligation existed only
+    # as a negative statement balance nobody was looking at.
+    pending_credit_id: int | None = None
+    pending_credit_amount: Decimal | None = None
 
 
 # --- Customer payments & statement ---

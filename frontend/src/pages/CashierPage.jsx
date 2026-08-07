@@ -19,7 +19,18 @@ const REFERENCE_TYPE_LABELS = {
   expense: "مصروف",
 };
 
-const remaining = (doc) => (Number(doc.total) - Number(doc.paid_amount)).toFixed(2);
+// What the customer still owes, which is not the same as what was billed.
+//
+// `amount_due` comes from the server as total - returned_total - paid_amount. The
+// fallback covers documents from endpoints that do not compute it. Subtracting
+// returns here matters: an invoice for 100 with 30 returned used to ask the cashier
+// for the full 100, and collecting the correct 70 left it forever unconfirmed and
+// undeliverable.
+const remaining = (doc) =>
+  (doc.amount_due != null
+    ? Number(doc.amount_due)
+    : Number(doc.total) - Number(doc.returned_total ?? 0) - Number(doc.paid_amount)
+  ).toFixed(2);
 const payableRemaining = (payable) => Number(payable.remaining).toFixed(2);
 
 export default function CashierPage() {
@@ -34,6 +45,9 @@ export default function CashierPage() {
 
   const invoices = useFetch(() => api.get("/cashier/invoices"));
   const payables = useFetch(() => api.get("/cashier/payables"));
+  // Credits a human already decided to refund in cash. They wait here because
+  // handing the money over is the till's job, not the decision-maker's.
+  const credits = useFetch(() => api.get("/sales/credits"));
   const customers = useFetch(() => api.get("/sales/customers"));
   const summary = useFetch(
     () => api.get("/cashier/daily-summary", { params: { day: summaryDay } }),
@@ -47,6 +61,7 @@ export default function CashierPage() {
   const reloadAll = () => {
     invoices.reload();
     payables.reload();
+    credits.reload();
     summary.reload();
   };
 
@@ -54,6 +69,18 @@ export default function CashierPage() {
     setDialogError(null);
     setAmount(remaining(invoice));
     setCollectingFor(invoice);
+  };
+
+  const refundCredit = async (credit) => {
+    if (!window.confirm(`ردّ ${money(credit.amount)} نقداً للعميل؟`)) return;
+    setError(null);
+    try {
+      await api.post(`/cashier/customer-credits/${credit.id}/refund`);
+      setNotice(`تم ردّ ${money(credit.amount)} للعميل من الصندوق.`);
+      reloadAll();
+    } catch (err) {
+      setError(apiMessage(err));
+    }
   };
 
   const openPayDialog = (payable) => {
@@ -225,6 +252,31 @@ export default function CashierPage() {
           />
         )}
       </Card>
+
+      {/* Refunds a person has decided on but the till has not yet paid. Kept as its
+          own card rather than folded into payables: this is money going back to a
+          customer, not a supplier bill, and the reason it exists is a return. */}
+      {(credits.data ?? []).some((c) => c.resolution === "awaiting_refund") && (
+        <Card title="مبالغ بانتظار الردّ للعملاء (صادر)">
+          <Table
+            columns={[
+              { key: "id", label: "الرقم", render: (r) => `#${r.id}` },
+              { key: "invoice_id", label: "عن الفاتورة", render: (r) => `#${r.invoice_id}` },
+              { key: "amount", label: "المبلغ", render: (r) => <b>{money(r.amount)}</b> },
+              { key: "notes", label: "الملاحظات" },
+              {
+                key: "actions",
+                label: "",
+                render: (r) => (
+                  <Button onClick={() => refundCredit(r)}>ردّ نقدي</Button>
+                ),
+              },
+            ]}
+            rows={(credits.data ?? []).filter((c) => c.resolution === "awaiting_refund")}
+            empty="لا توجد مبالغ بانتظار الردّ."
+          />
+        </Card>
+      )}
 
       <Card title="مستحقات بانتظار السداد (صادر) — فواتير شراء ومصاريف">
         {payables.loading ? null : (

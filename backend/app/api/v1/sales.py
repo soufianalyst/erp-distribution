@@ -8,6 +8,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.api.deps import require_permissions
 from app.api.schemas.common import APIResponse
 from app.api.schemas.sales import (
+    CustomerCreditOut,
+    CustomerCreditResolveIn,
     FieldSyncIn,
     FieldSyncOut,
     FieldVanOut,
@@ -33,7 +35,7 @@ from app.api.schemas.sales import (
 )
 from app.db.session import get_db
 from app.domain.models.user import User
-from app.domain.models.sales import RoundSettlementStatus
+from app.domain.models.sales import CreditResolution, RoundSettlementStatus
 from app.services.sales.field_sync_service import FieldSyncService
 from app.services.sales.round_settlement_service import RoundSettlementService
 from app.services.sales.sales_service import SalesService
@@ -458,4 +460,43 @@ async def settle_van_round(
     return APIResponse(
         data=RoundSettlementOut.model_validate(settlement),
         message="تمت تسوية الجولة.",
+    )
+
+
+# --- Customer credits (money owed back after a return) ---
+@router.get("/credits", response_model=APIResponse[list[CustomerCreditOut]])
+async def list_customer_credits(
+    pending_only: bool = False,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(require_permissions("sales.returns")),
+) -> APIResponse[list[CustomerCreditOut]]:
+    """المبالغ المستحقّة للعملاء بسبب مرتجعات بعد الدفع، وحالة كل منها."""
+    credits = await SalesService(db).list_customer_credits(
+        CreditResolution.PENDING if pending_only else None
+    )
+    return APIResponse(data=[CustomerCreditOut.model_validate(c) for c in credits])
+
+
+@router.post("/credits/{credit_id}/resolve", response_model=APIResponse[CustomerCreditOut])
+async def resolve_customer_credit(
+    credit_id: int,
+    body: CustomerCreditResolveIn,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(require_permissions("sales.refund_customer")),
+) -> APIResponse[CustomerCreditOut]:
+    """تحديد مصير المبلغ: ردّ نقدي من الصندوق، أو رصيد يبقى في حساب العميل.
+
+    الردّ النقدي يُسجّل القرار فقط؛ صرف المبلغ يجري من شاشة الصندوق ليدخل في
+    إقفال اليوم مثل أي مبلغ يخرج من الدرج.
+    """
+    credit = await SalesService(db).resolve_customer_credit(
+        credit_id, CreditResolution(body.resolution), current_user, body.notes
+    )
+    return APIResponse(
+        data=CustomerCreditOut.model_validate(credit),
+        message=(
+            "سيُردّ المبلغ نقداً من الصندوق."
+            if body.resolution == "refunded"
+            else "بقي المبلغ رصيداً في حساب العميل."
+        ),
     )

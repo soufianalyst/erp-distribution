@@ -652,6 +652,82 @@ function InvoiceDraft({ draft, active, registry, ...formProps }) {
   );
 }
 
+/**
+ * Asks what to do with money owed back after a return on an already-paid invoice.
+ *
+ * Deliberately offers no default. A walk-in who paid cash usually wants the money;
+ * a wholesale account usually prefers it against the next invoice — and only the
+ * person at the counter knows which. Guessing would be worse than asking, because a
+ * wrong guess is silent.
+ *
+ * Choosing a refund records the decision and queues it for the till; the cashier
+ * hands the cash over, which is a separate act by a separate person so it lands in
+ * the day's cash movements and the drawer reconciles.
+ */
+function CreditDecision({ credit, onDone }) {
+  const [busy, setBusy] = useState(null);
+  const [error, setError] = useState(null);
+
+  const choose = async (resolution) => {
+    setBusy(resolution);
+    setError(null);
+    try {
+      await api.post(`/sales/credits/${credit.id}/resolve`, { resolution });
+      onDone(
+        resolution === "refunded"
+          ? `سيُردّ ${money(credit.amount)} للعميل نقداً — يُصرف من شاشة الصندوق.`
+          : `بقي ${money(credit.amount)} رصيداً في حساب العميل.`
+      );
+    } catch (err) {
+      setError(apiMessage(err));
+      setBusy(null);
+    }
+  };
+
+  return (
+    <div className="space-y-4">
+      <Alert>{error}</Alert>
+      <div className="rounded-lg border border-amber-200 bg-amber-50 px-4 py-3 text-sm dark:border-amber-900 dark:bg-amber-950/50">
+        <div className="font-extrabold text-amber-800 dark:text-amber-200">
+          العميل دفع أكثر مما يستحقّ الآن بمقدار {money(credit.amount)}
+        </div>
+        <p className="mt-1 text-amber-800 dark:text-amber-200">
+          الفاتورة رقم {credit.invoiceId} كانت مدفوعة بالكامل، والمرتجع خفّض قيمتها.
+          اختر كيف يُسوَّى الفرق.
+        </p>
+      </div>
+
+      <div className="grid gap-3 sm:grid-cols-2">
+        <button
+          type="button"
+          disabled={!!busy}
+          onClick={() => choose("refunded")}
+          className="rounded-xl border border-slate-300 p-4 text-start transition hover:border-emerald-600 hover:bg-emerald-50 disabled:opacity-50 dark:border-slate-600 dark:hover:border-emerald-500 dark:hover:bg-emerald-950/40"
+        >
+          <div className="text-base font-extrabold">💵 ردّ نقدي</div>
+          <div className="mt-1 text-xs text-slate-500 dark:text-slate-400">
+            يُسجَّل كمستحقّ على الصندوق، ويصرفه أمين الصندوق للعميل.
+          </div>
+        </button>
+        <button
+          type="button"
+          disabled={!!busy}
+          onClick={() => choose("credited")}
+          className="rounded-xl border border-slate-300 p-4 text-start transition hover:border-sky-600 hover:bg-sky-50 disabled:opacity-50 dark:border-slate-600 dark:hover:border-sky-500 dark:hover:bg-sky-950/40"
+        >
+          <div className="text-base font-extrabold">📄 رصيد في الحساب</div>
+          <div className="mt-1 text-xs text-slate-500 dark:text-slate-400">
+            يبقى المبلغ لصالح العميل ويُخصم من فاتورته القادمة.
+          </div>
+        </button>
+      </div>
+      <p className="text-xs text-slate-400 dark:text-slate-500">
+        يمكن مراجعة المبالغ المستحقّة للعملاء لاحقاً من شاشة الصندوق.
+      </p>
+    </div>
+  );
+}
+
 const QUOTATION_STATUS_LABELS = { draft: "مسودة", converted: "تم التحويل", cancelled: "ملغاة" };
 const QUOTATION_STATUS_TONE = { draft: "amber", converted: "green", cancelled: "red" };
 
@@ -965,6 +1041,9 @@ export default function SalesPage() {
   const [viewing, setViewing] = useState(null);
   const [editing, setEditing] = useState(null);
   const [returnFor, setReturnFor] = useState(null);
+  // A return on an already-paid invoice leaves money owed back; this holds
+  // the pending credit until someone chooses refund or account balance.
+  const [creditDecision, setCreditDecision] = useState(null);
   const [notice, setNotice] = useState(null);
 
   // Several invoices can be entered side by side — one draft per tab, so a
@@ -1481,6 +1560,35 @@ export default function SalesPage() {
               setNotice(`تم تسجيل المرتجع رقم ${ret.id} بقيمة ${money(ret.total)} بنجاح.`);
               setTab("returns");
               returns.reload();
+              invoices.reload();
+              // The invoice was already paid for more than it is now worth, so
+              // money is owed back. Ask now — the obligation is easy to forget
+              // once this screen closes, and it only ever showed up afterwards as
+              // a negative balance on a statement nobody opens.
+              if (ret.pending_credit_id) {
+                setCreditDecision({
+                  id: ret.pending_credit_id,
+                  amount: ret.pending_credit_amount,
+                  invoiceId: ret.invoice_id,
+                });
+              }
+            }}
+          />
+        )}
+      </Modal>
+
+      <Modal
+        open={!!creditDecision}
+        title="مبلغ مستحقّ للعميل — كيف يُسوَّى؟"
+        onClose={() => setCreditDecision(null)}
+        guardUnsaved={false}
+      >
+        {creditDecision && (
+          <CreditDecision
+            credit={creditDecision}
+            onDone={(message) => {
+              setCreditDecision(null);
+              setNotice(message);
               invoices.reload();
             }}
           />

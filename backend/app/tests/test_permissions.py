@@ -213,3 +213,40 @@ class TestPermissionOverrides:
         # Still fully operational.
         response = await client.get("/api/v1/auth/users", headers=admin)
         assert response.status_code == 200
+
+
+class TestEveryGrantedPermissionExistsInTheCatalogue:
+    """A role granting a permission the catalogue does not list is silently broken.
+
+    `effective_permissions` returns ALL_PERMISSIONS for an admin and intersects an
+    explicit user list with it, so a permission missing from the catalogue is denied
+    to admins and to anyone with a custom list — while still appearing to work for
+    the one role whose default set happens to name it. That is exactly the trap this
+    caught: sales.refund_customer was granted to the cashier and accountant but never
+    added to the catalogue, so the *admin* was refused and nobody else was.
+    """
+
+    def test_no_role_grants_an_unknown_permission(self) -> None:
+        from app.core.permissions import ALL_PERMISSIONS, ROLE_DEFAULT_PERMISSIONS
+
+        unknown = {
+            role: sorted(granted - ALL_PERMISSIONS)
+            for role, granted in ROLE_DEFAULT_PERMISSIONS.items()
+            if granted - ALL_PERMISSIONS
+        }
+        assert not unknown, (
+            f"roles grant permissions absent from the catalogue: {unknown}. "
+            "Admins and users with explicit lists will be denied them."
+        )
+
+    def test_the_catalogue_has_no_duplicate_codes(self) -> None:
+        """Two entries with one code makes the permissions screen lie about itself."""
+        from app.core.permissions import PERMISSION_GROUPS
+
+        codes = [
+            entry["code"]
+            for group in PERMISSION_GROUPS
+            for entry in group["permissions"]
+        ]
+        duplicates = sorted({c for c in codes if codes.count(c) > 1})
+        assert not duplicates, f"duplicate permission codes: {duplicates}"

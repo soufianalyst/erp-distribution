@@ -319,6 +319,70 @@ class SalesReturn(Base):
     )
 
 
+class CreditResolution(str, enum.Enum):
+    """How an over-collection created by a return is settled."""
+
+    PENDING = "pending"      # awaiting a human decision
+    # Decided: hand the cash back. The money has NOT moved yet — the till pays it,
+    # which is a second act by a second person. Collapsing this into REFUNDED was a
+    # real bug found by testing the flow: the decision marked it refunded, and the
+    # payout then refused because it was already refunded, so no cash could ever
+    # leave the drawer. A decision and a disbursement are different events.
+    AWAITING_REFUND = "awaiting_refund"
+    REFUNDED = "refunded"    # cash actually paid back out of the till
+    CREDITED = "credited"    # left on the customer's account against future invoices
+
+
+class CustomerCredit(Base):
+    """Money owed back to a customer because goods were returned after payment.
+
+    Raised automatically when a return leaves an invoice paid for more than it is
+    now worth, because the alternative is that the obligation exists only as a
+    negative number on a statement nobody is looking at. Two of these appeared in
+    the dev database exactly that way.
+
+    The decision — hand the cash back, or leave it on account — is a human one, and
+    deliberately not defaulted silently: a walk-in who paid cash usually wants the
+    money, a wholesale account usually prefers it against the next invoice, and only
+    the person at the counter knows which.
+
+    The accounting is asymmetric in a way worth stating: **crediting posts nothing.**
+    The invoice debited receivables, the payment credited them, and the return
+    credited them again, so the account already carries the balance owed. Leaving it
+    on account is simply recognising that. Only a cash refund moves money, and it is
+    the till that moves it, so it flows through the same cash movement and day-close
+    as every other disbursement.
+    """
+
+    __tablename__ = "customer_credits"
+
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    customer_id: Mapped[int] = mapped_column(
+        ForeignKey("customers.id"), nullable=False, index=True
+    )
+    invoice_id: Mapped[int] = mapped_column(
+        ForeignKey("sales_invoices.id"), nullable=False, index=True
+    )
+    # The return that caused it, kept so the paperwork can be traced back.
+    return_id: Mapped[int | None] = mapped_column(
+        ForeignKey("sales_returns.id"), index=True
+    )
+    amount: Mapped[Decimal] = mapped_column(Numeric(14, 2), nullable=False)
+    resolution: Mapped[CreditResolution] = mapped_column(
+        Enum(CreditResolution, values_callable=lambda e: [m.value for m in e]),
+        nullable=False,
+        default=CreditResolution.PENDING,
+    )
+    notes: Mapped[str | None] = mapped_column(String(300))
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+    resolved_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    # Who decided, and who handed the money over — a money decision with no name on
+    # it is a gap in the audit trail.
+    resolved_by: Mapped[int | None] = mapped_column(ForeignKey("users.id"))
+
+
 class SalesReturnLine(Base):
     __tablename__ = "sales_return_lines"
 

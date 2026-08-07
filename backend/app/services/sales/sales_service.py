@@ -26,6 +26,8 @@ from app.domain.models.accounting import JournalEntry
 from app.domain.models.delivery import DeliveryStop, DeliveryTrip
 from app.domain.models.inventory import Product, ProductBatch
 from app.domain.models.sales import (
+    CreditResolution,
+    CustomerCredit,
     Customer,
     CustomerPayment,
     FulfillmentType,
@@ -191,12 +193,27 @@ class SalesService:
         )
         total_payments = payments.scalar_one()
 
+        # Credits already handed back in cash. Without this term the statement and
+        # the ledger disagree: refunding posts receivables-debit / cash-credit, so
+        # the ledger correctly shows nothing owed, while this formula — which knows
+        # only invoices, returns and receipts — kept reporting the customer as a
+        # creditor for money they had already been given. Found by refunding one and
+        # watching the statement stay at -40.00.
+        refunded = await self.session.execute(
+            select(func.coalesce(func.sum(CustomerCredit.amount), 0)).where(
+                CustomerCredit.customer_id == customer_id,
+                CustomerCredit.resolution == CreditResolution.REFUNDED,
+            )
+        )
+        total_refunded = refunded.scalar_one()
+
         return (
             customer.opening_balance
             + Decimal(str(total_invoices))
             - Decimal(str(paid_on_invoices))
             - Decimal(str(total_returns))
             - Decimal(str(total_payments))
+            + Decimal(str(total_refunded))
         )
 
     # --- Sales invoices ---
@@ -828,6 +845,76 @@ class SalesService:
         await self.session.commit()
         return await self.get_invoice(invoice_id)
 
+
+    async def _returned_total_for(self, invoice_id: int) -> Decimal:
+        """Everything credited back against one invoice, this return included."""
+        result = await self.session.execute(
+            select(func.coalesce(func.sum(SalesReturn.total), 0)).where(
+                SalesReturn.invoice_id == invoice_id
+            )
+        )
+        return Decimal(str(result.scalar_one()))
+
+    async def list_customer_credits(
+        self, resolution: CreditResolution | None = None
+    ) -> list[CustomerCredit]:
+        """Credits owed back to customers, newest first; pending ones need a decision."""
+        stmt = select(CustomerCredit).order_by(CustomerCredit.id.desc())
+        if resolution is not None:
+            stmt = stmt.where(CustomerCredit.resolution == resolution)
+        return list((await self.session.execute(stmt)).scalars().all())
+
+    async def resolve_customer_credit(
+        self,
+        credit_id: int,
+        resolution: CreditResolution,
+        user: User,
+        notes: str | None = None,
+    ) -> CustomerCredit:
+        """Settle a credit as a cash refund or as a balance left on account.
+
+        Crediting posts nothing, and that is correct rather than lazy: the invoice
+        debited receivables, the payment credited them, and the return credited them
+        again, so the account already carries what is owed. Leaving it on account is
+        recognising a balance that exists, not creating one.
+
+        A cash refund does move money, and it is not moved here — the till moves it,
+        so it goes through the same cash movement and day-close as every other
+        disbursement. This marks the decision; `CashierService.refund_customer_credit`
+        pays it.
+        """
+        credit = await self.session.get(CustomerCredit, credit_id)
+        if credit is None:
+            raise AppException(404, "المبلغ المستحقّ للعميل غير موجود.")
+        if credit.resolution is not CreditResolution.PENDING:
+            # Resolved once, never twice — otherwise the same 30 is refunded and
+            # then also left on account.
+            raise AppException(
+                400,
+                "تمت معالجة هذا المبلغ من قبل ("
+                + {
+                    CreditResolution.AWAITING_REFUND: "بانتظار الصرف من الصندوق",
+                    CreditResolution.REFUNDED: "رُدَّ نقداً",
+                    CreditResolution.CREDITED: "رصيد في الحساب",
+                }[credit.resolution]
+                + ").",
+            )
+        if resolution not in (CreditResolution.REFUNDED, CreditResolution.CREDITED):
+            raise AppException(400, "اختر إمّا الردّ النقدي أو الترك كرصيد في الحساب.")
+
+        # Choosing a refund records the decision and queues it; the till pays it.
+        credit.resolution = (
+            CreditResolution.AWAITING_REFUND
+            if resolution is CreditResolution.REFUNDED
+            else resolution
+        )
+        credit.notes = notes
+        credit.resolved_at = datetime.now(timezone.utc)
+        credit.resolved_by = user.id
+        await self.session.commit()
+        await self.session.refresh(credit)
+        return credit
+
     async def get_invoice(self, invoice_id: int) -> SalesInvoice:
         """Fetch an invoice with its lines and applied taxes, or raise a 404."""
         result = await self.session.execute(
@@ -1046,13 +1133,42 @@ class SalesService:
                 created_by=user.id,
             )
 
+        # If the return leaves this invoice paid for more than it is now worth, the
+        # difference is money owed back to the customer. Record it as a pending
+        # decision rather than leaving it as a negative number on a statement: that
+        # is how two credit balances sat unnoticed in the dev database, and an
+        # obligation nobody is prompted about is an obligation nobody honours.
+        #
+        # Whether to hand the cash over or leave it on account is a human call, so
+        # nothing is chosen here.
+        returned_so_far = await self._returned_total_for(invoice.id)
+        overpaid = (invoice.paid_amount - (invoice.total - returned_so_far)).quantize(
+            TWO_PLACES, rounding=ROUND_HALF_UP
+        )
+        credit: CustomerCredit | None = None
+        if overpaid > 0:
+            credit = CustomerCredit(
+                customer_id=customer.id,
+                invoice_id=invoice.id,
+                return_id=sales_return.id,
+                amount=overpaid,
+                resolution=CreditResolution.PENDING,
+            )
+            self.session.add(credit)
+
         await self.session.commit()
         result = await self.session.execute(
             select(SalesReturn)
             .options(selectinload(SalesReturn.lines))
             .where(SalesReturn.id == sales_return.id)
         )
-        return result.scalar_one()
+        saved = result.scalar_one()
+        # Carry the pending decision back to the caller so the screen can ask.
+        if credit is not None:
+            await self.session.refresh(credit)
+            saved.pending_credit_id = credit.id
+            saved.pending_credit_amount = credit.amount
+        return saved
 
     async def list_returns(
         self, user: User, invoice_id: int | None = None
@@ -1158,10 +1274,11 @@ class SalesService:
             total_invoices=total_invoices,
             total_returns=total_returns,
             total_paid=total_paid,
-            balance=customer.opening_balance
-            + total_invoices
-            - total_returns
-            - total_paid,
+            # Delegated rather than recomputed. This method used to carry its own
+            # copy of the formula, so adding refunds to `customer_balance` fixed the
+            # number in one place and left the statement — the document actually
+            # handed to the customer — still wrong. One balance, one definition.
+            balance=await self.customer_balance(customer_id),
             invoices=[SalesInvoiceOut.model_validate(i) for i in invoices],
             returns=[SalesReturnOut.model_validate(r) for r in returns],
             payments=[CustomerPaymentOut.model_validate(p) for p in payments],

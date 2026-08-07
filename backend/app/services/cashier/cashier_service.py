@@ -11,7 +11,7 @@ once the full amount has moved.
 from datetime import date, datetime, time, timedelta, timezone
 from decimal import Decimal
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
@@ -23,7 +23,14 @@ from app.core.exceptions import AppException
 from app.domain.models.cashier import CashMovement
 from app.domain.models.expenses import Expense, ExpenseCategory
 from app.domain.models.purchases import PurchaseInvoice, PurchasePaymentMethod, Supplier
-from app.domain.models.sales import Customer, SalesInvoice, SalesPaymentMethod
+from app.domain.models.sales import (
+    CreditResolution,
+    Customer,
+    CustomerCredit,
+    SalesInvoice,
+    SalesPaymentMethod,
+    SalesReturn,
+)
 from app.domain.models.user import User
 from app.services.accounting.accounting_service import (
     ACCOUNTS_PAYABLE,
@@ -54,8 +61,58 @@ class CashierService:
             raise AppException(404, "فاتورة المبيعات غير موجودة.")
         return invoice
 
+    async def returned_totals(self, invoice_ids: list[int]) -> dict[int, Decimal]:
+        """How much has been credited back per invoice via sales returns.
+
+        Read live rather than stored on the invoice, because the invoice is an
+        issued document and must not be rewritten. Its `total` is what was billed;
+        what is still *owed* is a derived figure, and this is the missing term.
+        """
+        if not invoice_ids:
+            return {}
+        result = await self.session.execute(
+            select(
+                SalesReturn.invoice_id,
+                func.coalesce(func.sum(SalesReturn.total), 0),
+            )
+            .where(SalesReturn.invoice_id.in_(invoice_ids))
+            .group_by(SalesReturn.invoice_id)
+        )
+        return {
+            invoice_id: Decimal(str(total)) for invoice_id, total in result.all()
+        }
+
+    async def net_due(self, invoice: SalesInvoice) -> Decimal:
+        """What the customer still owes on this invoice, after returns.
+
+            due = billed − credited back − already paid
+
+        This is the whole of the returns fix. An invoice for 100 with 30 returned
+        must ask the cashier for 70, and previously asked for 100: `remaining` was
+        `total - paid_amount` with no term for returns at all. The consequences were
+        not cosmetic — collecting the correct 70 never satisfied
+        `paid_amount >= total`, so the invoice was never confirmed, never left the
+        cashier's queue, and never became deliverable. The only way to close it was
+        to charge the customer 30 they did not owe, which is exactly how the
+        negative customer balances in the dev database were produced.
+
+        Deriving the figure rather than editing the invoice keeps the document, its
+        posted journal entries and the filed tax period all intact — and the
+        customer statement already nets returns, so reducing `invoice.total` would
+        have subtracted them twice.
+        """
+        returned = (await self.returned_totals([invoice.id])).get(
+            invoice.id, Decimal("0")
+        )
+        return (invoice.total - returned - invoice.paid_amount).quantize(TWO_PLACES)
+
     async def list_pending_invoices(self) -> list[SalesInvoice]:
-        """Cash/card sales invoices awaiting (full) collection at the register."""
+        """Cash/card sales invoices awaiting (full) collection at the register.
+
+        Anything already settled net of returns is filtered out here as well as by
+        the confirmation flag, so an invoice returned in full stops being asked for
+        even if nobody ever collected a riyal against it.
+        """
         result = await self.session.execute(
             select(SalesInvoice)
             .options(
@@ -69,7 +126,19 @@ class CashierService:
             )
             .order_by(SalesInvoice.id)
         )
-        return list(result.scalars().all())
+        invoices = list(result.scalars().all())
+        returned = await self.returned_totals([i.id for i in invoices])
+        pending = []
+        for invoice in invoices:
+            credited = returned.get(invoice.id, Decimal("0"))
+            # Expose the net so the till shows what to actually take.
+            invoice.returned_total = credited
+            invoice.amount_due = (
+                invoice.total - credited - invoice.paid_amount
+            ).quantize(TWO_PLACES)
+            if invoice.amount_due > 0:
+                pending.append(invoice)
+        return pending
 
     async def collect_payment(
         self, invoice_id: int, amount: Decimal, user: User
@@ -83,17 +152,37 @@ class CashierService:
         if invoice.payment_confirmed_at is not None:
             raise AppException(400, "تم تحصيل قيمة هذه الفاتورة بالكامل من قبل.")
 
-        remaining = (invoice.total - invoice.paid_amount).quantize(TWO_PLACES)
+        returned = (await self.returned_totals([invoice.id])).get(
+            invoice.id, Decimal("0")
+        )
+        net_billed = (invoice.total - returned).quantize(TWO_PLACES)
+        remaining = (net_billed - invoice.paid_amount).quantize(TWO_PLACES)
+        if remaining <= 0:
+            # Fully returned, or already settled net of returns. Nothing is owed, so
+            # asking for money would be wrong; the caller is told rather than
+            # silently accepted.
+            raise AppException(
+                400,
+                f"لا يوجد مبلغ مستحقّ على هذه الفاتورة "
+                f"(الإجمالي {invoice.total}، المرتجعات {returned}، "
+                f"المحصَّل {invoice.paid_amount}).",
+            )
         if amount > remaining:
             raise AppException(
                 400,
-                f"المبلغ المدخل ({amount}) أكبر من المتبقي على الفاتورة ({remaining}).",
+                f"المبلغ المدخل ({amount}) أكبر من المتبقي على الفاتورة ({remaining})."
+                + (
+                    f" الإجمالي {invoice.total} ناقص مرتجعات {returned}."
+                    if returned > 0
+                    else ""
+                ),
             )
 
         customer = await self.session.get(Customer, invoice.customer_id)
 
         invoice.paid_amount = invoice.paid_amount + amount
-        fully_collected = invoice.paid_amount >= invoice.total
+        # Settled against what is actually owed, not what was originally billed.
+        fully_collected = invoice.paid_amount >= net_billed
         if fully_collected:
             invoice.payment_confirmed_at = datetime.now(timezone.utc)
             invoice.payment_confirmed_by = user.id
@@ -253,6 +342,72 @@ class CashierService:
         await self.session.commit()
         await self.session.refresh(expense)
         return expense
+
+
+    async def refund_customer_credit(
+        self, credit_id: int, user: User, method: str = "cash"
+    ) -> CustomerCredit:
+        """Hand a customer's credit back over the counter.
+
+        The one path here that moves money. Crediting a balance to the account posts
+        nothing — receivables already carry it — but paying cash out reduces the
+        drawer, so it goes through a CashMovement like every other disbursement and
+        lands in the day-close where the till is reconciled. A refund that bypassed
+        that would make the drawer disagree with the books by exactly the amount
+        handed over.
+
+        Debit receivables, credit cash: the customer's account returns to zero and the
+        obligation is discharged.
+        """
+        credit = await self.session.get(CustomerCredit, credit_id)
+        if credit is None:
+            raise AppException(404, "المبلغ المستحقّ للعميل غير موجود.")
+        if credit.resolution is CreditResolution.REFUNDED:
+            raise AppException(400, "تم ردّ هذا المبلغ نقداً من قبل.")
+        if credit.resolution is CreditResolution.CREDITED:
+            raise AppException(
+                400, "هذا المبلغ مُسجَّل كرصيد في حساب العميل ولا يُردّ نقداً."
+            )
+        if credit.resolution is not CreditResolution.AWAITING_REFUND:
+            # The till pays what was decided, and does not decide. Otherwise the
+            # cashier could refund a credit nobody chose to refund.
+            raise AppException(
+                400,
+                "لم يُتَّخذ قرار بردّ هذا المبلغ نقداً بعد؛ يُحدَّد القرار من شاشة "
+                "المبيعات أولاً.",
+            )
+
+        credit.resolution = CreditResolution.REFUNDED
+        credit.resolved_at = datetime.now(timezone.utc)
+        credit.resolved_by = user.id
+
+        self.session.add(
+            CashMovement(
+                direction="out",
+                reference_type="customer_credit",
+                reference_id=credit.id,
+                party_id=credit.customer_id,
+                amount=credit.amount,
+                method=method,
+                collected_by=user.id,
+            )
+        )
+        await self.accounting.add_entry_no_commit(
+            entry_date=date.today(),
+            description=(
+                f"ردّ نقدي للعميل عن مرتجع الفاتورة رقم {credit.invoice_id}"
+            ),
+            items=[
+                (ACCOUNTS_RECEIVABLE, credit.amount, Decimal("0")),
+                (cash_or_bank(method), Decimal("0"), credit.amount),
+            ],
+            reference_type="customer_credit",
+            reference_id=credit.id,
+            created_by=user.id,
+        )
+        await self.session.commit()
+        await self.session.refresh(credit)
+        return credit
 
     async def list_pending_payables(self) -> list[PendingPayableOut]:
         """Cash/card purchase invoices and expenses awaiting disbursement."""

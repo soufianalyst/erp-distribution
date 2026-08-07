@@ -6,6 +6,7 @@ from fastapi import APIRouter, Depends
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.deps import require_permissions
+from app.api.schemas.sales import CustomerCreditOut
 from app.api.schemas.cashier import (
     CashierAmountCreate,
     CashierDailySummaryOut,
@@ -130,3 +131,27 @@ async def daily_summary(
     """ملخص ما تم تحصيله وصرفه اليوم (أو يوم محدد) لمساعدة أمين الصندوق على تقفيل يومه."""
     summary = await CashierService(db).daily_summary(current_user, day)
     return APIResponse(data=summary)
+
+
+@router.post(
+    "/customer-credits/{credit_id}/refund",
+    response_model=APIResponse[CustomerCreditOut],
+)
+async def refund_customer_credit(
+    credit_id: int,
+    method: str = "cash",
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(require_permissions("sales.refund_customer")),
+) -> APIResponse[CustomerCreditOut]:
+    """صرف مبلغ مستحقّ للعميل من الصندوق نقداً.
+
+    يُسجّل حركة نقدية خارجة فتظهر في إقفال اليوم، ويُقيّد: ذمم العملاء مدين
+    والصندوق دائن — فيعود حساب العميل إلى الصفر.
+    """
+    credit = await CashierService(db).refund_customer_credit(
+        credit_id, current_user, method
+    )
+    return APIResponse(
+        data=CustomerCreditOut.model_validate(credit),
+        message="تم ردّ المبلغ للعميل من الصندوق.",
+    )
