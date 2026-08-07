@@ -1,11 +1,13 @@
 """Read access to the automatically-populated audit trail (see app/core/audit_listeners.py)."""
 
-from datetime import date, datetime, timezone
+from datetime import date
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core import business_day
 from app.domain.models.audit import AuditAction, AuditLog
+from app.services.settings.settings_service import SettingsService
 
 
 class AuditService:
@@ -31,16 +33,19 @@ class AuditService:
             stmt = stmt.where(AuditLog.action == action)
         if user_id is not None:
             stmt = stmt.where(AuditLog.user_id == user_id)
-        if date_from is not None:
-            stmt = stmt.where(
-                AuditLog.created_at
-                >= datetime.combine(date_from, datetime.min.time(), tzinfo=timezone.utc)
-            )
-        if date_to is not None:
-            stmt = stmt.where(
-                AuditLog.created_at
-                <= datetime.combine(date_to, datetime.max.time(), tzinfo=timezone.utc)
-            )
+        # Same shape as the cashier's closing report had: a date the user typed on a
+        # local calendar, matched against UTC timestamps. "Show me 8 August" would then
+        # miss the first hours of that morning and include the previous evening.
+        if date_from is not None or date_to is not None:
+            company = await SettingsService(self.session).get_company_settings()
+            if date_from is not None:
+                start, _ = business_day.day_bounds(date_from, company.timezone)
+                stmt = stmt.where(AuditLog.created_at >= start)
+            if date_to is not None:
+                # Exclusive upper bound at the next local midnight, so the whole of the
+                # closing day is included without depending on microsecond precision.
+                _, end = business_day.day_bounds(date_to, company.timezone)
+                stmt = stmt.where(AuditLog.created_at < end)
         result = await self.session.execute(stmt)
         return list(result.scalars().all())
 

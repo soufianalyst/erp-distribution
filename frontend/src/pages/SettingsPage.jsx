@@ -32,6 +32,26 @@ const EMPTY_TAX_FORM = {
 
 /** Reference list backing every country picker on this page. */
 const useCountries = () => useFetch(() => api.get("/settings/countries"));
+const useTimezones = () => useFetch(() => api.get("/settings/timezones"));
+
+// The company's working day starts at midnight in this zone. It is not cosmetic:
+// the cashier's closing report and every "by day" figure are cut on this boundary,
+// which is why the offset is shown next to each city.
+function TimezoneSelect({ value, onChange, timezones }) {
+  return (
+    <Select
+      label="توقيت الشركة — عليه يبدأ يوم العمل وتُقفل عليه حسابات الصندوق"
+      value={value || "UTC"}
+      onChange={onChange}
+    >
+      {timezones.map((tz) => (
+        <option key={tz.name} value={tz.name}>
+          {tz.label} ({tz.utc_offset})
+        </option>
+      ))}
+    </Select>
+  );
+}
 
 function CountrySelect({ label, value, onChange, countries, universalLabel }) {
   return (
@@ -248,7 +268,7 @@ function TaxRatesSection({ canManage, countries, companyCountry }) {
   );
 }
 
-function CompanySection({ canManage, countries, onCountrySaved }) {
+function CompanySection({ canManage, countries, timezones, onCountrySaved }) {
   const { data, loading, error, reload } = useFetch(() => api.get("/settings/company"));
   const [form, setForm] = useState(null);
   const [notice, setNotice] = useState(null);
@@ -331,6 +351,11 @@ function CompanySection({ canManage, countries, onCountrySaved }) {
               countries={countries}
               universalLabel="— لم تُحدد —"
             />
+            <TimezoneSelect
+              value={form.timezone}
+              onChange={set("timezone")}
+              timezones={timezones}
+            />
             <div className="grid grid-cols-2 gap-4">
               <Input
                 label="رمز العملة (مثال: SAR)"
@@ -361,6 +386,7 @@ export default function SettingsPage() {
   const { can } = useAuth();
   const canManage = can("settings.manage");
   const countries = useCountries();
+  const timezones = useTimezones();
   const company = useFetch(() => api.get("/settings/company"));
   // Bumping this re-mounts the tax table so its "out of scope" markers follow a
   // change to the company's country.
@@ -378,6 +404,7 @@ export default function SettingsPage() {
       <CompanySection
         canManage={canManage}
         countries={countries.data || []}
+        timezones={timezones.data || []}
         onCountrySaved={() => {
           company.reload();
           setScopeVersion((v) => v + 1);

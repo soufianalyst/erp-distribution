@@ -46,6 +46,7 @@ class CompanySettingsUpdate(BaseModel):
     phone: str | None = Field(default=None, max_length=30)
     tax_number: str | None = Field(default=None, max_length=50)
     country_code: str | None = Field(default=None, min_length=2, max_length=2)
+    timezone: str | None = Field(default=None, max_length=64)
     currency_code: str | None = Field(default=None, max_length=10)
     currency_symbol: str | None = Field(default=None, max_length=10)
 
@@ -61,8 +62,18 @@ class CompanySettingsOut(BaseModel):
     tax_number: str | None
     country_code: str | None
     country_name: str | None
+    timezone: str
     currency_code: str
     currency_symbol: str
+
+
+# --- Timezone reference (for the settings control panel picker) ---
+class TimezoneOut(BaseModel):
+    name: str
+    label: str
+    # Current offset as "+03:00", computed now rather than stored: a region that
+    # changes its rules would otherwise be shown a stale number forever.
+    utc_offset: str
 
 
 # --- Country reference (for the settings control panel pickers) ---

@@ -143,3 +143,57 @@ class TestMigrationIdentifiers:
                 edges.append((down.group(1), path.name))
         dangling = [(d, name) for d, name in edges if d not in known]
         assert not dangling, f"down_revision values with no matching revision: {dangling}"
+
+
+class TestCashMovementKinds:
+    """Every kind of movement the cashier can create must be representable.
+
+    `CashierService` writes four `reference_type` values; the output schema listed
+    three. The customer-refund path was added to the service without widening the
+    Literal, so the closing report answered 500 on any day a refund had been paid —
+    and it stayed hidden because the report's day window was broken too, and never
+    looked at the day the refunds were on. Two bugs covering for each other.
+
+    Reading both sides and comparing them is cheap; noticing by hand is evidently not.
+    """
+
+    def test_the_schema_covers_every_reference_type_the_service_writes(self) -> None:
+        import ast
+        import pathlib
+        import typing
+
+        from app.api.schemas.cashier import CashMovementOut
+
+        service = (
+            pathlib.Path(__file__).resolve().parents[1]
+            / "services"
+            / "cashier"
+            / "cashier_service.py"
+        )
+        tree = ast.parse(service.read_text(encoding="utf-8"))
+
+        # Only the reference_type of an actual CashMovement(...) construction; the
+        # journal entries alongside them use their own, unrelated vocabulary.
+        written: set[str] = set()
+        for node in ast.walk(tree):
+            if (
+                isinstance(node, ast.Call)
+                and isinstance(node.func, ast.Name)
+                and node.func.id == "CashMovement"
+            ):
+                for keyword in node.keywords:
+                    if keyword.arg == "reference_type" and isinstance(
+                        keyword.value, ast.Constant
+                    ):
+                        written.add(keyword.value.value)
+
+        assert written, "found no CashMovement constructions — the check went blind"
+
+        allowed = set(
+            typing.get_args(CashMovementOut.model_fields["reference_type"].annotation)
+        )
+        missing = written - allowed
+        assert not missing, (
+            f"CashierService writes {sorted(missing)} but CashMovementOut does not "
+            "allow it — the daily summary will fail validation on any day one occurs"
+        )

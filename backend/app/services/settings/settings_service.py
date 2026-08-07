@@ -9,6 +9,7 @@ from app.api.schemas.settings import (
     TaxRateUpdate,
 )
 from app.core.countries import is_valid_country
+from app.core import business_day
 from app.core.exceptions import AppException
 from app.domain.models.sales import SalesInvoiceTax
 from app.domain.models.settings import CompanySettings, TaxRate
@@ -165,6 +166,17 @@ class SettingsService:
                 setattr(company, field, getattr(data, field))
         if "country_code" in sent:
             company.country_code = self._validate_country(data.country_code)
+
+        # The timezone decides where the business day starts, so a typo would land
+        # in the cashier's closing report rather than here. Rejected at the point of
+        # saving, which is the only place a human is around to correct it.
+        if data.timezone is not None:
+            if not business_day.is_valid(data.timezone):
+                raise AppException(
+                    400,
+                    f"المنطقة الزمنية ({data.timezone}) غير معروفة؛ اختر واحدة من القائمة.",
+                )
+            company.timezone = data.timezone
 
         # Name and currency are required columns: null means "leave alone"
         # because there is no valid empty value to fall back to.

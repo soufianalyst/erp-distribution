@@ -1,5 +1,8 @@
 """Settings endpoints: configurable tax rates and company identity."""
 
+from datetime import datetime, timezone
+from zoneinfo import ZoneInfo
+
 from fastapi import APIRouter, Depends
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -9,11 +12,13 @@ from app.api.schemas.settings import (
     CompanySettingsOut,
     CompanySettingsUpdate,
     CountryOut,
+    TimezoneOut,
     TaxRateCreate,
     TaxRateOut,
     TaxRateUpdate,
 )
 from app.core.countries import COUNTRIES
+from app.core.timezones import TIMEZONES
 from app.db.session import get_db
 from app.services.settings.settings_service import SettingsService
 
@@ -40,6 +45,27 @@ async def list_tax_rates(
     """
     tax_rates = await SettingsService(db).list_tax_rates(active_only, in_scope_only)
     return APIResponse(data=[TaxRateOut.model_validate(t) for t in tax_rates])
+
+
+@router.get(
+    "/timezones",
+    response_model=APIResponse[list[TimezoneOut]],
+    dependencies=[settings_view],
+)
+async def list_timezones() -> APIResponse[list[TimezoneOut]]:
+    """قائمة المناطق الزمنية لاختيار توقيت الشركة الذي يبدأ عليه يوم العمل."""
+    now = datetime.now(timezone.utc)
+    out = []
+    for tz in TIMEZONES:
+        offset = now.astimezone(ZoneInfo(tz.name)).strftime("%z")
+        out.append(
+            TimezoneOut(
+                name=tz.name,
+                label=tz.label,
+                utc_offset=f"{offset[:3]}:{offset[3:]}" if offset else "+00:00",
+            )
+        )
+    return APIResponse(data=out)
 
 
 @router.get(

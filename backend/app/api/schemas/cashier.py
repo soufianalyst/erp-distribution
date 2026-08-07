@@ -21,7 +21,14 @@ class CashMovementOut(BaseModel):
 
     id: int
     direction: Literal["in", "out"]
-    reference_type: Literal["sales_invoice", "purchase_invoice", "expense"]
+    # Every kind of movement CashierService can create. A customer refund was added
+    # to the service without being added here, so the closing report raised a
+    # validation error — a 500 — on any day one had been paid out. It went unnoticed
+    # because the day window was broken too: the report was never looking at the day
+    # the refunds happened. Fixing the window surfaced this immediately.
+    reference_type: Literal[
+        "sales_invoice", "purchase_invoice", "expense", "customer_credit"
+    ]
     reference_id: int
     party_id: int | None
     amount: Decimal

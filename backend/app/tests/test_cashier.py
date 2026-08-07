@@ -1,6 +1,6 @@
 """Integration tests for the cashier module: pending cash/card collection gate."""
 
-from datetime import date, datetime, timedelta, timezone
+from datetime import timedelta
 from decimal import Decimal
 
 from httpx import AsyncClient
@@ -8,6 +8,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.domain.models.cashier import CashMovement
+from app.core import business_day
 from app.tests.conftest import (
     TEST_ADMIN_PASSWORD,
     TEST_CASHIER_PASSWORD,
@@ -518,14 +519,25 @@ class TestCashierDailySummary:
         await collect(client, admin, invoice["id"], invoice["total"])
 
         # Push the collection event back to yesterday.
-        yesterday = date.today() - timedelta(days=1)
+        #
+        # "Yesterday" has to be measured in the same frame the report uses — the
+        # company's timezone — not the server's. Written as `date.today() - 1` this
+        # test failed once the report started honouring the company day: with the
+        # server three hours ahead of the test company's UTC, the server's yesterday
+        # was still the company's today, and the movement it "pushed back" landed
+        # inside the window it expected to be empty. That is the same confusion the
+        # fix removes, reproduced in the test's own arithmetic.
+        company = (
+            await client.get("/api/v1/settings/company", headers=admin)
+        ).json()["data"]
+        company_tz = company["timezone"]
+        yesterday = business_day.today_in(company_tz) - timedelta(days=1)
         result = await db_session.execute(
             select(CashMovement).where(CashMovement.reference_id == invoice["id"])
         )
         db_movement = result.scalar_one()
-        db_movement.collected_at = datetime.combine(
-            yesterday, datetime.min.time(), tzinfo=timezone.utc
-        )
+        start_of_yesterday, _ = business_day.day_bounds(yesterday, company_tz)
+        db_movement.collected_at = start_of_yesterday
         await db_session.commit()
 
         today_summary = (

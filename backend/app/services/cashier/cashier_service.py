@@ -8,7 +8,7 @@ in installments (partial payments); it only releases (sales: to delivery/pickup)
 once the full amount has moved.
 """
 
-from datetime import date, datetime, time, timedelta, timezone
+from datetime import date, datetime, timezone
 from decimal import Decimal
 
 from sqlalchemy import select
@@ -19,6 +19,7 @@ from app.api.schemas.cashier import (
     CashierDailySummaryOut,
     PendingPayableOut,
 )
+from app.core import business_day
 from app.core.exceptions import AppException
 from app.domain.models.cashier import CashMovement
 from app.domain.models.expenses import Expense, ExpenseCategory
@@ -32,6 +33,7 @@ from app.domain.models.sales import (
 )
 from app.domain.models.user import User
 from app.services.sales.returns_query import returned_totals
+from app.services.settings.settings_service import SettingsService
 from app.services.accounting.accounting_service import (
     ACCOUNTS_PAYABLE,
     ACCOUNTS_RECEIVABLE,
@@ -449,9 +451,13 @@ class CashierService:
         """Everything this cashier personally moved on a given day — money in and
         out — to reconcile and close the register.
         """
-        target_day = day or date.today()
-        start = datetime.combine(target_day, time.min, tzinfo=timezone.utc)
-        end = start + timedelta(days=1)
+        # The day is the *company's* day, not the server's. Taking "today" from the
+        # server's local calendar and then searching a UTC-midnight window is what made
+        # this report read empty between local midnight and 03:00, with the cash
+        # already in the drawer — see app/core/business_day.
+        company = await SettingsService(self.session).get_company_settings()
+        target_day = day or business_day.today_in(company.timezone)
+        start, end = business_day.day_bounds(target_day, company.timezone)
 
         result = await self.session.execute(
             select(CashMovement)

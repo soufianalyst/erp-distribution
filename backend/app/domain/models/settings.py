@@ -56,6 +56,13 @@ class CompanySettings(Base):
     # The country the business operates in — decides which country-specific tax
     # rates are offered when invoicing.
     country_code: Mapped[str | None] = mapped_column(String(2))
+    # IANA name (e.g. "Asia/Qatar"). The company's own midnight is where a business
+    # day starts and ends — the cashier's closing report, and anything else asked for
+    # "by day". Deliberately not the server's timezone: a cloud host in UTC must not
+    # be able to move the day a till is balanced on.
+    timezone: Mapped[str] = mapped_column(
+        String(64), nullable=False, default="UTC", server_default="UTC"
+    )
     currency_code: Mapped[str] = mapped_column(
         String(10), nullable=False, default="SAR"
     )
