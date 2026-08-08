@@ -23,7 +23,12 @@ PERMISSION_GROUPS: list[dict] = [
             {"code": "stock.view", "label": "عرض الأرصدة وتقارير الصلاحية"},
             {"code": "stock.receive", "label": "استلام بضاعة"},
             {"code": "stock.transfer", "label": "التحويل بين المستودعات"},
-            {"code": "stock.adjust", "label": "تعديلات المخزون"},
+            {"code": "stock.adjust", "label": "تسجيل تعديلات/إتلاف المخزون"},
+            {"code": "stock.stocktake", "label": "جرد المستودعات وتسوية الفروقات"},
+            {
+                "code": "stock.adjust_cancel",
+                "label": "إلغاء تعديلات/إتلاف المخزون (إرجاع الكمية)",
+            },
         ],
     },
     {
@@ -36,8 +41,9 @@ PERMISSION_GROUPS: list[dict] = [
             {"code": "sales.edit", "label": "تعديل فواتير المبيعات"},
             {"code": "sales.delete", "label": "حذف فواتير المبيعات"},
             {"code": "sales.returns", "label": "تسجيل مرتجعات المبيعات"},
+            {"code": "sales.field_sync", "label": "العمل الميداني ومزامنة جولة المندوب"},
+            {"code": "sales.quotations", "label": "عروض الأسعار وتحويلها لفواتير"},
             {"code": "sales.payments", "label": "سندات قبض من العملاء"},
-            {"code": "sales.quotations", "label": "عروض الأسعار"},
             {
                 "code": "sales.all_customers",
                 "label": "الوصول لجميع العملاء (وليس عملاءه فقط)",
@@ -45,6 +51,33 @@ PERMISSION_GROUPS: list[dict] = [
             {
                 "code": "sales.credit_override",
                 "label": "الموافقة على تجاوز الحد الائتماني",
+            },
+            {
+                "code": "sales.commission_view",
+                "label": "عرض تقرير عمولات المناديب",
+            },
+            {
+                # Reversing a credit note moves stock and money back, so it is held
+                # apart from recording one — the same separation the damage flow uses.
+                "code": "sales.returns_cancel",
+                "label": "إلغاء مرتجع مبيعات (عكس القيد والكمية)",
+            },
+            {
+                # Handing cash back is a different authority from booking the
+                # return: whoever records the returned goods must not be the one
+                # who pays themselves for them.
+                "code": "sales.refund_customer",
+                "label": "ردّ نقدي للعميل عن مرتجع",
+            },
+            {
+                "code": "sales.round_settle",
+                "label": "فتح وتسوية جولات المناديب",
+            },
+            {
+                # Separated from sales.round_settle on purpose: whoever counted the
+                # van should not be the one who signs off a shortfall on it.
+                "code": "sales.round_settle_variance",
+                "label": "إقرار فروقات المخزون في تسوية الجولة",
             },
         ],
     },
@@ -57,8 +90,27 @@ PERMISSION_GROUPS: list[dict] = [
             {"code": "purchases.create", "label": "تثبيت فواتير شراء"},
             {"code": "purchases.edit", "label": "تعديل فواتير المشتريات"},
             {"code": "purchases.delete", "label": "حذف فواتير المشتريات"},
-            {"code": "purchases.returns", "label": "مرتجعات المشتريات"},
+            {"code": "purchases.orders", "label": "إنشاء طلبات الشراء واستلام توريداتها"},
+            {"code": "purchases.returns", "label": "تسجيل مرتجعات المشتريات"},
             {"code": "purchases.payments", "label": "سندات صرف للموردين"},
+        ],
+    },
+    {
+        "group": "الصندوق",
+        "permissions": [
+            {"code": "cashier.view", "label": "عرض الفواتير والمستحقات بانتظار الصندوق"},
+            {"code": "cashier.collect", "label": "تحصيل الدفعات النقدية وبالبطاقة"},
+            {
+                "code": "cashier.pay",
+                "label": "صرف مدفوعات المشتريات والمصاريف من الصندوق",
+            },
+        ],
+    },
+    {
+        "group": "المصاريف",
+        "permissions": [
+            {"code": "expenses.view", "label": "عرض المصاريف وتصنيفاتها"},
+            {"code": "expenses.manage", "label": "تسجيل المصاريف وإدارة تصنيفاتها"},
         ],
     },
     {
@@ -80,34 +132,33 @@ PERMISSION_GROUPS: list[dict] = [
                 "code": "accounting.manual_entry",
                 "label": "تسجيل قيود يدوية وإدارة الحسابات",
             },
-        ],
-    },
-    {
-        "group": "التقارير",
-        "permissions": [
-            {"code": "reports.view", "label": "عرض لوحة التحكم والتقارير التحليلية"},
+            {
+                "code": "accounting.bank_reconciliation",
+                "label": "مطابقة كشف الحساب البنكي",
+            },
         ],
     },
     {
         "group": "النظام",
         "permissions": [
             {"code": "users.manage", "label": "إدارة المستخدمين والصلاحيات"},
+            {"code": "audit.view", "label": "عرض سجل تتبع العمليات (Audit Trail)"},
         ],
     },
     {
-        "group": "المصاريف",
+        "group": "التحليلات",
         "permissions": [
-            {"code": "expenses.view", "label": "عرض المصاريف والمدفوعات"},
-            {"code": "expenses.create", "label": "إدخال مصروفات وسندات قبض"},
-            {"code": "expenses.edit", "label": "تعديل المصاريف"},
-            {"code": "expenses.delete", "label": "حذف المصاريف"},
+            {"code": "analytics.view", "label": "عرض لوحة التحليلات والتقارير"},
         ],
     },
     {
-        "group": "الصندوق",
+        "group": "الإعدادات",
         "permissions": [
-            {"code": "cashier.view", "label": "عرض الفواتير المعلقة للتحصيل"},
-            {"code": "cashier.receive_payment", "label": "تحصيل مدفوعات الفواتير النقدية/البطاقة"},
+            {"code": "settings.view", "label": "عرض الضرائب وبيانات الشركة"},
+            {
+                "code": "settings.manage",
+                "label": "إدارة الضرائب وبيانات الشركة (لوحة التحكم)",
+            },
         ],
     },
 ]
@@ -127,9 +178,15 @@ ROLE_DEFAULT_PERMISSIONS: dict[str, frozenset[str]] = {
             "stock.receive",
             "stock.transfer",
             "stock.adjust",
+            "stock.stocktake",
             "delivery.view",
             "delivery.manage",
             "delivery.deliver",
+            # The storekeeper is who receives the van back and counts it, so they
+            # close the round — but approving a shortfall above the limit is
+            # deliberately withheld from them.
+            "sales.round_settle",
+            "settings.view",
         }
     ),
     "sales": frozenset(
@@ -141,10 +198,11 @@ ROLE_DEFAULT_PERMISSIONS: dict[str, frozenset[str]] = {
             "sales.view",
             "sales.create",
             "sales.returns",
-            "sales.payments",
             "sales.quotations",
+            "sales.field_sync",
+            "sales.payments",
             "delivery.view",
-            "reports.view",
+            "settings.view",
         }
     ),
     "driver": frozenset(
@@ -152,6 +210,18 @@ ROLE_DEFAULT_PERMISSIONS: dict[str, frozenset[str]] = {
             "warehouses.view",
             "delivery.view",
             "delivery.deliver",
+            "settings.view",
+        }
+    ),
+    "cashier": frozenset(
+        {
+            "cashier.view",
+            "cashier.collect",
+            "cashier.pay",
+            "sales.refund_customer",
+            "customers.view",
+            "suppliers.view",
+            "settings.view",
         }
     ),
     "accountant": frozenset(
@@ -166,22 +236,25 @@ ROLE_DEFAULT_PERMISSIONS: dict[str, frozenset[str]] = {
             "sales.all_customers",
             "suppliers.view",
             "suppliers.manage",
+            "sales.refund_customer",
+            "sales.returns_cancel",
             "purchases.view",
             "purchases.create",
+            "purchases.orders",
             "purchases.returns",
             "purchases.payments",
-            "expenses.view",
-            "expenses.create",
-            "expenses.edit",
             "accounting.view",
             "accounting.manual_entry",
-            "reports.view",
-        }
-    ),
-    "cashier": frozenset(
-        {
-            "cashier.view",
-            "cashier.receive_payment",
+            "accounting.bank_reconciliation",
+            "sales.commission_view",
+            "analytics.view",
+            "expenses.view",
+            "expenses.manage",
+            # The accountant both closes rounds and is the one who may accept a
+            # stock shortfall beyond the configured limit.
+            "sales.round_settle",
+            "sales.round_settle_variance",
+            "settings.view",
         }
     ),
 }
@@ -198,4 +271,5 @@ def effective_permissions(user: "User") -> set[str]:
 
 
 def has_permission(user: "User", permission: str) -> bool:
+    """Whether this user holds one permission, after role defaults are resolved."""
     return permission in effective_permissions(user)

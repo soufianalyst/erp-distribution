@@ -8,45 +8,61 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from app.api.schemas.sales import (
+    CommissionReportOut,
+    CommissionRow,
     CustomerCreate,
     CustomerPaymentCreate,
     CustomerStatementOut,
     CustomerUpdate,
-    QuotationCreate,
+    QuotationConvertIn,
     SalesInvoiceCreate,
+    SalesLineIn,
+    SalesQuotationCreate,
     SalesReturnCreate,
 )
 from app.core.exceptions import AppException
 from app.core.permissions import has_permission
 from app.domain.models.accounting import JournalEntry
-from app.domain.models.delivery import DeliveryStop, DeliveryTrip
+from app.domain.models.delivery import (
+    DeliveryStop,
+    DeliveryTrip,
+    StopStatus,
+    TripStatus,
+)
 from app.domain.models.inventory import Product, ProductBatch
 from app.domain.models.sales import (
+    CreditResolution,
+    CustomerCredit,
+    ReturnStatus,
     Customer,
     CustomerPayment,
     FulfillmentType,
-    InvoiceTaxLine,
     PriceTier,
     QuotationStatus,
-    QuotationTaxLine,
     ReturnReason,
-    ReturnTaxLine,
     SalesInvoice,
     SalesInvoiceLine,
+    SalesInvoiceTax,
     SalesPaymentMethod,
     SalesQuotation,
     SalesQuotationLine,
+    SalesQuotationTax,
     SalesReturn,
     SalesReturnLine,
-    TaxType,
 )
+from app.domain.models.settings import TaxRate
 from app.domain.models.user import User, UserRole
+from app.services.sales.returns_query import (
+    posted,
+    returned_total_for,
+    returned_totals,
+)
 from app.services.accounting.accounting_service import (
     ACCOUNTS_RECEIVABLE,
-    CASH,
     COGS,
     DAMAGE_LOSS,
     INVENTORY,
+    SALES_DISCOUNT,
     SALES_RETURNS,
     SALES_REVENUE,
     VAT,
@@ -58,37 +74,6 @@ from app.services.inventory.stock_service import StockService
 TWO_PLACES = Decimal("0.01")
 
 
-async def _resolve_tax_types(
-    session: AsyncSession, tax_type_ids: list[int]
-) -> list[TaxType]:
-    """Load and validate active tax types by IDs."""
-    if not tax_type_ids:
-        return []
-    result = await session.execute(
-        select(TaxType).where(TaxType.id.in_(tax_type_ids), TaxType.is_active == True)
-    )
-    tax_types = list(result.scalars().all())
-    if len(tax_types) != len(tax_type_ids):
-        raise AppException(400, "واحدة أو أكثر من أنواع الضريبة غير موجودة أو غير نشطة.")
-    return tax_types
-
-
-def _compute_tax_lines(
-    subtotal: Decimal, tax_types: list[TaxType]
-) -> list[tuple[TaxType, Decimal]]:
-    """Compute tax amount for each tax type and return (tax_type, amount) pairs."""
-    results: list[tuple[TaxType, Decimal]] = []
-    for tt in tax_types:
-        amount = (subtotal * tt.rate).quantize(TWO_PLACES, rounding=ROUND_HALF_UP)
-        results.append((tt, amount))
-    return results
-
-
-def _total_tax(tax_amounts: list[tuple[TaxType, Decimal]]) -> Decimal:
-    """Sum of all tax amounts."""
-    return sum(amount for _, amount in tax_amounts)
-
-
 class SalesService:
     def __init__(self, session: AsyncSession) -> None:
         self.session = session
@@ -97,6 +82,7 @@ class SalesService:
 
     # --- Customers ---
     async def get_customer(self, customer_id: int) -> Customer:
+        """Fetch a customer or raise a 404 with an Arabic message for the UI."""
         customer = await self.session.get(Customer, customer_id)
         if customer is None:
             raise AppException(404, "العميل غير موجود.")
@@ -116,6 +102,8 @@ class SalesService:
         return result.scalar_one_or_none()
 
     async def create_customer(self, data: CustomerCreate) -> Customer:
+        """Register a customer. Names are unique so the same shop cannot be
+        opened twice under two balances, and a named salesman must really be one."""
         if await self._get_customer_by_name(data.name) is not None:
             raise AppException(409, "يوجد عميل بهذا الاسم من قبل.")
         if data.salesman_id is not None:
@@ -137,6 +125,7 @@ class SalesService:
         return customer
 
     async def update_customer(self, customer_id: int, data: CustomerUpdate) -> Customer:
+        """Amend a customer's details, price tier, credit limit or active flag."""
         customer = await self.get_customer(customer_id)
         if data.name is not None and data.name != customer.name:
             if await self._get_customer_by_name(data.name) is not None:
@@ -157,8 +146,6 @@ class SalesService:
             customer.salesman_id = data.salesman_id
         if data.is_active is not None:
             customer.is_active = data.is_active
-        if data.tax_exempt is not None:
-            customer.tax_exempt = data.tax_exempt
         await self.session.commit()
         await self.session.refresh(customer)
         return customer
@@ -166,6 +153,12 @@ class SalesService:
     async def list_customers(
         self, user: User, search: str | None = None
     ) -> list[Customer]:
+        """Customers this user may see.
+
+        A salesman is scoped to their own round unless they hold
+        `sales.all_customers`; the filter lives here rather than in the route so
+        no caller can forget it.
+        """
         stmt = select(Customer).order_by(Customer.id)
         if not has_permission(user, "sales.all_customers"):
             stmt = stmt.where(Customer.salesman_id == user.id)
@@ -177,6 +170,7 @@ class SalesService:
     # --- Pricing & balance ---
     @staticmethod
     def tier_price(product: Product, tier: PriceTier) -> Decimal:
+        """The unit price for a customer's tier — wholesale, half, or retail."""
         prices = {
             PriceTier.WHOLESALE: product.wholesale_price,
             PriceTier.HALF_WHOLESALE: product.half_wholesale_price,
@@ -198,7 +192,7 @@ class SalesService:
 
         returns = await self.session.execute(
             select(func.coalesce(func.sum(SalesReturn.total), 0)).where(
-                SalesReturn.customer_id == customer_id
+                SalesReturn.customer_id == customer_id, posted()
             )
         )
         total_returns = returns.scalar_one()
@@ -210,34 +204,83 @@ class SalesService:
         )
         total_payments = payments.scalar_one()
 
+        # Credits already handed back in cash. Without this term the statement and
+        # the ledger disagree: refunding posts receivables-debit / cash-credit, so
+        # the ledger correctly shows nothing owed, while this formula — which knows
+        # only invoices, returns and receipts — kept reporting the customer as a
+        # creditor for money they had already been given. Found by refunding one and
+        # watching the statement stay at -40.00.
+        refunded = await self.session.execute(
+            select(func.coalesce(func.sum(CustomerCredit.amount), 0)).where(
+                CustomerCredit.customer_id == customer_id,
+                CustomerCredit.resolution == CreditResolution.REFUNDED,
+            )
+        )
+        total_refunded = refunded.scalar_one()
+
         return (
             customer.opening_balance
             + Decimal(str(total_invoices))
             - Decimal(str(paid_on_invoices))
             - Decimal(str(total_returns))
             - Decimal(str(total_payments))
+            + Decimal(str(total_refunded))
         )
 
     # --- Sales invoices ---
     async def _build_lines(
-        self, invoice: SalesInvoice, data: SalesInvoiceCreate, customer: Customer
+        self,
+        invoice: SalesInvoice,
+        data: SalesInvoiceCreate,
+        customer: Customer,
+        price_overrides: dict[int, Decimal] | None = None,
+        source_warehouse_id: int | None = None,
     ) -> tuple[Decimal, Decimal]:
         """FEFO-allocate the requested lines onto the invoice; returns (subtotal, cost_total).
 
-        One input line becomes one invoice line per allocated batch.
-        Each line carries the warehouse_id from its batch.
+        One input line becomes one invoice line per allocated batch. `price_overrides`
+        (keyed by product_id) is for internal use only — e.g. honoring a quotation's
+        frozen price on conversion — and is never accepted from the public API.
+
+        `source_warehouse_id` overrides where the goods come from: a van sale draws
+        on the salesman's own vehicle rather than the product's home warehouse.
         """
+        # Take every row lock this invoice needs up front, in product-id order.
+        # FEFO locks the batches it allocates from; acquiring those locks in the
+        # order the salesman happened to type the lines would let two invoices
+        # sharing two products deadlock against each other. See
+        # StockService.lock_batches_in_order.
+        to_lock: set[tuple[int, int]] = set()
+        for line in data.lines:
+            product = await self.stock.get_active_product(line.product_id)
+            if product.warehouse_id is not None or source_warehouse_id is not None:
+                to_lock.add(
+                    (product.id, source_warehouse_id or product.warehouse_id)
+                )
+        await self.stock.lock_batches_in_order(to_lock)
+
         subtotal = Decimal("0")
         cost_total = Decimal("0")
         for line in data.lines:
             product = await self.stock.get_active_product(line.product_id)
+            if product.warehouse_id is None:
+                raise AppException(
+                    400,
+                    f"الصنف ({product.name}) غير مرتبط بمستودع؛ "
+                    "يرجى تحديد المستودع من صفحة الأصناف أولاً.",
+                )
+            await self.stock.get_active_warehouse(product.warehouse_id)
             base_quantity = self.stock.to_base_quantity(
                 product, line.quantity, line.unit_id
             )
-            unit_price = self.tier_price(product, customer.price_tier)
+            unit_price = (
+                price_overrides[product.id]
+                if price_overrides and product.id in price_overrides
+                else self.tier_price(product, customer.price_tier)
+            )
 
-            allocations = await self.stock.fefo_allocate_all(
-                product.id, base_quantity
+            allocations = await self.stock.fefo_allocate(
+                product.id, source_warehouse_id or product.warehouse_id, base_quantity
             )
             for batch, take in allocations:
                 batch.quantity -= take
@@ -249,6 +292,14 @@ class SalesService:
                         product_id=product.id,
                         batch_id=batch.id,
                         batch_number=batch.batch_number,
+                        # Where the goods actually left from, taken from the batch
+                        # rather than the product's home warehouse. A van sale
+                        # draws on the vehicle, and recording the home warehouse
+                        # instead mis-attributed every field sale to the main
+                        # store — the stock moved correctly, the attribution lied.
+                        # The batch is authoritative because FEFO already chose it
+                        # from the right warehouse, and it stays correct even if a
+                        # single line were ever filled from more than one place.
                         warehouse_id=batch.warehouse_id,
                         quantity=take,
                         unit_price=unit_price,
@@ -262,6 +313,70 @@ class SalesService:
                         TWO_PLACES, rounding=ROUND_HALF_UP
                     )
         return subtotal, cost_total
+
+    @staticmethod
+    def _resolve_invoice_warehouse(invoice: SalesInvoice) -> int | None:
+        """Single warehouse if every line agrees, else None (mixed-warehouse invoice)."""
+        warehouse_ids = {line.warehouse_id for line in invoice.lines}
+        return next(iter(warehouse_ids)) if len(warehouse_ids) == 1 else None
+
+    async def _resolve_taxes(self, tax_rate_ids: list[int]) -> list[TaxRate]:
+        """Validate and fetch the configured taxes to apply; empty means tax-free.
+
+        Several taxes may be selected at once (e.g. VAT + a local tax); duplicates
+        in the input are ignored.
+        """
+        taxes: list[TaxRate] = []
+        seen: set[int] = set()
+        for tax_rate_id in tax_rate_ids:
+            if tax_rate_id in seen:
+                continue
+            seen.add(tax_rate_id)
+            tax_rate = await self.session.get(TaxRate, tax_rate_id)
+            if tax_rate is None or not tax_rate.is_active:
+                raise AppException(400, "إحدى الضرائب المحددة غير موجودة أو غير مفعّلة.")
+            taxes.append(tax_rate)
+        return taxes
+
+    @staticmethod
+    def _apply_taxes(invoice: SalesInvoice, tax_rates: list[TaxRate], subtotal: Decimal) -> Decimal:
+        """Snapshot each selected tax onto the invoice; returns their summed amount."""
+        total_tax = Decimal("0")
+        for tax_rate in tax_rates:
+            amount = (subtotal * tax_rate.rate / Decimal("100")).quantize(
+                TWO_PLACES, rounding=ROUND_HALF_UP
+            )
+            invoice.taxes.append(
+                SalesInvoiceTax(
+                    tax_rate_id=tax_rate.id,
+                    name=tax_rate.name,
+                    rate=tax_rate.rate,
+                    amount=amount,
+                )
+            )
+            total_tax += amount
+        return total_tax
+
+    @staticmethod
+    def _resolve_discount(
+        gross: Decimal, collectable_amount: Decimal | None
+    ) -> Decimal:
+        """Turn a requested collectable amount into a discount off the gross.
+
+        `gross` is goods + tax. Charging less than that records the shortfall as
+        a discount; charging more is rejected, since an invoice cannot collect
+        more than it bills.
+        """
+        if collectable_amount is None:
+            return Decimal("0")
+        collectable = collectable_amount.quantize(TWO_PLACES, rounding=ROUND_HALF_UP)
+        if collectable > gross:
+            raise AppException(
+                400,
+                "المبلغ المطلوب تحصيله أكبر من إجمالي الفاتورة "
+                f"({gross}); لا يمكن تحصيل أكثر من قيمة الفاتورة.",
+            )
+        return (gross - collectable).quantize(TWO_PLACES, rounding=ROUND_HALF_UP)
 
     def _check_credit_limit(
         self,
@@ -290,29 +405,26 @@ class SalesService:
         subtotal: Decimal,
         cost_total: Decimal,
         user: User,
-        tax_amounts: list[tuple[TaxType, Decimal]] | None = None,
     ) -> None:
-        """Automatic double-entry: receivable vs revenue + tax liabilities, plus COGS when known."""
-        # All invoices start as receivable; cash payments are settled later by the cashier.
-        debit_account = ACCOUNTS_RECEIVABLE
-        # Build credit items: always sales revenue, then one line per tax type.
-        credit_items: list[tuple[str, Decimal, Decimal]] = [
-            (SALES_REVENUE, Decimal("0"), subtotal),
-        ]
-        if tax_amounts:
-            for tt, amount in tax_amounts:
-                credit_items.append((tt.accounting_code, Decimal("0"), amount))
-        elif invoice.vat_amount > 0:
-            # Fallback for legacy callers that set vat_amount directly.
-            credit_items.append((VAT, Decimal("0"), invoice.vat_amount))
+        """Automatic double-entry: receivable vs revenue + VAT, plus COGS when known.
 
+        Every invoice posts as a receivable at creation time regardless of payment
+        method — cash/card invoices only actually collect the money once the cashier
+        confirms it (see CashierService), which posts its own reclassifying entry.
+        """
+        # A discount is a debit to contra-revenue, so the entry still balances:
+        # receivable + discount == goods + tax.
+        items = [
+            (ACCOUNTS_RECEIVABLE, invoice.total, Decimal("0")),
+            (SALES_REVENUE, Decimal("0"), subtotal),
+            (VAT, Decimal("0"), invoice.vat_amount),
+        ]
+        if invoice.discount_amount > 0:
+            items.insert(1, (SALES_DISCOUNT, invoice.discount_amount, Decimal("0")))
         await self.accounting.add_entry_no_commit(
             entry_date=invoice.invoice_date,
             description=f"فاتورة مبيعات رقم {invoice.id} للعميل ({customer.name})",
-            items=[
-                (debit_account, invoice.total, Decimal("0")),
-                *credit_items,
-            ],
+            items=items,
             reference_type="sales_invoice",
             reference_id=invoice.id,
             created_by=user.id,
@@ -331,72 +443,243 @@ class SalesService:
             )
 
     async def create_invoice(
-        self, data: SalesInvoiceCreate, user: User
+        self,
+        data: SalesInvoiceCreate,
+        user: User,
+        price_overrides: dict[int, Decimal] | None = None,
+        source_warehouse_id: int | None = None,
+        client_uuid: str | None = None,
     ) -> SalesInvoice:
-        """Post a sales invoice: FEFO stock deduction, credit-limit check, one transaction."""
+        """Post a sales invoice: FEFO stock deduction, credit-limit check, one transaction.
+
+        `source_warehouse_id` sells from a specific warehouse (a salesman's van);
+        `client_uuid` carries the field app's own identifier so replaying a sync
+        cannot create the invoice twice.
+        """
         customer = await self.get_customer(data.customer_id)
         if not customer.is_active:
             raise AppException(400, "هذا العميل موقوف ولا يمكن البيع له.")
         self.ensure_customer_access(user, customer)
-
-        # Tax-exempt customers get no taxes regardless of selection.
-        effective_tax_ids = (
-            [] if customer.tax_exempt else data.tax_type_ids
-        )
-        tax_types = await _resolve_tax_types(self.session, effective_tax_ids)
+        tax_rates = await self._resolve_taxes(data.tax_rate_ids)
 
         invoice = SalesInvoice(
             customer_id=customer.id,
             salesman_id=customer.salesman_id,
-            warehouse_id=data.warehouse_id,
             invoice_date=date.today(),
             payment_method=data.payment_method,
             fulfillment=data.fulfillment,
             subtotal=Decimal("0"),
             vat_amount=Decimal("0"),
+            discount_amount=Decimal("0"),
             total=Decimal("0"),
             notes=data.notes,
             created_by=user.id,
+            client_uuid=client_uuid,
         )
 
-        subtotal, cost_total = await self._build_lines(invoice, data, customer)
-
-        # Compute per-tax-type amounts and build tax lines.
-        tax_amounts = _compute_tax_lines(subtotal, tax_types)
-        total_tax = _total_tax(tax_amounts)
+        subtotal, cost_total = await self._build_lines(
+            invoice, data, customer, price_overrides, source_warehouse_id
+        )
+        invoice.warehouse_id = self._resolve_invoice_warehouse(invoice)
 
         invoice.subtotal = subtotal
-        invoice.vat_amount = total_tax  # kept for backward compatibility
-        invoice.total = subtotal + total_tax
+        invoice.vat_amount = self._apply_taxes(invoice, tax_rates, subtotal)
+        gross = subtotal + invoice.vat_amount
+        invoice.discount_amount = self._resolve_discount(
+            gross, data.collectable_amount
+        )
+        invoice.total = gross - invoice.discount_amount
 
         if data.payment_method == SalesPaymentMethod.CREDIT:
             balance = await self.customer_balance(customer.id)
             self._check_credit_limit(customer, balance, invoice.total, data, user)
 
-        # All invoices start unpaid; cash/card payments are recorded by the cashier module.
+        # Cashier gate: cash/card invoices wait unpaid until the cashier collects
+        # them (see CashierService); credit invoices are confirmed immediately
+        # since they're settled later through the customer's account.
         invoice.paid_amount = Decimal("0")
+        invoice.payment_confirmed_at = (
+            None
+            if data.payment_method in (SalesPaymentMethod.CASH, SalesPaymentMethod.CARD)
+            else datetime.now(timezone.utc)
+        )
 
         self.session.add(invoice)
         await self.session.flush()
-
-        # Create tax lines linked to this invoice.
-        for tt, amount in tax_amounts:
-            self.session.add(
-                InvoiceTaxLine(
-                    invoice_id=invoice.id,
-                    tax_type_id=tt.id,
-                    rate_at_time=tt.rate,
-                    amount=amount,
-                )
-            )
-
-        await self._post_invoice_entries(
-            invoice, customer, subtotal, cost_total, user, tax_amounts
-        )
+        await self._post_invoice_entries(invoice, customer, subtotal, cost_total, user)
 
         # Single commit: stock deduction, the invoice, and its postings succeed or fail together.
         await self.session.commit()
         return await self.get_invoice(invoice.id)
+
+    # --- Quotations ---
+    async def _build_quotation_lines(
+        self,
+        quotation: SalesQuotation,
+        data: SalesQuotationCreate,
+        customer: Customer,
+    ) -> Decimal:
+        """Price each requested line at the customer's tier — no stock/batch allocation."""
+        subtotal = Decimal("0")
+        for line in data.lines:
+            product = await self.stock.get_active_product(line.product_id)
+            base_quantity = self.stock.to_base_quantity(
+                product, line.quantity, line.unit_id
+            )
+            unit_price = self.tier_price(product, customer.price_tier)
+            line_total = (base_quantity * unit_price).quantize(
+                TWO_PLACES, rounding=ROUND_HALF_UP
+            )
+            quotation.lines.append(
+                SalesQuotationLine(
+                    product_id=product.id,
+                    quantity=base_quantity,
+                    unit_price=unit_price,
+                    line_total=line_total,
+                )
+            )
+            subtotal += line_total
+        return subtotal
+
+    @staticmethod
+    def _apply_quotation_taxes(
+        quotation: SalesQuotation, tax_rates: list[TaxRate], subtotal: Decimal
+    ) -> Decimal:
+        total_tax = Decimal("0")
+        for tax_rate in tax_rates:
+            amount = (subtotal * tax_rate.rate / Decimal("100")).quantize(
+                TWO_PLACES, rounding=ROUND_HALF_UP
+            )
+            quotation.taxes.append(
+                SalesQuotationTax(
+                    tax_rate_id=tax_rate.id,
+                    name=tax_rate.name,
+                    rate=tax_rate.rate,
+                    amount=amount,
+                )
+            )
+            total_tax += amount
+        return total_tax
+
+    async def create_quotation(
+        self, data: SalesQuotationCreate, user: User, client_uuid: str | None = None
+    ) -> SalesQuotation:
+        """Price a quote for a customer — no stock deduction or accounting effect.
+
+        `client_uuid` is set when the quote is an order captured offline in the
+        field, so replaying the sync returns the existing one.
+        """
+        customer = await self.get_customer(data.customer_id)
+        if not customer.is_active:
+            raise AppException(400, "هذا العميل موقوف ولا يمكن إنشاء عرض سعر له.")
+        self.ensure_customer_access(user, customer)
+        tax_rates = await self._resolve_taxes(data.tax_rate_ids)
+
+        quotation = SalesQuotation(
+            customer_id=customer.id,
+            salesman_id=customer.salesman_id,
+            quote_date=date.today(),
+            valid_until=data.valid_until,
+            status=QuotationStatus.DRAFT,
+            subtotal=Decimal("0"),
+            vat_amount=Decimal("0"),
+            total=Decimal("0"),
+            notes=data.notes,
+            created_by=user.id,
+            client_uuid=client_uuid,
+        )
+        subtotal = await self._build_quotation_lines(quotation, data, customer)
+        quotation.subtotal = subtotal
+        quotation.vat_amount = self._apply_quotation_taxes(quotation, tax_rates, subtotal)
+        quotation.total = subtotal + quotation.vat_amount
+
+        self.session.add(quotation)
+        await self.session.commit()
+        return await self.get_quotation(quotation.id)
+
+    async def get_quotation(self, quotation_id: int) -> SalesQuotation:
+        """Fetch a quotation with its lines and taxes, or raise a 404."""
+        result = await self.session.execute(
+            select(SalesQuotation)
+            .options(
+                selectinload(SalesQuotation.lines), selectinload(SalesQuotation.taxes)
+            )
+            .where(SalesQuotation.id == quotation_id)
+        )
+        quotation = result.scalar_one_or_none()
+        if quotation is None:
+            raise AppException(404, "عرض السعر غير موجود.")
+        return quotation
+
+    async def list_quotations(
+        self, user: User, customer_id: int | None = None
+    ) -> list[SalesQuotation]:
+        """Quotations visible to this user, newest first, optionally per customer."""
+        stmt = (
+            select(SalesQuotation)
+            .options(
+                selectinload(SalesQuotation.lines), selectinload(SalesQuotation.taxes)
+            )
+            .order_by(SalesQuotation.id.desc())
+        )
+        if not has_permission(user, "sales.all_customers"):
+            stmt = stmt.where(SalesQuotation.salesman_id == user.id)
+        if customer_id is not None:
+            stmt = stmt.where(SalesQuotation.customer_id == customer_id)
+        result = await self.session.execute(stmt)
+        return list(result.scalars().all())
+
+    async def cancel_quotation(self, quotation_id: int, user: User) -> SalesQuotation:
+        """Withdraw a quotation that will not be converted.
+
+        Cancelling never touches stock: a quotation is a price commitment and
+        moves nothing until it becomes an invoice.
+        """
+        quotation = await self.get_quotation(quotation_id)
+        customer = await self.get_customer(quotation.customer_id)
+        self.ensure_customer_access(user, customer)
+        if quotation.status != QuotationStatus.DRAFT:
+            raise AppException(400, "لا يمكن إلغاء عرض سعر تم تحويله أو إلغاؤه من قبل.")
+        quotation.status = QuotationStatus.CANCELLED
+        await self.session.commit()
+        return await self.get_quotation(quotation.id)
+
+    async def convert_quotation_to_invoice(
+        self, quotation_id: int, data: QuotationConvertIn, user: User
+    ) -> SalesInvoice:
+        """Turn an accepted quotation into a real invoice, honoring the quoted prices
+        exactly — the normal FEFO/credit-limit/accounting path in create_invoice runs
+        unchanged, just with each line's price frozen to what was quoted.
+        """
+        quotation = await self.get_quotation(quotation_id)
+        customer = await self.get_customer(quotation.customer_id)
+        self.ensure_customer_access(user, customer)
+        if quotation.status != QuotationStatus.DRAFT:
+            raise AppException(400, "لا يمكن تحويل عرض سعر تم تحويله أو إلغاؤه من قبل.")
+        if quotation.valid_until is not None and quotation.valid_until < date.today():
+            raise AppException(400, "انتهت صلاحية عرض السعر هذا؛ يرجى إنشاء عرض جديد.")
+
+        invoice_data = SalesInvoiceCreate(
+            customer_id=quotation.customer_id,
+            payment_method=data.payment_method,
+            fulfillment=data.fulfillment,
+            tax_rate_ids=[
+                t.tax_rate_id for t in quotation.taxes if t.tax_rate_id is not None
+            ],
+            notes=quotation.notes,
+            lines=[
+                SalesLineIn(product_id=line.product_id, quantity=line.quantity)
+                for line in quotation.lines
+            ],
+            credit_override=data.credit_override,
+        )
+        price_overrides = {line.product_id: line.unit_price for line in quotation.lines}
+        invoice = await self.create_invoice(invoice_data, user, price_overrides)
+
+        quotation.status = QuotationStatus.CONVERTED
+        quotation.converted_invoice_id = invoice.id
+        await self.session.commit()
+        return invoice
 
     async def update_invoice(
         self, invoice_id: int, data: SalesInvoiceCreate, user: User
@@ -412,7 +695,7 @@ class SalesService:
         returns_count = await self.session.execute(
             select(func.count())
             .select_from(SalesReturn)
-            .where(SalesReturn.invoice_id == invoice_id)
+            .where(SalesReturn.invoice_id == invoice_id, posted())
         )
         if returns_count.scalar_one() > 0:
             raise AppException(
@@ -422,11 +705,10 @@ class SalesService:
         customer = await self.get_customer(data.customer_id)
         if not customer.is_active:
             raise AppException(400, "هذا العميل موقوف ولا يمكن البيع له.")
-        await self.stock.get_active_warehouse(data.warehouse_id)
 
         # 1) Give the previously sold quantities back to their original batches.
         for line in invoice.lines:
-            batch = await self.session.get(ProductBatch, line.batch_id)
+            batch = await self.stock.get_batch_locked(line.batch_id)
             if batch is not None:
                 batch.quantity += line.quantity
 
@@ -440,18 +722,13 @@ class SalesService:
         for entry in old_entries.scalars().all():
             await self.session.delete(entry)
 
-        # 3) Remove old tax lines.
-        old_tax_lines = await self.session.execute(
-            select(InvoiceTaxLine).where(InvoiceTaxLine.invoice_id == invoice_id)
-        )
-        for tl in old_tax_lines.scalars().all():
-            await self.session.delete(tl)
+        tax_rates = await self._resolve_taxes(data.tax_rate_ids)
 
-        # 4) Reset the document, then rebuild it through the same pipeline as creation.
+        # 3) Reset the document, then rebuild it through the same pipeline as creation.
         invoice.lines.clear()
+        invoice.taxes.clear()
         invoice.customer_id = customer.id
         invoice.salesman_id = customer.salesman_id
-        invoice.warehouse_id = data.warehouse_id
         invoice.payment_method = data.payment_method
         invoice.fulfillment = data.fulfillment
         if data.fulfillment != FulfillmentType.PICKUP:
@@ -459,18 +736,16 @@ class SalesService:
         invoice.notes = data.notes
         invoice.subtotal = Decimal("0")
         invoice.vat_amount = Decimal("0")
+        invoice.discount_amount = Decimal("0")
         invoice.total = Decimal("0")
         invoice.paid_amount = Decimal("0")
 
-        effective_tax_ids = (
-            [] if customer.tax_exempt else data.tax_type_ids
-        )
-        tax_types = await _resolve_tax_types(self.session, effective_tax_ids)
-
         subtotal, cost_total = await self._build_lines(invoice, data, customer)
-        tax_amounts = _compute_tax_lines(subtotal, tax_types)
-        total_tax = _total_tax(tax_amounts)
-        total = subtotal + total_tax
+        invoice.warehouse_id = self._resolve_invoice_warehouse(invoice)
+        vat_amount = self._apply_taxes(invoice, tax_rates, subtotal)
+        gross = subtotal + vat_amount
+        discount = self._resolve_discount(gross, data.collectable_amount)
+        total = gross - discount
 
         if data.payment_method == SalesPaymentMethod.CREDIT:
             # The zeroed totals were flushed, so the balance excludes this invoice.
@@ -478,44 +753,34 @@ class SalesService:
             self._check_credit_limit(customer, balance, total, data, user)
 
         invoice.subtotal = subtotal
-        invoice.vat_amount = total_tax
+        invoice.vat_amount = vat_amount
+        invoice.discount_amount = discount
         invoice.total = total
+        # Cashier gate resets on edit too: a changed total/method needs re-collecting
+        # (or re-confirming) rather than trusting a stale prior confirmation.
         invoice.paid_amount = Decimal("0")
+        invoice.payment_confirmed_at = (
+            None
+            if data.payment_method in (SalesPaymentMethod.CASH, SalesPaymentMethod.CARD)
+            else datetime.now(timezone.utc)
+        )
+        invoice.payment_confirmed_by = None
 
         await self.session.flush()
-
-        # Create new tax lines.
-        for tt, amount in tax_amounts:
-            self.session.add(
-                InvoiceTaxLine(
-                    invoice_id=invoice.id,
-                    tax_type_id=tt.id,
-                    rate_at_time=tt.rate,
-                    amount=amount,
-                )
-            )
-
-        await self._post_invoice_entries(
-            invoice, customer, subtotal, cost_total, user, tax_amounts
-        )
+        await self._post_invoice_entries(invoice, customer, subtotal, cost_total, user)
 
         await self.session.commit()
         return await self.get_invoice(invoice.id)
 
     async def _attach_return_totals(self, invoices: list[SalesInvoice]) -> None:
-        """Expose how much of each invoice was credited back via returns."""
-        ids = [invoice.id for invoice in invoices]
-        if not ids:
+        """Set `returned_total` on each invoice for read models.
+
+        Delegated to services/sales/returns_query — this was a fourth private copy of
+        the same per-invoice sum, found by the test that forbids exactly that.
+        """
+        if not invoices:
             return
-        result = await self.session.execute(
-            select(
-                SalesReturn.invoice_id,
-                func.coalesce(func.sum(SalesReturn.total), 0),
-            )
-            .where(SalesReturn.invoice_id.in_(ids))
-            .group_by(SalesReturn.invoice_id)
-        )
-        totals = {invoice_id: Decimal(str(total)) for invoice_id, total in result.all()}
+        totals = await returned_totals(self.session, [i.id for i in invoices])
         for invoice in invoices:
             invoice.returned_total = totals.get(invoice.id, Decimal("0"))
 
@@ -529,7 +794,7 @@ class SalesService:
         returns_count = await self.session.execute(
             select(func.count())
             .select_from(SalesReturn)
-            .where(SalesReturn.invoice_id == invoice_id)
+            .where(SalesReturn.invoice_id == invoice_id, posted())
         )
         if returns_count.scalar_one() > 0:
             raise AppException(400, "لا يمكن حذف فاتورة مسجل عليها مرتجعات.")
@@ -547,7 +812,7 @@ class SalesService:
 
         # Give the sold quantities back to their original batches.
         for line in invoice.lines:
-            batch = await self.session.get(ProductBatch, line.batch_id)
+            batch = await self.stock.get_batch_locked(line.batch_id)
             if batch is not None:
                 batch.quantity += line.quantity
 
@@ -573,16 +838,90 @@ class SalesService:
             )
         if invoice.picked_up_at is not None:
             raise AppException(400, "تم تسليم بضاعة هذه الفاتورة من قبل.")
+        if (
+            invoice.payment_method != SalesPaymentMethod.CREDIT
+            and invoice.payment_confirmed_at is None
+        ):
+            raise AppException(
+                400,
+                "لم يتم تحصيل قيمة الفاتورة من الصندوق بعد؛ "
+                "يرجى التحصيل من شاشة الصندوق أولاً.",
+            )
         invoice.picked_up_at = datetime.now(timezone.utc)
         await self.session.commit()
         return await self.get_invoice(invoice_id)
 
+
+    async def _returned_total_for(self, invoice_id: int) -> Decimal:
+        """Everything credited back against one invoice. See services/sales/returns_query."""
+        return await returned_total_for(self.session, invoice_id)
+
+    async def list_customer_credits(
+        self, resolution: CreditResolution | None = None
+    ) -> list[CustomerCredit]:
+        """Credits owed back to customers, newest first; pending ones need a decision."""
+        stmt = select(CustomerCredit).order_by(CustomerCredit.id.desc())
+        if resolution is not None:
+            stmt = stmt.where(CustomerCredit.resolution == resolution)
+        return list((await self.session.execute(stmt)).scalars().all())
+
+    async def resolve_customer_credit(
+        self,
+        credit_id: int,
+        resolution: CreditResolution,
+        user: User,
+        notes: str | None = None,
+    ) -> CustomerCredit:
+        """Settle a credit as a cash refund or as a balance left on account.
+
+        Crediting posts nothing, and that is correct rather than lazy: the invoice
+        debited receivables, the payment credited them, and the return credited them
+        again, so the account already carries what is owed. Leaving it on account is
+        recognising a balance that exists, not creating one.
+
+        A cash refund does move money, and it is not moved here — the till moves it,
+        so it goes through the same cash movement and day-close as every other
+        disbursement. This marks the decision; `CashierService.refund_customer_credit`
+        pays it.
+        """
+        credit = await self.session.get(CustomerCredit, credit_id)
+        if credit is None:
+            raise AppException(404, "المبلغ المستحقّ للعميل غير موجود.")
+        if credit.resolution is not CreditResolution.PENDING:
+            # Resolved once, never twice — otherwise the same 30 is refunded and
+            # then also left on account.
+            raise AppException(
+                400,
+                "تمت معالجة هذا المبلغ من قبل ("
+                + {
+                    CreditResolution.AWAITING_REFUND: "بانتظار الصرف من الصندوق",
+                    CreditResolution.REFUNDED: "رُدَّ نقداً",
+                    CreditResolution.CREDITED: "رصيد في الحساب",
+                }[credit.resolution]
+                + ").",
+            )
+        if resolution not in (CreditResolution.REFUNDED, CreditResolution.CREDITED):
+            raise AppException(400, "اختر إمّا الردّ النقدي أو الترك كرصيد في الحساب.")
+
+        # Choosing a refund records the decision and queues it; the till pays it.
+        credit.resolution = (
+            CreditResolution.AWAITING_REFUND
+            if resolution is CreditResolution.REFUNDED
+            else resolution
+        )
+        credit.notes = notes
+        credit.resolved_at = datetime.now(timezone.utc)
+        credit.resolved_by = user.id
+        await self.session.commit()
+        await self.session.refresh(credit)
+        return credit
+
     async def get_invoice(self, invoice_id: int) -> SalesInvoice:
+        """Fetch an invoice with its lines and applied taxes, or raise a 404."""
         result = await self.session.execute(
             select(SalesInvoice)
             .options(
-                selectinload(SalesInvoice.lines),
-                selectinload(SalesInvoice.tax_lines).selectinload(InvoiceTaxLine.tax_type),
+                selectinload(SalesInvoice.lines), selectinload(SalesInvoice.taxes)
             )
             .where(SalesInvoice.id == invoice_id)
         )
@@ -595,11 +934,11 @@ class SalesService:
     async def list_invoices(
         self, user: User, customer_id: int | None = None
     ) -> list[SalesInvoice]:
+        """Invoices visible to this user, newest first, optionally per customer."""
         stmt = (
             select(SalesInvoice)
             .options(
-                selectinload(SalesInvoice.lines),
-                selectinload(SalesInvoice.tax_lines).selectinload(InvoiceTaxLine.tax_type),
+                selectinload(SalesInvoice.lines), selectinload(SalesInvoice.taxes)
             )
             .order_by(SalesInvoice.id.desc())
         )
@@ -613,11 +952,90 @@ class SalesService:
         return invoices
 
     # --- Returns ---
+    async def _returned_discount_share(
+        self, invoice: SalesInvoice, this_return_subtotal: Decimal
+    ) -> Decimal:
+        """Portion of the invoice's discount that belongs to the goods being returned.
+
+        Allocated on the running total — the share owed once this return is
+        included, minus what earlier returns already took — so a sequence of
+        partial returns always sums to exactly the invoice's discount and never
+        drifts by rounding.
+        """
+        if invoice.discount_amount <= 0 or invoice.subtotal <= 0:
+            return Decimal("0")
+
+        prior = await self.session.execute(
+            select(
+                func.coalesce(func.sum(SalesReturn.subtotal), 0),
+                func.coalesce(func.sum(SalesReturn.discount_amount), 0),
+            ).where(SalesReturn.invoice_id == invoice.id, posted())
+        )
+        prior_subtotal, prior_discount = prior.one()
+        prior_subtotal = Decimal(str(prior_subtotal))
+        prior_discount = Decimal(str(prior_discount))
+
+        cumulative_subtotal = prior_subtotal + this_return_subtotal
+        target = (
+            invoice.discount_amount * cumulative_subtotal / invoice.subtotal
+        ).quantize(TWO_PLACES, rounding=ROUND_HALF_UP)
+        # Never hand back more discount than the invoice granted.
+        target = min(target, invoice.discount_amount)
+        return max(target - prior_discount, Decimal("0"))
+
     async def create_return(self, data: SalesReturnCreate, user: User) -> SalesReturn:
         """Post a sales return; resellable goods go back to their original batches."""
+        # Lock the invoice row for the whole of this return.
+        #
+        # Everything below rests on "how much of this invoice has already been sent
+        # back", read a few lines down and then compared against what each line sold.
+        # Read without a lock, two returns arriving together each saw nothing returned
+        # yet and both passed: proved by firing 6 and 6 at a line of 10, which credited
+        # 120 against a 100 invoice and put 12 units back from a sale of 10. Money and
+        # stock created out of nothing.
+        #
+        # Locking the invoice — not the batches, which are locked separately — is what
+        # serialises the *decision*. The batch lock added earlier protects the
+        # quantities; this protects the entitlement to return them at all.
+        locked = await self.session.execute(
+            select(SalesInvoice.id)
+            .where(SalesInvoice.id == data.invoice_id)
+            .with_for_update()
+        )
+        if locked.scalar_one_or_none() is None:
+            raise AppException(404, "فاتورة المبيعات غير موجودة.")
+
         invoice = await self.get_invoice(data.invoice_id)
         customer = await self.get_customer(invoice.customer_id)
         self.ensure_customer_access(user, customer)
+
+        # A return before the goods leave reduces the picking documents, so the
+        # warehouse hands over the right quantity. Once the trip has left, those
+        # documents are printed and on the seat beside the driver, and no amount of
+        # netting reaches him — he is carrying the original count. Recording the
+        # return anyway would credit the customer for goods about to be handed to
+        # them, which is the give-away this whole change exists to stop.
+        #
+        # So it is refused, with the instruction that makes it correct: take the
+        # delivery in full, then record the return. That turns it into the
+        # after-delivery case, where the goods really do come back and everything
+        # already works.
+        in_transit = await self.session.execute(
+            select(DeliveryTrip.id)
+            .join(DeliveryStop, DeliveryStop.trip_id == DeliveryTrip.id)
+            .where(
+                DeliveryStop.invoice_id == invoice.id,
+                DeliveryStop.status == StopStatus.PENDING,
+                DeliveryTrip.status == TripStatus.IN_TRANSIT,
+            )
+            .limit(1)
+        )
+        if in_transit.scalar_one_or_none() is not None:
+            raise AppException(
+                400,
+                "بضاعة هذه الفاتورة على الطريق مع السائق؛ لا يمكن تسجيل مرتجع الآن. "
+                "استلم الكمية كاملة ثم سجّل المرتجع بعد التسليم.",
+            )
 
         # Quantities already returned against this invoice, per batch.
         returned_result = await self.session.execute(
@@ -626,7 +1044,7 @@ class SalesService:
                 func.coalesce(func.sum(SalesReturnLine.quantity), 0),
             )
             .join(SalesReturn, SalesReturnLine.return_id == SalesReturn.id)
-            .where(SalesReturn.invoice_id == invoice.id)
+            .where(SalesReturn.invoice_id == invoice.id, posted())
             .group_by(SalesReturnLine.batch_id)
         )
         returned_per_batch: dict[int, Decimal] = {
@@ -663,7 +1081,7 @@ class SalesService:
                 take = min(returnable, remaining)
 
                 if data.reason == ReturnReason.RESELLABLE:
-                    batch = await self.session.get(ProductBatch, inv_line.batch_id)
+                    batch = await self.stock.get_batch_locked(inv_line.batch_id)
                     if batch is not None:
                         batch.quantity += take
 
@@ -693,64 +1111,56 @@ class SalesService:
                     f"الكمية المرتجعة للصنف ({product.name}) أكبر من الكمية المباعة في الفاتورة.",
                 )
 
-        sales_return.subtotal = subtotal
-
-        # Inherit tax types from the original invoice's tax lines.
-        orig_tax_result = await self.session.execute(
-            select(InvoiceTaxLine).where(InvoiceTaxLine.invoice_id == invoice.id)
+        # Derive the tax proportionally from the ORIGINAL invoice's own numbers
+        # (not any currently-configured rate) — so a return always matches
+        # whatever tax was actually charged on that specific invoice, even if
+        # tax rates have since changed.
+        effective_tax_fraction = (
+            invoice.vat_amount / invoice.subtotal
+            if invoice.subtotal > 0
+            else Decimal("0")
         )
-        orig_tax_lines = list(orig_tax_result.scalars().all())
-        total_tax = Decimal("0")
-        tax_entries: list[tuple[TaxType, Decimal]] = []
-
-        if orig_tax_lines:
-            # Proportional tax: scale each tax by (return_subtotal / invoice_subtotal)
-            # when the return doesn't cover the whole invoice.
-            ratio = (
-                subtotal / invoice.subtotal
-                if invoice.subtotal > 0
-                else Decimal("1")
+        sales_return.subtotal = subtotal
+        sales_return.vat_amount = (
+            (subtotal * effective_tax_fraction).quantize(
+                TWO_PLACES, rounding=ROUND_HALF_UP
             )
-            for otl in orig_tax_lines:
-                tt = await self.session.get(TaxType, otl.tax_type_id)
-                if tt is None:
-                    continue
-                amt = (otl.amount * ratio).quantize(TWO_PLACES, rounding=ROUND_HALF_UP)
-                total_tax += amt
-                tax_entries.append((tt, amt))
-
-        sales_return.vat_amount = total_tax
-        sales_return.total = subtotal + total_tax
+            if invoice.vat_amount > 0
+            else Decimal("0")
+        )
+        # The customer never paid the discounted portion, so returning goods must
+        # not refund it. Share it across returns in proportion to value returned.
+        #
+        # Computed from the running total rather than this return alone: rounding
+        # each return independently could drift, whereas taking
+        # (target so far - already allocated) guarantees that returning
+        # everything credits exactly what the invoice charged.
+        sales_return.discount_amount = await self._returned_discount_share(
+            invoice, subtotal
+        )
+        sales_return.total = (
+            subtotal + sales_return.vat_amount - sales_return.discount_amount
+        )
 
         self.session.add(sales_return)
         await self.session.flush()
 
-        # Create return tax lines.
-        for tt, amt in tax_entries:
-            self.session.add(
-                ReturnTaxLine(
-                    return_id=sales_return.id,
-                    tax_type_id=tt.id,
-                    rate_at_time=tt.rate,
-                    amount=amt,
-                )
+        # Automatic double-entry: reverse revenue + VAT against the customer's
+        # receivable. The discount share is given back to contra-revenue, since
+        # that part of the sale was never billed and so is not being credited.
+        return_items = [
+            (SALES_RETURNS, subtotal, Decimal("0")),
+            (VAT, sales_return.vat_amount, Decimal("0")),
+            (ACCOUNTS_RECEIVABLE, Decimal("0"), sales_return.total),
+        ]
+        if sales_return.discount_amount > 0:
+            return_items.append(
+                (SALES_DISCOUNT, Decimal("0"), sales_return.discount_amount)
             )
-
-        # Automatic double-entry: reverse revenue + tax liabilities against the customer's receivable.
-        tax_credit_items: list[tuple[str, Decimal, Decimal]] = []
-        for tt, amt in tax_entries:
-            tax_credit_items.append((tt.accounting_code, amt, Decimal("0")))
-        if not tax_entries and sales_return.vat_amount > 0:
-            tax_credit_items.append((VAT, sales_return.vat_amount, Decimal("0")))
-
         await self.accounting.add_entry_no_commit(
             entry_date=date.today(),
             description=f"مرتجع مبيعات رقم {sales_return.id} عن الفاتورة رقم {invoice.id}",
-            items=[
-                (SALES_RETURNS, subtotal, Decimal("0")),
-                *tax_credit_items,
-                (ACCOUNTS_RECEIVABLE, Decimal("0"), sales_return.total),
-            ],
+            items=return_items,
             reference_type="sales_return",
             reference_id=sales_return.id,
             created_by=user.id,
@@ -772,26 +1182,207 @@ class SalesService:
                 created_by=user.id,
             )
 
+        # If the return leaves this invoice paid for more than it is now worth, the
+        # difference is money owed back to the customer. Record it as a pending
+        # decision rather than leaving it as a negative number on a statement: that
+        # is how two credit balances sat unnoticed in the dev database, and an
+        # obligation nobody is prompted about is an obligation nobody honours.
+        #
+        # Whether to hand the cash over or leave it on account is a human call, so
+        # nothing is chosen here.
+        returned_so_far = await self._returned_total_for(invoice.id)
+        overpaid = (invoice.paid_amount - (invoice.total - returned_so_far)).quantize(
+            TWO_PLACES, rounding=ROUND_HALF_UP
+        )
+        # Nothing left to deliver? Take the stop off the trip. A driver sent to a
+        # customer with an empty picking line is a wasted journey and an invitation
+        # to hand over something to justify the visit.
+        if await self._returned_total_for(invoice.id) >= invoice.total:
+            dropped = await self.session.execute(
+                select(DeliveryStop)
+                .join(DeliveryTrip, DeliveryTrip.id == DeliveryStop.trip_id)
+                .where(
+                    DeliveryStop.invoice_id == invoice.id,
+                    DeliveryStop.status == StopStatus.PENDING,
+                    DeliveryTrip.status == TripStatus.PLANNED,
+                )
+            )
+            for stop in dropped.scalars().all():
+                await self.session.delete(stop)
+
+        credit: CustomerCredit | None = None
+        if overpaid > 0:
+            credit = CustomerCredit(
+                customer_id=customer.id,
+                invoice_id=invoice.id,
+                return_id=sales_return.id,
+                amount=overpaid,
+                resolution=CreditResolution.PENDING,
+            )
+            self.session.add(credit)
+
         await self.session.commit()
         result = await self.session.execute(
             select(SalesReturn)
-            .options(
-                selectinload(SalesReturn.lines),
-                selectinload(SalesReturn.tax_lines).selectinload(ReturnTaxLine.tax_type),
-            )
+            .options(selectinload(SalesReturn.lines))
             .where(SalesReturn.id == sales_return.id)
         )
-        return result.scalar_one()
+        saved = result.scalar_one()
+        # Carry the pending decision back to the caller so the screen can ask.
+        if credit is not None:
+            await self.session.refresh(credit)
+            saved.pending_credit_id = credit.id
+            saved.pending_credit_amount = credit.amount
+        return saved
+
+    async def cancel_return(
+        self, return_id: int, user: User, cancel_reason: str | None = None
+    ) -> SalesReturn:
+        """Undo a credit note entered by mistake — stock, ledger and credit together.
+
+        Kept and marked cancelled rather than deleted: a credit note that simply
+        vanishes leaves a customer statement nobody can explain, and the mistake is
+        itself part of the record.
+
+        Three things it refuses, each for a different reason:
+
+        * **Already cancelled** — reversing twice would take the goods out twice.
+        * **The refund has been paid** — the customer is holding the cash. Undoing the
+          credit note while they keep the money would quietly turn a correction into a
+          debt they were never told about. The refund has to be dealt with first, by a
+          person, which is deliberately not something this method will decide.
+        * **The goods have since been sold** — a resellable return put them back on the
+          shelf and they may have left again. Taking out stock that is no longer there
+          is exactly the negative-quantity case the database now rejects, so it is
+          caught here with an explanation instead of an integrity error.
+        """
+        # Lock the credit note before reading its status. Two clerks pressing cancel
+        # at the same moment would otherwise both see "posted", and the goods would
+        # come out of stock twice — the same lost update the batch locks closed
+        # elsewhere, one level up.
+        locked = await self.session.execute(
+            select(SalesReturn.id).where(SalesReturn.id == return_id).with_for_update()
+        )
+        if locked.scalar_one_or_none() is None:
+            raise AppException(404, "مرتجع المبيعات غير موجود.")
+
+        sales_return = await self.get_return(return_id)
+        if sales_return.status is ReturnStatus.CANCELLED:
+            raise AppException(400, "هذا المرتجع ملغى من قبل.")
+
+        customer = await self.get_customer(sales_return.customer_id)
+        self.ensure_customer_access(user, customer)
+
+        credit = (
+            await self.session.execute(
+                select(CustomerCredit).where(CustomerCredit.return_id == sales_return.id)
+            )
+        ).scalar_one_or_none()
+        if credit is not None and credit.resolution is CreditResolution.REFUNDED:
+            raise AppException(
+                400,
+                f"تم ردّ مبلغ {credit.amount} للعميل نقداً عن هذا المرتجع؛ "
+                "لا يمكن إلغاؤه قبل استرجاع المبلغ من العميل وتسجيل ذلك.",
+            )
+
+        # Take the goods back out, if they were ever put back.
+        cost_total = Decimal("0")
+        if sales_return.reason is ReturnReason.RESELLABLE:
+            for line in sorted(sales_return.lines, key=lambda ln: ln.batch_id or 0):
+                batch = await self.stock.get_batch_locked(line.batch_id)
+                if batch is None:
+                    raise AppException(400, "تشغيلة المرتجع غير موجودة.")
+                if batch.quantity < line.quantity:
+                    raise AppException(
+                        400,
+                        f"لا يمكن إلغاء المرتجع: المتوفر من التشغيلة "
+                        f"({batch.batch_number}) هو {batch.quantity} "
+                        f"والمطلوب سحبه {line.quantity} — بِيعت البضاعة بعد إرجاعها.",
+                    )
+                batch.quantity -= line.quantity
+        # A return line records what the customer was charged, not what the goods cost
+        # us — the cost lives on the invoice line it came from, matched by batch, which
+        # is exactly how create_return valued it in the first place. Reversing has to
+        # read it from the same place, or the COGS put back differs from the COGS taken
+        # out and inventory drifts by the margin.
+        invoice = await self.get_invoice(sales_return.invoice_id)
+        unit_cost_by_batch = {
+            inv_line.batch_id: inv_line.unit_cost
+            for inv_line in invoice.lines
+            if inv_line.unit_cost is not None
+        }
+        for line in sales_return.lines:
+            unit_cost = unit_cost_by_batch.get(line.batch_id)
+            if unit_cost is not None:
+                cost_total += (line.quantity * unit_cost).quantize(
+                    TWO_PLACES, rounding=ROUND_HALF_UP
+                )
+
+        # Mirror of the original postings, in the opposite direction.
+        reverse_items = [
+            (SALES_RETURNS, Decimal("0"), sales_return.subtotal),
+            (VAT, Decimal("0"), sales_return.vat_amount),
+            (ACCOUNTS_RECEIVABLE, sales_return.total, Decimal("0")),
+        ]
+        if sales_return.discount_amount > 0:
+            reverse_items.append(
+                (SALES_DISCOUNT, sales_return.discount_amount, Decimal("0"))
+            )
+        await self.accounting.add_entry_no_commit(
+            entry_date=date.today(),
+            description=f"إلغاء مرتجع المبيعات رقم {sales_return.id}",
+            items=reverse_items,
+            reference_type="sales_return_cancel",
+            reference_id=sales_return.id,
+            created_by=user.id,
+        )
+        if cost_total > 0:
+            credited_account = (
+                INVENTORY
+                if sales_return.reason is ReturnReason.RESELLABLE
+                else DAMAGE_LOSS
+            )
+            await self.accounting.add_entry_no_commit(
+                entry_date=date.today(),
+                description=f"إلغاء تكلفة مرتجع المبيعات رقم {sales_return.id}",
+                items=[
+                    (COGS, cost_total, Decimal("0")),
+                    (credited_account, Decimal("0"), cost_total),
+                ],
+                reference_type="sales_return_cancel",
+                reference_id=sales_return.id,
+                created_by=user.id,
+            )
+
+        # An unpaid credit is void with the note that caused it.
+        if credit is not None:
+            await self.session.delete(credit)
+
+        sales_return.status = ReturnStatus.CANCELLED
+        sales_return.cancelled_at = datetime.now(timezone.utc)
+        sales_return.cancelled_by = user.id
+        sales_return.cancel_reason = cancel_reason
+        await self.session.commit()
+        return await self.get_return(return_id)
+
+    async def get_return(self, return_id: int) -> SalesReturn:
+        result = await self.session.execute(
+            select(SalesReturn)
+            .options(selectinload(SalesReturn.lines))
+            .where(SalesReturn.id == return_id)
+        )
+        sales_return = result.scalar_one_or_none()
+        if sales_return is None:
+            raise AppException(404, "مرتجع المبيعات غير موجود.")
+        return sales_return
 
     async def list_returns(
         self, user: User, invoice_id: int | None = None
     ) -> list[SalesReturn]:
+        """Sales returns, newest first, optionally limited to one invoice."""
         stmt = (
             select(SalesReturn)
-            .options(
-                selectinload(SalesReturn.lines),
-                selectinload(SalesReturn.tax_lines).selectinload(ReturnTaxLine.tax_type),
-            )
+            .options(selectinload(SalesReturn.lines))
             .order_by(SalesReturn.id.desc())
         )
         if invoice_id is not None:
@@ -807,6 +1398,11 @@ class SalesService:
     async def create_payment(
         self, data: CustomerPaymentCreate, user: User
     ) -> CustomerPayment:
+        """Record a receipt against a customer's balance (سند قبض).
+
+        Refuses more than is outstanding, so an overpayment cannot quietly turn
+        into a negative balance that nobody reconciles.
+        """
         customer = await self.get_customer(data.customer_id)
         self.ensure_customer_access(user, customer)
         balance = await self.customer_balance(customer.id)
@@ -846,6 +1442,8 @@ class SalesService:
     async def customer_statement(
         self, customer_id: int, user: User
     ) -> CustomerStatementOut:
+        """Everything owed and paid for one customer: invoices, returns, receipts
+        and the resulting balance — the document handed over when settling up."""
         from app.api.schemas.sales import (
             CustomerOut,
             CustomerPaymentOut,
@@ -859,11 +1457,11 @@ class SalesService:
         invoices = await self.list_invoices(user, customer_id)
         returns_result = await self.session.execute(
             select(SalesReturn)
-            .options(
-                selectinload(SalesReturn.lines),
-                selectinload(SalesReturn.tax_lines).selectinload(ReturnTaxLine.tax_type),
-            )
-            .where(SalesReturn.customer_id == customer_id)
+            .options(selectinload(SalesReturn.lines))
+            # The statement's own balance excludes cancelled notes, so its lines have
+            # to as well — otherwise the movements listed do not add up to the total
+            # printed underneath them, which is the one thing a statement must do.
+            .where(SalesReturn.customer_id == customer_id, posted())
             .order_by(SalesReturn.id)
         )
         returns = list(returns_result.scalars().all())
@@ -885,285 +1483,101 @@ class SalesService:
             total_invoices=total_invoices,
             total_returns=total_returns,
             total_paid=total_paid,
-            balance=customer.opening_balance
-            + total_invoices
-            - total_returns
-            - total_paid,
+            # Delegated rather than recomputed. This method used to carry its own
+            # copy of the formula, so adding refunds to `customer_balance` fixed the
+            # number in one place and left the statement — the document actually
+            # handed to the customer — still wrong. One balance, one definition.
+            balance=await self.customer_balance(customer_id),
             invoices=[SalesInvoiceOut.model_validate(i) for i in invoices],
             returns=[SalesReturnOut.model_validate(r) for r in returns],
             payments=[CustomerPaymentOut.model_validate(p) for p in payments],
         )
 
-    # --- Quotations ---
-    async def create_quotation(
-        self, data: QuotationCreate, user: User
-    ) -> SalesQuotation:
-        customer = await self.get_customer(data.customer_id)
-        if not customer.is_active:
-            raise AppException(400, "هذا العميل موقوف ولا يمكن إعداد عرض أسعار له.")
-        await self.stock.get_active_warehouse(data.warehouse_id)
-
-        effective_tax_ids = (
-            [] if customer.tax_exempt else data.tax_type_ids
-        )
-        tax_types = await _resolve_tax_types(self.session, effective_tax_ids)
-
-        subtotal = Decimal("0")
-        quotation = SalesQuotation(
-            customer_id=customer.id,
-            salesman_id=customer.salesman_id,
-            warehouse_id=data.warehouse_id,
-            quotation_date=date.today(),
-            valid_until=data.valid_until,
-            status=QuotationStatus.DRAFT,
-            subtotal=Decimal("0"),
-            vat_amount=Decimal("0"),
-            total=Decimal("0"),
-            notes=data.notes,
-            created_by=user.id,
-        )
-
-        for line in data.lines:
-            product = await self.stock.get_active_product(line.product_id)
-            unit_price = line.unit_price if line.unit_price > 0 else self.tier_price(product, customer.price_tier)
-            line_total = (line.quantity * unit_price).quantize(
-                TWO_PLACES, rounding=ROUND_HALF_UP
-            )
-            quotation.lines.append(
-                SalesQuotationLine(
-                    product_id=product.id,
-                    product_name=line.product_name or product.name,
-                    quantity=line.quantity,
-                    unit_price=unit_price,
-                    line_total=line_total,
-                )
-            )
-            subtotal += line_total
-
-        tax_amounts = _compute_tax_lines(subtotal, tax_types)
-        total_tax = _total_tax(tax_amounts)
-
-        quotation.subtotal = subtotal
-        quotation.vat_amount = total_tax
-        quotation.total = subtotal + total_tax
-
-        self.session.add(quotation)
-        await self.session.flush()
-
-        # Create quotation tax lines.
-        for tt, amount in tax_amounts:
-            self.session.add(
-                QuotationTaxLine(
-                    quotation_id=quotation.id,
-                    tax_type_id=tt.id,
-                    rate_at_time=tt.rate,
-                    amount=amount,
-                )
-            )
-
-        await self.session.commit()
-
-        result = await self.session.execute(
-            select(SalesQuotation)
-            .options(
-                selectinload(SalesQuotation.lines),
-                selectinload(SalesQuotation.tax_lines).selectinload(QuotationTaxLine.tax_type),
-            )
-            .where(SalesQuotation.id == quotation.id)
-        )
-        return result.scalar_one()
-
-    async def get_quotation(self, quotation_id: int) -> SalesQuotation:
-        result = await self.session.execute(
-            select(SalesQuotation)
-            .options(
-                selectinload(SalesQuotation.lines),
-                selectinload(SalesQuotation.tax_lines).selectinload(QuotationTaxLine.tax_type),
-            )
-            .where(SalesQuotation.id == quotation_id)
-        )
-        quotation = result.scalar_one_or_none()
-        if quotation is None:
-            raise AppException(404, "عرض الأسعار غير موجود.")
-        return quotation
-
-    async def list_quotations(
-        self, user: User, customer_id: int | None = None
-    ) -> list[SalesQuotation]:
-        stmt = (
-            select(SalesQuotation)
-            .options(
-                selectinload(SalesQuotation.lines),
-                selectinload(SalesQuotation.tax_lines).selectinload(QuotationTaxLine.tax_type),
-            )
-            .order_by(SalesQuotation.id.desc())
-        )
-        if not has_permission(user, "sales.all_customers"):
-            stmt = stmt.where(SalesQuotation.salesman_id == user.id)
-        if customer_id is not None:
-            stmt = stmt.where(SalesQuotation.customer_id == customer_id)
-        result = await self.session.execute(stmt)
-        return list(result.scalars().all())
-
-    async def update_quotation_status(
-        self, quotation_id: int, new_status: QuotationStatus
-    ) -> SalesQuotation:
-        quotation = await self.get_quotation(quotation_id)
-        valid_transitions = {
-            QuotationStatus.DRAFT: {QuotationStatus.SENT},
-            QuotationStatus.SENT: {QuotationStatus.ACCEPTED, QuotationStatus.REJECTED},
-            QuotationStatus.ACCEPTED: {QuotationStatus.CONVERTED},
-        }
-        allowed = valid_transitions.get(quotation.status, set())
-        if new_status not in allowed:
-            raise AppException(
-                400,
-                f"لا يمكن تغيير الحالة من {quotation.status.value} إلى {new_status.value}.",
-            )
-        quotation.status = new_status
-        await self.session.commit()
-
-        result = await self.session.execute(
-            select(SalesQuotation)
-            .options(selectinload(SalesQuotation.lines))
-            .where(SalesQuotation.id == quotation.id)
-        )
-        return result.scalar_one()
-
-    async def convert_to_invoice(
+    async def commission_report(
         self,
-        quotation_id: int,
-        payment_method: SalesPaymentMethod,
-        user: User,
-    ) -> SalesInvoice:
-        """Convert an accepted quotation to a FEFO sales invoice in one transaction."""
-        quotation = await self.get_quotation(quotation_id)
-        if quotation.status != QuotationStatus.ACCEPTED:
-            raise AppException(
-                400, "يمكن تحويل العرض فقط إذا كان حالتها مقبولة."
+        date_from: date | None = None,
+        date_to: date | None = None,
+        salesman_id: int | None = None,
+    ) -> CommissionReportOut:
+        """Net sales (invoices minus returns, both excluding VAT) per salesman,
+        multiplied by their configured commission_rate.
+        """
+        sales_query = (
+            select(
+                SalesInvoice.salesman_id,
+                func.sum(SalesInvoice.subtotal).label("total_sales"),
             )
-
-        # Build invoice lines from the quotation lines, respecting FEFO.
-        invoice = SalesInvoice(
-            customer_id=quotation.customer_id,
-            salesman_id=quotation.salesman_id,
-            warehouse_id=quotation.warehouse_id,
-            invoice_date=date.today(),
-            payment_method=payment_method,
-            fulfillment=FulfillmentType.DELIVERY,
-            subtotal=Decimal("0"),
-            vat_amount=Decimal("0"),
-            total=Decimal("0"),
-            notes=f"تحويل من عرض الأسعار رقم {quotation.id}",
-            created_by=user.id,
+            .where(SalesInvoice.salesman_id.is_not(None))
+            .group_by(SalesInvoice.salesman_id)
         )
+        if date_from is not None:
+            sales_query = sales_query.where(SalesInvoice.invoice_date >= date_from)
+        if date_to is not None:
+            sales_query = sales_query.where(SalesInvoice.invoice_date <= date_to)
+        if salesman_id is not None:
+            sales_query = sales_query.where(SalesInvoice.salesman_id == salesman_id)
+        sales_rows = (await self.session.execute(sales_query)).all()
+        sales_by_salesman = {row.salesman_id: row.total_sales for row in sales_rows}
 
-        subtotal = Decimal("0")
-        cost_total = Decimal("0")
-        for qline in quotation.lines:
-            product = await self.stock.get_active_product(qline.product_id)
-            allocations = await self.stock.fefo_allocate_all(
-                product.id, qline.quantity
+        returns_query = (
+            select(
+                SalesInvoice.salesman_id,
+                func.sum(SalesReturn.subtotal).label("total_returns"),
             )
-            for batch, take in allocations:
-                batch.quantity -= take
-                line_total = (take * qline.unit_price).quantize(
-                    TWO_PLACES, rounding=ROUND_HALF_UP
-                )
-                invoice.lines.append(
-                    SalesInvoiceLine(
-                        product_id=product.id,
-                        batch_id=batch.id,
-                        batch_number=batch.batch_number,
-                        warehouse_id=batch.warehouse_id,
-                        quantity=take,
-                        unit_price=qline.unit_price,
-                        unit_cost=batch.unit_cost,
-                        line_total=line_total,
-                    )
-                )
-                subtotal += line_total
-                if batch.unit_cost is not None:
-                    cost_total += (take * batch.unit_cost).quantize(
-                        TWO_PLACES, rounding=ROUND_HALF_UP
-                    )
-
-        # Inherit tax types from the quotation's tax lines.
-        qtax_result = await self.session.execute(
-            select(QuotationTaxLine).where(
-                QuotationTaxLine.quotation_id == quotation.id
-            )
+            .join(SalesInvoice, SalesReturn.invoice_id == SalesInvoice.id)
+            .where(SalesInvoice.salesman_id.is_not(None), posted())
+            .group_by(SalesInvoice.salesman_id)
         )
-        qtax_lines = list(qtax_result.scalars().all())
-        tax_amounts: list[tuple[TaxType, Decimal]] = []
-        total_tax = Decimal("0")
+        if date_from is not None:
+            returns_query = returns_query.where(
+                func.date(SalesReturn.created_at) >= date_from
+            )
+        if date_to is not None:
+            returns_query = returns_query.where(
+                func.date(SalesReturn.created_at) <= date_to
+            )
+        if salesman_id is not None:
+            returns_query = returns_query.where(
+                SalesInvoice.salesman_id == salesman_id
+            )
+        returns_rows = (await self.session.execute(returns_query)).all()
+        returns_by_salesman = {
+            row.salesman_id: row.total_returns for row in returns_rows
+        }
 
-        if qtax_lines:
-            # Proportional scaling: recalculate taxes on the new subtotal.
-            for qtl in qtax_lines:
-                tt = await self.session.get(TaxType, qtl.tax_type_id)
-                if tt is None:
+        salesman_ids = set(sales_by_salesman) | set(returns_by_salesman)
+        rows: list[CommissionRow] = []
+        total_commission = Decimal("0")
+        if salesman_ids:
+            users_result = await self.session.execute(
+                select(User).where(User.id.in_(salesman_ids))
+            )
+            users_by_id = {u.id: u for u in users_result.scalars().all()}
+            for sid in sorted(salesman_ids):
+                salesman = users_by_id.get(sid)
+                if salesman is None:
                     continue
-                amt = (subtotal * qtl.rate_at_time).quantize(
-                    TWO_PLACES, rounding=ROUND_HALF_UP
+                total_sales = sales_by_salesman.get(sid, Decimal("0"))
+                total_returns = returns_by_salesman.get(sid, Decimal("0"))
+                net_sales = total_sales - total_returns
+                commission_amount = (
+                    net_sales * salesman.commission_rate / Decimal("100")
+                ).quantize(TWO_PLACES, rounding=ROUND_HALF_UP)
+                total_commission += commission_amount
+                rows.append(
+                    CommissionRow(
+                        salesman_id=sid,
+                        salesman_name=salesman.full_name,
+                        total_sales=total_sales,
+                        total_returns=total_returns,
+                        net_sales=net_sales,
+                        commission_rate=salesman.commission_rate,
+                        commission_amount=commission_amount,
+                    )
                 )
-                tax_amounts.append((tt, amt))
-                total_tax += amt
-
-        invoice.subtotal = subtotal
-        invoice.vat_amount = total_tax
-        invoice.total = subtotal + total_tax
-
-        if payment_method == SalesPaymentMethod.CREDIT:
-            customer = await self.get_customer(quotation.customer_id)
-            balance = await self.customer_balance(customer.id)
-            self._check_credit_limit(
-                customer, balance, invoice.total,
-                SalesInvoiceCreate(
-                    customer_id=customer.id,
-                    warehouse_id=invoice.warehouse_id,
-                    payment_method=payment_method,
-                    lines=[],
-                ),
-                user,
-            )
-
-        invoice.paid_amount = Decimal("0")
-
-        self.session.add(invoice)
-        await self.session.flush()
-
-        # Create invoice tax lines.
-        for tt, amt in tax_amounts:
-            self.session.add(
-                InvoiceTaxLine(
-                    invoice_id=invoice.id,
-                    tax_type_id=tt.id,
-                    rate_at_time=tt.rate,
-                    amount=amt,
-                )
-            )
-
-        # Post accounting entries.
-        await self._post_invoice_entries(
-            invoice,
-            await self.get_customer(quotation.customer_id),
-            subtotal,
-            cost_total,
-            user,
-            tax_amounts,
+        return CommissionReportOut(
+            date_from=date_from,
+            date_to=date_to,
+            rows=rows,
+            total_commission=total_commission,
         )
-
-        # Mark quotation as converted and link it.
-        quotation.status = QuotationStatus.CONVERTED
-        quotation.converted_invoice_id = invoice.id
-
-        await self.session.commit()
-        return await self.get_invoice(invoice.id)
-
-    async def delete_quotation(self, quotation_id: int) -> None:
-        quotation = await self.get_quotation(quotation_id)
-        if quotation.status != QuotationStatus.DRAFT:
-            raise AppException(400, "يمكن حذف العرض فقط إذا كان في حالة مسودة.")
-        await self.session.delete(quotation)
-        await self.session.commit()

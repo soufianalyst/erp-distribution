@@ -1,5 +1,11 @@
+// Customer file: who they are, which price tier they buy at, the credit limit
+// they may not exceed, and which salesman owns the relationship.
+//
+// Also where receipts (سند قبض) are recorded against a customer's balance and
+// where their statement is read — the document handed over when settling up.
 import { useState } from "react";
 import {
+  CancelButton,
   Alert,
   Badge,
   Button,
@@ -7,8 +13,8 @@ import {
   Input,
   Loading,
   Modal,
-  PaginatedTable,
   Select,
+  Table,
   money,
 } from "../components/Ui";
 import { useAuth } from "../context/AuthContext";
@@ -26,6 +32,7 @@ const EMPTY_FORM = {
   salesman_id: "",
 };
 
+/** Record a receipt against this customer's balance and show their statement. */
 function PaymentSection({ customerId, onPaid }) {
   const [amount, setAmount] = useState("");
   const [method, setMethod] = useState("cash");
@@ -44,8 +51,8 @@ function PaymentSection({ customerId, onPaid }) {
   };
 
   return (
-    <form onSubmit={submit} className="rounded-lg border border-emerald-200 bg-emerald-50/60 p-4">
-      <div className="mb-2 text-sm font-extrabold text-emerald-800">سند قبض جديد</div>
+    <form onSubmit={submit} className="rounded-lg border border-emerald-200 dark:border-emerald-900 bg-emerald-50/60 p-4">
+      <div className="mb-2 text-sm font-extrabold text-emerald-800 dark:text-emerald-300">سند قبض جديد</div>
       <Alert>{error}</Alert>
       <div className="grid grid-cols-3 items-end gap-3">
         <Input
@@ -106,7 +113,7 @@ export default function CustomersPage() {
 
   return (
     <div className="space-y-6">
-      <div className="flex items-center justify-between">
+      <div className="flex flex-wrap items-center justify-between gap-3">
         <h1 className="text-2xl font-extrabold">العملاء</h1>
         {canManage && <Button onClick={() => setOpen(true)}>+ عميل جديد</Button>}
       </div>
@@ -115,7 +122,7 @@ export default function CustomersPage() {
         {loading ? (
           <Loading />
         ) : (
-          <PaginatedTable
+          <Table
             columns={[
               { key: "name", label: "اسم العميل" },
               { key: "phone", label: "الهاتف", render: (r) => r.phone || "—" },
@@ -137,15 +144,6 @@ export default function CustomersPage() {
               },
             ]}
             rows={data}
-            searchable
-            searchPlaceholder="بحث بالاسم أو الهاتف..."
-            filterField="price_tier"
-            filterLabel="فئة السعر"
-            filterOptions={[
-              { value: "wholesale", label: "جملة" },
-              { value: "half_wholesale", label: "نصف جملة" },
-              { value: "retail", label: "تجزئة" },
-            ]}
           />
         )}
       </Card>
@@ -175,9 +173,7 @@ export default function CustomersPage() {
           </div>
           <Input label="العنوان" value={form.address} onChange={set("address")} />
           <div className="flex justify-end gap-2">
-            <Button type="button" variant="secondary" onClick={() => setOpen(false)}>
-              إلغاء
-            </Button>
+            <CancelButton onClose={() => setOpen(false)} />
             <Button type="submit">حفظ العميل</Button>
           </div>
         </form>
@@ -194,108 +190,34 @@ export default function CustomersPage() {
         ) : statement ? (
           <div className="space-y-4">
             <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
-              <div className="rounded-lg bg-slate-50 p-3 text-center">
-                <div className="text-xs font-bold text-slate-500">إجمالي الفواتير</div>
+              <div className="rounded-lg bg-slate-50 dark:bg-slate-800/60 p-3 text-center">
+                <div className="text-xs font-bold text-slate-500 dark:text-slate-400">إجمالي الفواتير</div>
                 <div className="text-lg font-extrabold">{money(statement.total_invoices)}</div>
               </div>
-              <div className="rounded-lg bg-slate-50 p-3 text-center">
-                <div className="text-xs font-bold text-slate-500">المرتجعات</div>
+              <div className="rounded-lg bg-slate-50 dark:bg-slate-800/60 p-3 text-center">
+                <div className="text-xs font-bold text-slate-500 dark:text-slate-400">المرتجعات</div>
                 <div className="text-lg font-extrabold">{money(statement.total_returns)}</div>
               </div>
-              <div className="rounded-lg bg-slate-50 p-3 text-center">
-                <div className="text-xs font-bold text-slate-500">المسدد</div>
+              <div className="rounded-lg bg-slate-50 dark:bg-slate-800/60 p-3 text-center">
+                <div className="text-xs font-bold text-slate-500 dark:text-slate-400">المسدد</div>
                 <div className="text-lg font-extrabold">{money(statement.total_paid)}</div>
               </div>
-              <div className="rounded-lg bg-emerald-50 p-3 text-center">
-                <div className="text-xs font-extrabold text-emerald-700">الرصيد المستحق</div>
-                <div className="text-lg font-extrabold text-emerald-800">{money(statement.balance)}</div>
+              <div className="rounded-lg bg-emerald-50 dark:bg-emerald-950/40 p-3 text-center">
+                <div className="text-xs font-bold text-emerald-700 dark:text-emerald-400">الرصيد المستحق</div>
+                <div className="text-lg font-extrabold text-emerald-800 dark:text-emerald-300">{money(statement.balance)}</div>
               </div>
             </div>
-
-            <PaginatedTable
+            <Table
               columns={[
-                {
-                  key: "row_type",
-                  label: "النوع",
-                  render: (r) => (
-                    <Badge tone={r.row_type === "invoice" ? "blue" : r.row_type === "return" ? "amber" : "green"}>
-                      {r.row_type === "invoice" ? "فاتورة" : r.row_type === "return" ? "مرتجع" : "دفعة"}
-                    </Badge>
-                  ),
-                  searchable: (r) => r.row_type === "invoice" ? "فاتورة" : r.row_type === "return" ? "مرتجع" : "دفعة",
-                },
-                { key: "ref_id", label: "#", searchable: (r) => String(r.ref_id) },
-                { key: "date", label: "التاريخ" },
-                { key: "method", label: "الدفع", render: (r) => r.method || "—" },
-                {
-                  key: "debit",
-                  label: "مدين",
-                  render: (r) => r.debit ? <b className="text-rose-600">{money(r.debit)}</b> : "—",
-                },
-                {
-                  key: "credit",
-                  label: "دائن",
-                  render: (r) => r.credit ? <b className="text-emerald-600">{money(r.credit)}</b> : "—",
-                },
-                {
-                  key: "amount",
-                  label: "المبلغ",
-                  render: (r) => <b>{money(r.amount)}</b>,
-                },
+                { key: "id", label: "فاتورة #" },
+                { key: "invoice_date", label: "التاريخ" },
+                { key: "payment_method", label: "الدفع", render: (r) => (r.payment_method === "cash" ? "نقدي" : "آجل") },
+                { key: "total", label: "الإجمالي", render: (r) => money(r.total) },
+                { key: "paid_amount", label: "المسدد", render: (r) => money(r.paid_amount) },
               ]}
-              rows={
-                [
-                  ...(statement.invoices || []).map((inv) => ({
-                    _key: `inv-${inv.id}`,
-                    row_type: "invoice",
-                    ref_id: inv.id,
-                    date: inv.invoice_date,
-                    method: inv.payment_method === "cash" ? "نقدي" : "آجل",
-                    debit: inv.total,
-                    credit: null,
-                    amount: inv.total,
-                    _amount: parseFloat(inv.total),
-                  })),
-                  ...(statement.returns || []).map((ret) => ({
-                    _key: `ret-${ret.id}`,
-                    row_type: "return",
-                    ref_id: ret.id,
-                    date: ret.created_at?.split("T")[0] || "",
-                    method: "مرتجع",
-                    debit: null,
-                    credit: ret.total,
-                    amount: ret.total,
-                    _amount: parseFloat(ret.total),
-                  })),
-                  ...(statement.payments || []).map((pay) => ({
-                    _key: `pay-${pay.id}`,
-                    row_type: "payment",
-                    ref_id: pay.id,
-                    date: pay.payment_date,
-                    method: pay.method === "cash" ? "نقدي" : pay.method === "bank" ? "بنك" : "شيك",
-                    debit: null,
-                    credit: pay.amount,
-                    amount: pay.amount,
-                    _amount: parseFloat(pay.amount),
-                  })),
-                ]
-              }
-              empty="لا توجد حركات لهذا العميل."
-              searchable
-              searchPlaceholder="بحث..."
-              filterField="row_type"
-              filterLabel="النوع"
-              filterOptions={[
-                { value: "invoice", label: "فواتير" },
-                { value: "return", label: "مرتجعات" },
-                { value: "payment", label: "دفعات" },
-              ]}
-              dateFromField="date"
-              dateToField="date"
-              amountField="_amount"
-              amountLabel="المبلغ"
+              rows={statement.invoices}
+              empty="لا توجد فواتير لهذا العميل."
             />
-
             {can("sales.payments") && (
               <PaymentSection
                 customerId={statement.customer.id}

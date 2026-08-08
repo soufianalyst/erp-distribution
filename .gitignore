@@ -9,17 +9,26 @@ venv/
 
 # Environment
 .env
-.env.production
 
 # Node / React
 node_modules/
 frontend/build/
 frontend/dist/
 
-# Claude
-.claude/
+# SQLite dev database (never commit)
+*.db
 
 # OS / Editor
 .DS_Store
 .idea/
 .vscode/
+
+# Claude Code local tool-permission allowlist (machine/session-specific)
+.claude/settings.local.json
+
+# Local-only capture bootstrap for generating manual screenshots.
+# Seeds a session from the URL into localStorage — must never ship.
+frontend/public/_shot.html
+
+# Generated intermediate HTML for the manual PDF
+docs/user-manual/.build/

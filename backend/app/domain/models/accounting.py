@@ -87,3 +87,28 @@ class JournalItem(Base):
 
     entry: Mapped[JournalEntry] = relationship(back_populates="items")
     account: Mapped[Account] = relationship()
+
+
+class BankStatementLine(Base):
+    """One line from the bank's own statement, entered manually and matched
+    against an existing journal item posted to the bank account (1015)."""
+
+    __tablename__ = "bank_statement_lines"
+
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    line_date: Mapped[date] = mapped_column(Date, nullable=False)
+    description: Mapped[str] = mapped_column(String(300), nullable=False)
+    amount: Mapped[Decimal] = mapped_column(Numeric(14, 2), nullable=False)
+    direction: Mapped[str] = mapped_column(String(3), nullable=False)  # "in"/"out"
+    matched_journal_item_id: Mapped[int | None] = mapped_column(
+        ForeignKey("journal_items.id"), unique=True, nullable=True
+    )
+    matched_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    matched_by: Mapped[int | None] = mapped_column(ForeignKey("users.id"))
+    notes: Mapped[str | None] = mapped_column(String(300))
+    created_by: Mapped[int | None] = mapped_column(ForeignKey("users.id"))
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+
+    matched_journal_item: Mapped["JournalItem | None"] = relationship()

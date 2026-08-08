@@ -1,3 +1,8 @@
+// Session state: the signed-in user, their effective permissions, and the
+// `can()` helper every screen uses to decide what to show.
+//
+// This governs the interface only — the API enforces the same permissions
+// independently, so hiding a button is convenience, never security.
 import { createContext, useContext, useEffect, useState } from "react";
 import api from "../services/api";
 
@@ -9,6 +14,7 @@ export const ROLE_LABELS = {
   sales: "مندوب مبيعات",
   accountant: "محاسب",
   driver: "سائق توصيل",
+  cashier: "أمين الصندوق",
 };
 
 export function AuthProvider({ children }) {

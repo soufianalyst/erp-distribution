@@ -191,7 +191,7 @@ class TestTrips:
             json={"invoice_id": inv1},
         )
         assert response.status_code == 400
-        assert "مستودع الرحلة" in response.json()["message"]
+        assert "مستودع مختلف" in response.json()["message"]
 
     async def test_sales_rep_views_but_cannot_manage(self, client: AsyncClient) -> None:
         admin = await login(client, "admin", TEST_ADMIN_PASSWORD)

@@ -1,6 +1,13 @@
+// Distribution: planning a trip, loading it with invoices, sending the driver
+// out, and recording what was delivered or failed at each stop.
+//
+// Also holds the pickup queue for customers collecting from the warehouse
+// themselves. An invoice only becomes available here once the cashier has
+// confirmed it, so goods never leave against unsettled money.
 import { useState } from "react";
 import { useNavigate } from "react-router-dom";
 import {
+  CancelButton,
   Alert,
   Badge,
   Button,
@@ -8,7 +15,6 @@ import {
   Input,
   Loading,
   Modal,
-  PaginatedTable,
   Select,
   Table,
   qty,
@@ -29,6 +35,7 @@ export const STOP_STATUS = {
   failed: { label: "تعذر التسليم", tone: "red" },
 };
 
+/** One trip: its stops, the invoices loaded onto it, and its progress. */
 function TripDetails({ trip, invoices, canManage, onChanged, onError }) {
   const navigate = useNavigate();
   const [invoiceToAdd, setInvoiceToAdd] = useState("");
@@ -39,10 +46,11 @@ function TripDetails({ trip, invoices, canManage, onChanged, onError }) {
       .map((item) => `${item.product_name} ×${qty(item.quantity)}`)
       .join("، ");
 
-  // Delivery-type invoices not already on this trip (backend validates warehouse match).
+  // Delivery-type invoices from the trip's warehouse not already on this trip.
   const assignedIds = new Set(trip.stops.map((s) => s.invoice_id));
   const candidates = invoices.filter(
     (i) =>
+      i.warehouse_id === trip.warehouse_id &&
       i.fulfillment !== "pickup" &&
       !assignedIds.has(i.id)
   );
@@ -58,7 +66,7 @@ function TripDetails({ trip, invoices, canManage, onChanged, onError }) {
 
   return (
     <div className="space-y-4">
-      <div className="flex items-center justify-between text-sm font-bold text-slate-600">
+      <div className="flex items-center justify-between text-sm font-bold text-slate-600 dark:text-slate-400">
         <span>
           السائق: {trip.driver_name}
           {trip.vehicle ? ` — ${trip.vehicle}` : ""} | التاريخ: {trip.trip_date}
@@ -149,7 +157,7 @@ function TripDetails({ trip, invoices, canManage, onChanged, onError }) {
       />
 
       {canManage && trip.status === "planned" && (
-        <div className="flex items-end gap-2 rounded-lg border border-slate-200 bg-slate-50 p-3">
+        <div className="flex items-end gap-2 rounded-lg border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800/60 p-3">
           <div className="flex-1">
             <Select
               label="إضافة فاتورة للرحلة"
@@ -181,7 +189,7 @@ function TripDetails({ trip, invoices, canManage, onChanged, onError }) {
       )}
 
       {canManage && (
-        <div className="flex justify-end gap-2 border-t border-slate-200 pt-3">
+        <div className="flex justify-end gap-2 border-t border-slate-200 dark:border-slate-700 pt-3">
           {trip.status === "planned" && (
             <Button
               onClick={() => call(() => api.post(`/delivery/trips/${trip.id}/dispatch`))}
@@ -201,7 +209,9 @@ function TripDetails({ trip, invoices, canManage, onChanged, onError }) {
   );
 }
 
+/** Customers collecting from the warehouse rather than being delivered to. */
 function PickupQueue({ invoices, canManage, onChanged, onError }) {
+  const navigate = useNavigate();
   // Pickup invoices, the ones still awaiting handover first.
   const pickups = invoices
     .filter((i) => i.fulfillment === "pickup")
@@ -218,7 +228,7 @@ function PickupQueue({ invoices, canManage, onChanged, onError }) {
 
   return (
     <Card title="استلام من المستودع — طلبيات تُسلَّم للعميل عند محلنا">
-      <PaginatedTable
+      <Table
         columns={[
           { key: "id", label: "الفاتورة", render: (r) => `فاتورة ${r.id}` },
           { key: "customer_name", label: "العميل" },
@@ -250,17 +260,20 @@ function PickupQueue({ invoices, canManage, onChanged, onError }) {
           {
             key: "actions",
             label: "",
-            render: (r) =>
-              canManage &&
-              !r.picked_up_at && (
-                <Button onClick={() => handOver(r)}>✓ تسليم البضاعة</Button>
-              ),
+            render: (r) => (
+              <div className="flex gap-1">
+                <Button variant="secondary" onClick={() => navigate(`/print/pickup/${r.id}`)}>
+                  🖨️ قسيمة تجهيز
+                </Button>
+                {canManage && !r.picked_up_at && (
+                  <Button onClick={() => handOver(r)}>✓ تسليم البضاعة</Button>
+                )}
+              </div>
+            ),
           },
         ]}
         rows={pickups}
         empty="لا توجد طلبيات استلام من المستودع."
-        searchable
-        searchPlaceholder="بحث بالعميل..."
       />
     </Card>
   );
@@ -303,9 +316,9 @@ export default function DeliveryPage() {
 
   return (
     <div className="space-y-6">
-      <div className="flex items-center justify-between">
+      <div className="flex flex-wrap items-center justify-between gap-3">
         <h1 className="text-2xl font-extrabold">التوزيع والتسليم</h1>
-        <div className="flex gap-2">
+        <div className="flex flex-wrap gap-2">
           <Button variant={tab === "trips" ? "primary" : "secondary"} onClick={() => setTab("trips")}>
             🚛 رحلات التوصيل
           </Button>
@@ -332,7 +345,7 @@ export default function DeliveryPage() {
       {tab === "trips" && (
       <Card>
         <Alert>{trips.error}</Alert>
-        <PaginatedTable
+        <Table
           columns={[
             { key: "id", label: "#" },
             { key: "trip_date", label: "التاريخ" },
@@ -342,7 +355,6 @@ export default function DeliveryPage() {
               key: "warehouse_id",
               label: "المستودع",
               render: (t) => (warehouses.data || []).find((w) => w.id === t.warehouse_id)?.name ?? "—",
-              searchable: (t) => (warehouses.data || []).find((w) => w.id === t.warehouse_id)?.name ?? "",
             },
             { key: "stops", label: "الطلبيات", render: (t) => t.stops.length },
             {
@@ -364,17 +376,6 @@ export default function DeliveryPage() {
           ]}
           rows={trips.data}
           empty="لا توجد رحلات توزيع بعد."
-          searchable
-          searchPlaceholder="بحث بالسائق..."
-          filterField="status"
-          filterLabel="الحالة"
-          filterOptions={[
-            { value: "planned", label: "مخططة" },
-            { value: "in_transit", label: "قيد التنفيذ" },
-            { value: "completed", label: "مكتملة" },
-          ]}
-          dateFromField="trip_date"
-          dateToField="trip_date"
         />
       </Card>
       )}
@@ -392,9 +393,7 @@ export default function DeliveryPage() {
             ))}
           </Select>
           <div className="flex justify-end gap-2">
-            <Button type="button" variant="secondary" onClick={() => setOpen(false)}>
-              إلغاء
-            </Button>
+            <CancelButton onClose={() => setOpen(false)} />
             <Button type="submit">إنشاء الرحلة</Button>
           </div>
         </form>

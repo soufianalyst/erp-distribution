@@ -11,8 +11,17 @@ export default function PrintInvoicePage() {
   const customers = useFetch(() => api.get("/sales/customers"));
   const products = useFetch(() => api.get("/inventory/products"));
   const warehouses = useFetch(() => api.get("/inventory/warehouses"));
+  const company = useFetch(() => api.get("/settings/company"));
 
-  if (invoice.loading || customers.loading || products.loading || warehouses.loading) return <Loading />;
+  if (
+    invoice.loading ||
+    customers.loading ||
+    products.loading ||
+    warehouses.loading ||
+    company.loading
+  ) {
+    return <Loading />;
+  }
   if (invoice.error) {
     return <div className="p-10 text-center font-bold text-rose-700">{invoice.error}</div>;
   }
@@ -20,16 +29,19 @@ export default function PrintInvoicePage() {
   const inv = invoice.data;
   const customer = customers.data?.find((c) => c.id === inv.customer_id);
   const productOf = (id) => products.data?.find((p) => p.id === id);
-  const warehouseOf = (id) => warehouses.data?.find((w) => w.id === id);
+  const warehouseName = (id) =>
+    warehouses.data?.find((w) => w.id === id)?.name ?? "غير محدد";
 
-  // Group lines by warehouse for delivery/pickup efficiency.
-  const linesByWarehouse = {};
-  inv.lines.forEach((line) => {
-    const wid = line.warehouse_id;
-    if (!linesByWarehouse[wid]) linesByWarehouse[wid] = [];
-    linesByWarehouse[wid].push(line);
-  });
-  const warehouseIds = Object.keys(linesByWarehouse).map(Number);
+  // Group lines by warehouse so each warehouse's staff can pick their portion easily.
+  const groups = [];
+  for (const line of inv.lines) {
+    let group = groups.find((g) => g.warehouseId === line.warehouse_id);
+    if (!group) {
+      group = { warehouseId: line.warehouse_id, lines: [] };
+      groups.push(group);
+    }
+    group.lines.push(line);
+  }
 
   return (
     <div className="min-h-screen bg-slate-200 py-8 print:bg-white print:py-0">
@@ -44,8 +56,10 @@ export default function PrintInvoicePage() {
         {/* Header */}
         <header className="flex items-start justify-between border-b-4 border-slate-800 pb-4">
           <div>
-            <h1 className="text-2xl font-extrabold text-slate-900">شركة التوزيع الغذائي</h1>
-            <div className="mt-1 text-sm text-slate-600">بيع وتوزيع المواد الغذائية بالجملة</div>
+            <h1 className="text-2xl font-extrabold text-slate-900">{company.data.name}</h1>
+            {company.data.tagline && (
+              <div className="mt-1 text-sm text-slate-600">{company.data.tagline}</div>
+            )}
           </div>
           <div className="rounded-lg border-2 border-slate-800 px-6 py-3 text-center">
             <div className="text-lg font-extrabold">فاتورة مبيعات</div>
@@ -79,62 +93,49 @@ export default function PrintInvoicePage() {
           </div>
         </section>
 
-        {/* Lines grouped by warehouse */}
-        {warehouseIds.map((wid, groupIndex) => {
-          const wh = warehouseOf(wid);
-          const lines = linesByWarehouse[wid];
-          const groupSubtotal = lines.reduce((s, l) => s + Number(l.line_total), 0);
-          return (
-            <div key={wid} className={groupIndex > 0 ? "mt-8" : "mt-6"}>
-              <div className="mb-2 rounded bg-slate-700 px-3 py-1.5 text-sm font-extrabold text-white print:bg-slate-300 print:text-slate-900">
-                المستودع: {wh?.name ?? wid}
-              </div>
-              <table className="w-full border-collapse text-right text-sm">
-                <thead>
-                  <tr className="bg-slate-800 text-white">
-                    <th className="border border-slate-800 px-3 py-2">#</th>
-                    <th className="border border-slate-800 px-3 py-2">الصنف</th>
-                    <th className="border border-slate-800 px-3 py-2">التشغيلية</th>
-                    <th className="border border-slate-800 px-3 py-2">الكمية</th>
-                    <th className="border border-slate-800 px-3 py-2">الوحدة</th>
-                    <th className="border border-slate-800 px-3 py-2">سعر الوحدة</th>
-                    <th className="border border-slate-800 px-3 py-2">الإجمالي</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {lines.map((line, index) => {
-                    const product = productOf(line.product_id);
-                    return (
-                      <tr key={line.id}>
-                        <td className="border border-slate-300 px-3 py-2">{index + 1}</td>
-                        <td className="border border-slate-300 px-3 py-2 font-bold">
-                          {product?.name ?? line.product_id}
-                        </td>
-                        <td className="border border-slate-300 px-3 py-2">{line.batch_number}</td>
-                        <td className="border border-slate-300 px-3 py-2">{qty(line.quantity)}</td>
-                        <td className="border border-slate-300 px-3 py-2">
-                          {product?.base_unit_name ?? ""}
-                        </td>
-                        <td className="border border-slate-300 px-3 py-2">{money(line.unit_price)}</td>
-                        <td className="border border-slate-300 px-3 py-2 font-bold">
-                          {money(line.line_total)}
-                        </td>
-                      </tr>
-                    );
-                  })}
-                </tbody>
-                <tfoot>
-                  <tr className="bg-slate-100 font-bold">
-                    <td colSpan={6} className="border border-slate-300 px-3 py-2 text-left">
-                      المجموع — {wh?.name ?? wid}
-                    </td>
-                    <td className="border border-slate-300 px-3 py-2">{money(groupSubtotal)}</td>
-                  </tr>
-                </tfoot>
-              </table>
+        {/* Lines — grouped by warehouse so delivery/pickup staff can pick per-location */}
+        {groups.map((group) => (
+          <div key={group.warehouseId ?? "unknown"} className="mt-6">
+            <div className="mb-1 rounded-t-lg bg-slate-700 px-3 py-1.5 text-sm font-extrabold text-white">
+              🏬 مستودع: {warehouseName(group.warehouseId)}
             </div>
-          );
-        })}
+            <table className="w-full border-collapse text-right text-sm">
+              <thead>
+                <tr className="bg-slate-800 text-white">
+                  <th className="border border-slate-800 px-3 py-2">#</th>
+                  <th className="border border-slate-800 px-3 py-2">الصنف</th>
+                  <th className="border border-slate-800 px-3 py-2">التشغيلة</th>
+                  <th className="border border-slate-800 px-3 py-2">الكمية</th>
+                  <th className="border border-slate-800 px-3 py-2">الوحدة</th>
+                  <th className="border border-slate-800 px-3 py-2">سعر الوحدة</th>
+                  <th className="border border-slate-800 px-3 py-2">الإجمالي</th>
+                </tr>
+              </thead>
+              <tbody>
+                {group.lines.map((line, index) => {
+                  const product = productOf(line.product_id);
+                  return (
+                    <tr key={line.id}>
+                      <td className="border border-slate-300 px-3 py-2">{index + 1}</td>
+                      <td className="border border-slate-300 px-3 py-2 font-bold">
+                        {product?.name ?? line.product_id}
+                      </td>
+                      <td className="border border-slate-300 px-3 py-2">{line.batch_number}</td>
+                      <td className="border border-slate-300 px-3 py-2">{qty(line.quantity)}</td>
+                      <td className="border border-slate-300 px-3 py-2">
+                        {product?.base_unit_name ?? ""}
+                      </td>
+                      <td className="border border-slate-300 px-3 py-2">{money(line.unit_price)}</td>
+                      <td className="border border-slate-300 px-3 py-2 font-bold">
+                        {money(line.line_total)}
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+        ))}
 
         {/* Totals */}
         <div className="mt-4 flex justify-start">
@@ -146,20 +147,24 @@ export default function PrintInvoicePage() {
                 </td>
                 <td className="border border-slate-300 px-3 py-2">{money(inv.subtotal)}</td>
               </tr>
-              {(inv.tax_lines && inv.tax_lines.length > 0
-                ? inv.tax_lines
-                : [{ id: "vat", tax_type: { name: "ضريبة القيمة المضافة" }, rate_at_time: "0", amount: inv.vat_amount }]
-              ).map((tl) => (
-                <tr key={tl.id}>
+              {inv.taxes.map((tax) => (
+                <tr key={tax.id}>
                   <td className="border border-slate-300 bg-slate-50 px-3 py-2 font-bold print:bg-white">
-                    {tl.tax_type?.name ?? "ضريبة"}
-                    {Number(tl.rate_at_time) > 0
-                      ? ` (${(Number(tl.rate_at_time) * 100).toFixed(1)}%)`
-                      : ""}
+                    {tax.name} ({tax.rate}%)
                   </td>
-                  <td className="border border-slate-300 px-3 py-2">{money(tl.amount)}</td>
+                  <td className="border border-slate-300 px-3 py-2">{money(tax.amount)}</td>
                 </tr>
               ))}
+              {Number(inv.discount_amount) > 0 && (
+                <tr>
+                  <td className="border border-slate-300 bg-slate-50 px-3 py-2 font-bold print:bg-white">
+                    الخصم
+                  </td>
+                  <td className="border border-slate-300 px-3 py-2">
+                    − {money(inv.discount_amount)}
+                  </td>
+                </tr>
+              )}
               <tr className="text-base font-extrabold">
                 <td className="border-2 border-slate-800 bg-slate-800 px-3 py-2 text-white">
                   الإجمالي المستحق

@@ -1,0 +1,21 @@
+{
+  "name": "نظام إدارة التوزيع — تطبيق المندوب",
+  "short_name": "جولة المندوب",
+  "description": "بيع من السيارة وتسجيل الطلبات أثناء الجولة، ويعمل دون اتصال بالإنترنت.",
+  "lang": "ar",
+  "dir": "rtl",
+  "start_url": "/field",
+  "scope": "/",
+  "display": "standalone",
+  "orientation": "portrait",
+  "background_color": "#0f172a",
+  "theme_color": "#047857",
+  "icons": [
+    {
+      "src": "/icon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any maskable"
+    }
+  ]
+}

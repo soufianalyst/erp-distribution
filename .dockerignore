@@ -1,11 +1,16 @@
 __pycache__
 *.pyc
 .env
+.env.example
 .venv
 .pytest_cache
+.ruff_cache
 .git
+.gitignore
 .claude
 *.md
+docs
 node_modules
 dist
+*.db
 .DS_Store

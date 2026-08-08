@@ -1,4 +1,6 @@
-"""Sales endpoints: customers, FEFO invoices, returns, receipts, statements, and quotations."""
+"""Sales endpoints: customers, FEFO invoices, returns, receipts, and statements."""
+
+from datetime import date
 
 from fastapi import APIRouter, Depends, Query, status
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -6,22 +8,37 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.api.deps import require_permissions
 from app.api.schemas.common import APIResponse
 from app.api.schemas.sales import (
+    ReturnCancelIn,
+    CustomerCreditOut,
+    CustomerCreditResolveIn,
+    FieldSyncIn,
+    FieldSyncOut,
+    FieldVanOut,
+    RoundPositionOut,
+    RoundSettlementOpenIn,
+    RoundSettlementOut,
+    RoundSettlementSettleIn,
+    RoundVanSettleIn,
+    CommissionReportOut,
     CustomerCreate,
     CustomerOut,
     CustomerPaymentCreate,
     CustomerPaymentOut,
     CustomerStatementOut,
     CustomerUpdate,
-    QuotationCreate,
-    QuotationOut,
+    QuotationConvertIn,
     SalesInvoiceCreate,
     SalesInvoiceOut,
-    SalesPaymentMethod,
+    SalesQuotationCreate,
+    SalesQuotationOut,
     SalesReturnCreate,
     SalesReturnOut,
 )
 from app.db.session import get_db
 from app.domain.models.user import User
+from app.domain.models.sales import CreditResolution, RoundSettlementStatus
+from app.services.sales.field_sync_service import FieldSyncService
+from app.services.sales.round_settlement_service import RoundSettlementService
 from app.services.sales.sales_service import SalesService
 
 router = APIRouter(prefix="/sales", tags=["Sales"])
@@ -33,6 +50,7 @@ sales_view = require_permissions("sales.view")
 sellers = require_permissions("sales.create")
 returners = require_permissions("sales.returns")
 collectors = require_permissions("sales.payments")
+commission_viewers = require_permissions("sales.commission_view")
 quoters = require_permissions("sales.quotations")
 
 
@@ -210,6 +228,82 @@ async def list_returns(
     return APIResponse(data=[SalesReturnOut.model_validate(r) for r in returns])
 
 
+# --- Quotations ---
+@router.post(
+    "/quotations",
+    response_model=APIResponse[SalesQuotationOut],
+    status_code=status.HTTP_201_CREATED,
+)
+async def create_quotation(
+    body: SalesQuotationCreate,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(quoters),
+) -> APIResponse[SalesQuotationOut]:
+    """إنشاء عرض سعر — تسعير فقط، دون خصم مخزون أو أثر محاسبي."""
+    quotation = await SalesService(db).create_quotation(body, current_user)
+    return APIResponse(
+        data=SalesQuotationOut.model_validate(quotation),
+        message="تم إنشاء عرض السعر بنجاح.",
+    )
+
+
+@router.get("/quotations", response_model=APIResponse[list[SalesQuotationOut]])
+async def list_quotations(
+    customer_id: int | None = Query(default=None),
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(sales_view),
+) -> APIResponse[list[SalesQuotationOut]]:
+    """عرض عروض الأسعار."""
+    quotations = await SalesService(db).list_quotations(current_user, customer_id)
+    return APIResponse(data=[SalesQuotationOut.model_validate(q) for q in quotations])
+
+
+@router.get("/quotations/{quotation_id}", response_model=APIResponse[SalesQuotationOut])
+async def get_quotation(
+    quotation_id: int,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(sales_view),
+) -> APIResponse[SalesQuotationOut]:
+    """عرض تفاصيل عرض سعر."""
+    quotation = await SalesService(db).get_quotation(quotation_id)
+    return APIResponse(data=SalesQuotationOut.model_validate(quotation))
+
+
+@router.post(
+    "/quotations/{quotation_id}/convert", response_model=APIResponse[SalesInvoiceOut]
+)
+async def convert_quotation(
+    quotation_id: int,
+    body: QuotationConvertIn,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(quoters),
+) -> APIResponse[SalesInvoiceOut]:
+    """تحويل عرض سعر مقبول إلى فاتورة مبيعات فعلية، بنفس الأسعار المعروضة."""
+    invoice = await SalesService(db).convert_quotation_to_invoice(
+        quotation_id, body, current_user
+    )
+    return APIResponse(
+        data=SalesInvoiceOut.model_validate(invoice),
+        message="تم تحويل عرض السعر إلى فاتورة بنجاح.",
+    )
+
+
+@router.post(
+    "/quotations/{quotation_id}/cancel", response_model=APIResponse[SalesQuotationOut]
+)
+async def cancel_quotation(
+    quotation_id: int,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(quoters),
+) -> APIResponse[SalesQuotationOut]:
+    """إلغاء عرض سعر لم يُحوَّل بعد."""
+    quotation = await SalesService(db).cancel_quotation(quotation_id, current_user)
+    return APIResponse(
+        data=SalesQuotationOut.model_validate(quotation),
+        message="تم إلغاء عرض السعر.",
+    )
+
+
 # --- Customer payments ---
 @router.post(
     "/payments",
@@ -229,95 +323,202 @@ async def create_payment(
     )
 
 
-# --- Quotations ---
-@router.post(
-    "/quotations",
-    response_model=APIResponse[QuotationOut],
-    status_code=status.HTTP_201_CREATED,
-)
-async def create_quotation(
-    body: QuotationCreate,
+# --- Salesman commissions ---
+@router.get("/reports/commissions", response_model=APIResponse[CommissionReportOut])
+async def commission_report(
+    date_from: date | None = Query(default=None),
+    date_to: date | None = Query(default=None),
+    salesman_id: int | None = Query(default=None),
     db: AsyncSession = Depends(get_db),
-    current_user: User = Depends(quoters),
-) -> APIResponse[QuotationOut]:
-    """إنشاء عرض أسعار جديد للعميل."""
-    quotation = await SalesService(db).create_quotation(body, current_user)
+    current_user: User = Depends(commission_viewers),
+) -> APIResponse[CommissionReportOut]:
+    """تقرير عمولات المناديب: صافي المبيعات (بعد خصم المرتجعات) × نسبة العمولة."""
+    report = await SalesService(db).commission_report(date_from, date_to, salesman_id)
+    return APIResponse(data=report)
+
+
+# --- Field app (offline salesman round) ---
+@router.get("/field/van", response_model=APIResponse[FieldVanOut])
+async def get_my_van(
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(require_permissions("sales.field_sync")),
+) -> APIResponse[FieldVanOut]:
+    """المركبة المسندة للمندوب وما تحمله حالياً — يخزّنها التطبيق للعمل دون اتصال."""
+    van = await FieldSyncService(db).van_snapshot(current_user)
+    return APIResponse(data=van)
+
+
+@router.post("/field/sync", response_model=APIResponse[FieldSyncOut])
+async def sync_field_round(
+    body: FieldSyncIn,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(require_permissions("sales.field_sync")),
+) -> APIResponse[FieldSyncOut]:
+    """رفع جولة المندوب: العملاء الجدد ثم المبيعات والطلبات.
+
+    آمنة للإعادة: كل عنصر يحمل معرّفاً من التطبيق، فما سبق حفظه يُبلَّغ عنه ولا
+    يُكرر. فشل مستند واحد لا يمنع بقية الجولة من الحفظ.
+    """
+    result = await FieldSyncService(db).sync(body, current_user)
     return APIResponse(
-        data=QuotationOut.model_validate(quotation),
-        message="تم إنشاء عرض الأسعار بنجاح.",
+        data=result,
+        message=(
+            f"تمت مزامنة {result.created_count} عنصراً"
+            + (f"، و{result.duplicate_count} مسجّل مسبقاً" if result.duplicate_count else "")
+            + (f"، وتعذّر حفظ {result.failed_count}" if result.failed_count else "")
+            + "."
+        ),
     )
 
 
-@router.get("/quotations", response_model=APIResponse[list[QuotationOut]])
-async def list_quotations(
-    customer_id: int | None = Query(default=None),
+# --- Round settlement (تسوية جولة المندوب) ---
+@router.get("/rounds", response_model=APIResponse[list[RoundSettlementOut]])
+async def list_rounds(
+    warehouse_id: int | None = None,
+    salesman_id: int | None = None,
+    status: RoundSettlementStatus | None = None,
     db: AsyncSession = Depends(get_db),
-    current_user: User = Depends(quoters),
-) -> APIResponse[list[QuotationOut]]:
-    """عرض عروض الأسعار؛ يرى المندوب عروضه فقط."""
-    quotations = await SalesService(db).list_quotations(current_user, customer_id)
-    return APIResponse(data=[QuotationOut.model_validate(q) for q in quotations])
+    current_user: User = Depends(require_permissions("sales.round_settle")),
+) -> APIResponse[list[RoundSettlementOut]]:
+    """تسويات جولات المناديب، الأحدث أولاً، مع إمكانية التصفية بالمركبة أو الحالة."""
+    rounds = await RoundSettlementService(db).list_settlements(
+        warehouse_id=warehouse_id, salesman_id=salesman_id, status=status
+    )
+    return APIResponse(data=[RoundSettlementOut.model_validate(r) for r in rounds])
 
 
-@router.get("/quotations/{quotation_id}", response_model=APIResponse[QuotationOut])
-async def get_quotation(
-    quotation_id: int,
+@router.get("/rounds/position", response_model=APIResponse[RoundPositionOut])
+async def round_position(
+    warehouse_id: int,
+    round_date: date | None = None,
     db: AsyncSession = Depends(get_db),
-    current_user: User = Depends(quoters),
-) -> APIResponse[QuotationOut]:
-    """عرض تفاصيل عرض أسعار."""
-    quotation = await SalesService(db).get_quotation(quotation_id)
-    return APIResponse(data=QuotationOut.model_validate(quotation))
+    current_user: User = Depends(require_permissions("sales.round_settle")),
+) -> APIResponse[RoundPositionOut]:
+    """موقف الجولة الآن: ما بيع، وما حُصّل، وما بقي — وأسباب تعذّر الإقفال إن وُجدت."""
+    position = await RoundSettlementService(db).position(warehouse_id, round_date)
+    return APIResponse(data=position)
 
 
-@router.patch(
-    "/quotations/{quotation_id}/status",
-    response_model=APIResponse[QuotationOut],
-)
-async def update_quotation_status(
-    quotation_id: int,
-    status_val: str = Query(..., alias="status", description="الحالة الجديدة: sent, accepted, rejected"),
+@router.post("/rounds", response_model=APIResponse[RoundSettlementOut], status_code=201)
+async def open_round(
+    body: RoundSettlementOpenIn,
     db: AsyncSession = Depends(get_db),
-    current_user: User = Depends(quoters),
-) -> APIResponse[QuotationOut]:
-    """تحديث حالة عرض الأسعار: إرسال، قبول، أو رفض."""
-    from app.domain.models.sales import QuotationStatus
-    try:
-        new_status = QuotationStatus(status_val)
-    except ValueError:
-        from app.core.exceptions import AppException
-        raise AppException(400, f"الحالة غير صالحة: {status_val}")
-    quotation = await SalesService(db).update_quotation_status(quotation_id, new_status)
-    return APIResponse(data=QuotationOut.model_validate(quotation), message="تم تحديث حالة العرض.")
+    current_user: User = Depends(require_permissions("sales.round_settle")),
+) -> APIResponse[RoundSettlementOut]:
+    """فتح جولة لمركبة. جولة مفتوحة واحدة لكل مركبة في وقت واحد."""
+    settlement = await RoundSettlementService(db).open_round(body, current_user)
+    return APIResponse(
+        data=RoundSettlementOut.model_validate(settlement),
+        message="تم فتح الجولة.",
+    )
 
 
-@router.post(
-    "/quotations/{quotation_id}/convert",
-    response_model=APIResponse[SalesInvoiceOut],
-    status_code=status.HTTP_201_CREATED,
-)
-async def convert_quotation_to_invoice(
-    quotation_id: int,
-    payment_method: SalesPaymentMethod = SalesPaymentMethod.CASH,
+@router.post("/rounds/{settlement_id}/settle", response_model=APIResponse[RoundSettlementOut])
+async def settle_round(
+    settlement_id: int,
+    body: RoundSettlementSettleIn,
     db: AsyncSession = Depends(get_db),
-    current_user: User = Depends(quoters),
-) -> APIResponse[SalesInvoiceOut]:
-    """تحويل عرض الأسعار المقبول إلى فاتورة مبيعات مع خصم المخزون حسب FEFO."""
-    invoice = await SalesService(db).convert_to_invoice(
-        quotation_id, payment_method, current_user
+    current_user: User = Depends(require_permissions("sales.round_settle")),
+) -> APIResponse[RoundSettlementOut]:
+    """إقفال الجولة وتثبيت أرقامها.
+
+    يُرفض الإقفال إن بقي نقد غير محصَّل. وفرق المخزون يمرّ بسبب مكتوب، ويحتاج
+    صلاحية إقرار إن تجاوز الحدّ المضبوط في الإعدادات.
+    """
+    settlement = await RoundSettlementService(db).settle(settlement_id, body, current_user)
+    return APIResponse(
+        data=RoundSettlementOut.model_validate(settlement),
+        message="تمت تسوية الجولة.",
+    )
+
+
+@router.post("/rounds/{settlement_id}/cancel", response_model=APIResponse[RoundSettlementOut])
+async def cancel_round(
+    settlement_id: int,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(require_permissions("sales.round_settle")),
+) -> APIResponse[RoundSettlementOut]:
+    """إلغاء جولة مفتوحة. الجولة المسوّاة سجلّ موقّع ولا تُلغى."""
+    settlement = await RoundSettlementService(db).cancel(settlement_id, current_user)
+    return APIResponse(
+        data=RoundSettlementOut.model_validate(settlement),
+        message="تم إلغاء الجولة.",
+    )
+
+
+@router.post("/rounds/settle-van", response_model=APIResponse[RoundSettlementOut])
+async def settle_van_round(
+    body: RoundVanSettleIn,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(require_permissions("sales.round_settle")),
+) -> APIResponse[RoundSettlementOut]:
+    """إقفال يوم المركبة في خطوة واحدة — تُفتح الجولة تلقائياً إن لم تكن مفتوحة.
+
+    نفس بوابات الإقفال تنطبق: النقد غير المحصَّل يمنع، وفرق المخزون يحتاج سبباً
+    مكتوباً وإقراراً إن تجاوز الحدّ.
+    """
+    settlement = await RoundSettlementService(db).settle_van(body, current_user)
+    return APIResponse(
+        data=RoundSettlementOut.model_validate(settlement),
+        message="تمت تسوية الجولة.",
+    )
+
+
+# --- Customer credits (money owed back after a return) ---
+@router.get("/credits", response_model=APIResponse[list[CustomerCreditOut]])
+async def list_customer_credits(
+    pending_only: bool = False,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(require_permissions("sales.returns")),
+) -> APIResponse[list[CustomerCreditOut]]:
+    """المبالغ المستحقّة للعملاء بسبب مرتجعات بعد الدفع، وحالة كل منها."""
+    credits = await SalesService(db).list_customer_credits(
+        CreditResolution.PENDING if pending_only else None
+    )
+    return APIResponse(data=[CustomerCreditOut.model_validate(c) for c in credits])
+
+
+@router.post("/credits/{credit_id}/resolve", response_model=APIResponse[CustomerCreditOut])
+async def resolve_customer_credit(
+    credit_id: int,
+    body: CustomerCreditResolveIn,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(require_permissions("sales.refund_customer")),
+) -> APIResponse[CustomerCreditOut]:
+    """تحديد مصير المبلغ: ردّ نقدي من الصندوق، أو رصيد يبقى في حساب العميل.
+
+    الردّ النقدي يُسجّل القرار فقط؛ صرف المبلغ يجري من شاشة الصندوق ليدخل في
+    إقفال اليوم مثل أي مبلغ يخرج من الدرج.
+    """
+    credit = await SalesService(db).resolve_customer_credit(
+        credit_id, CreditResolution(body.resolution), current_user, body.notes
     )
     return APIResponse(
-        data=SalesInvoiceOut.model_validate(invoice),
-        message="تم تحويل عرض الأسعار إلى فاتورة مبيعات بنجاح.",
+        data=CustomerCreditOut.model_validate(credit),
+        message=(
+            "سيُردّ المبلغ نقداً من الصندوق."
+            if body.resolution == "refunded"
+            else "بقي المبلغ رصيداً في حساب العميل."
+        ),
     )
 
 
-@router.delete("/quotations/{quotation_id}", response_model=APIResponse[None])
-async def delete_quotation(
-    quotation_id: int,
+@router.post("/returns/{return_id}/cancel", response_model=APIResponse[SalesReturnOut])
+async def cancel_return(
+    return_id: int,
+    body: ReturnCancelIn | None = None,
     db: AsyncSession = Depends(get_db),
-    current_user: User = Depends(quoters),
-) -> APIResponse[None]:
-    """حذف عرض أسعار في حالة مسودة."""
-    await SalesService(db).delete_quotation(quotation_id)
-    return APIResponse(data=None, message="تم حذف عرض الأسعار بنجاح.")
+    current_user: User = Depends(require_permissions("sales.returns_cancel")),
+) -> APIResponse[SalesReturnOut]:
+    """إلغاء مرتجع سُجّل بالخطأ: تُسحب الكمية من المخزون ويُعكس القيد.
+
+    يُرفض إن كان مبلغ المرتجع قد رُدّ للعميل نقداً، أو إن بِيعت البضاعة بعد إرجاعها.
+    السجل يبقى محفوظاً بعلامة «ملغى» لأن الخطأ نفسه جزء من التوثيق.
+    """
+    sales_return = await SalesService(db).cancel_return(
+        return_id, current_user, body.cancel_reason if body else None
+    )
+    return APIResponse(
+        data=SalesReturnOut.model_validate(sales_return),
+        message="تم إلغاء المرتجع وعكس أثره.",
+    )

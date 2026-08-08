@@ -1,12 +1,12 @@
 """Product catalog business logic (products and their units of measure)."""
 
-from sqlalchemy import delete as sa_delete, select
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from app.api.schemas.inventory import ProductCreate, ProductUpdate
 from app.core.exceptions import AppException
-from app.domain.models.inventory import Product, ProductUnit
+from app.domain.models.inventory import Product, ProductBatch, ProductUnit, Warehouse
 
 
 class ProductService:
@@ -14,6 +14,7 @@ class ProductService:
         self.session = session
 
     async def get_product(self, product_id: int) -> Product:
+        """Fetch a product with its units, or raise a 404 (active or not)."""
         result = await self.session.execute(
             select(Product)
             .options(selectinload(Product.units))
@@ -24,26 +25,54 @@ class ProductService:
             raise AppException(404, "الصنف غير موجود.")
         return product
 
+    async def _get_active_warehouse(self, warehouse_id: int) -> Warehouse:
+        warehouse = await self.session.get(Warehouse, warehouse_id)
+        if warehouse is None:
+            raise AppException(404, "المستودع المحدد غير موجود.")
+        if not warehouse.is_active:
+            raise AppException(400, "هذا المستودع موقوف ولا يمكن ربط أصناف به.")
+        return warehouse
+
+    async def _get_by_barcode(self, barcode: str) -> Product | None:
+        result = await self.session.execute(
+            select(Product).where(Product.barcode == barcode)
+        )
+        return result.scalar_one_or_none()
+
+    async def get_by_barcode(self, barcode: str) -> Product:
+        """Find a product by the barcode a scanner read, or raise a 404."""
+        product = await self._get_by_barcode(barcode)
+        if product is None:
+            raise AppException(404, "لا يوجد صنف بهذا الباركود.")
+        return await self.get_product(product.id)
+
     async def create_product(self, data: ProductCreate) -> Product:
+        """Add a product with its alternative units; SKU and barcode are unique."""
         existing = await self.session.execute(
             select(Product).where(Product.sku == data.sku)
         )
         if existing.scalar_one_or_none() is not None:
             raise AppException(409, "يوجد صنف بنفس رمز الصنف (SKU) من قبل.")
 
+        if data.barcode is not None and await self._get_by_barcode(data.barcode):
+            raise AppException(409, "يوجد صنف بنفس الباركود من قبل.")
+
         unit_names = [u.name for u in data.units]
         if len(unit_names) != len(set(unit_names)):
             raise AppException(400, "لا يمكن تكرار اسم وحدة القياس لنفس الصنف.")
 
+        await self._get_active_warehouse(data.warehouse_id)
+
         product = Product(
             sku=data.sku,
+            barcode=data.barcode,
             name=data.name,
             base_unit_name=data.base_unit_name,
             wholesale_price=data.wholesale_price,
             half_wholesale_price=data.half_wholesale_price,
             retail_price=data.retail_price,
             min_stock_level=data.min_stock_level,
-            default_warehouse_id=data.default_warehouse_id,
+            warehouse_id=data.warehouse_id,
             units=[ProductUnit(name=u.name, factor=u.factor) for u in data.units],
         )
         self.session.add(product)
@@ -51,18 +80,15 @@ class ProductService:
         return await self.get_product(product.id)
 
     async def update_product(self, product_id: int, data: ProductUpdate) -> Product:
+        """Amend a product's details, prices, home warehouse or active flag."""
         product = await self.get_product(product_id)
-        if data.sku is not None and data.sku != product.sku:
-            dup = await self.session.execute(
-                select(Product).where(Product.sku == data.sku, Product.id != product_id)
-            )
-            if dup.scalar_one_or_none() is not None:
-                raise AppException(409, "يوجد صنف بنفس رمز الصنف (SKU) من قبل.")
-            product.sku = data.sku
         if data.name is not None:
             product.name = data.name
-        if data.base_unit_name is not None:
-            product.base_unit_name = data.base_unit_name
+        if data.barcode is not None:
+            existing = await self._get_by_barcode(data.barcode)
+            if existing is not None and existing.id != product_id:
+                raise AppException(409, "يوجد صنف بنفس الباركود من قبل.")
+            product.barcode = data.barcode
         if data.wholesale_price is not None:
             product.wholesale_price = data.wholesale_price
         if data.half_wholesale_price is not None:
@@ -71,49 +97,45 @@ class ProductService:
             product.retail_price = data.retail_price
         if data.min_stock_level is not None:
             product.min_stock_level = data.min_stock_level
-        if "default_warehouse_id" in data.model_fields_set:
-            product.default_warehouse_id = data.default_warehouse_id
+        if data.warehouse_id is not None:
+            await self._get_active_warehouse(data.warehouse_id)
+            product.warehouse_id = data.warehouse_id
         if data.is_active is not None:
             product.is_active = data.is_active
-        if data.units is not None:
-            unit_names = [u.name for u in data.units]
-            if len(unit_names) != len(set(unit_names)):
-                raise AppException(400, "لا يمكن تكرار اسم وحدة القياس لنفس الصنف.")
-            # Bulk-delete existing units, then re-populate.
-            await self.session.execute(
-                sa_delete(ProductUnit).where(ProductUnit.product_id == product_id)
-            )
-            await self.session.flush()
-            product.units = []
-            for u in data.units:
-                product.units.append(ProductUnit(name=u.name, factor=u.factor))
         await self.session.commit()
         return await self.get_product(product_id)
 
     async def delete_product(self, product_id: int) -> None:
-        product = await self.get_product(product_id)
-        from sqlalchemy import func as sa_func
-        from app.domain.models.inventory import ProductBatch
+        """Hard-delete a product that has never had any stock activity.
 
-        stock_check = await self.session.execute(
-            select(sa_func.coalesce(sa_func.sum(ProductBatch.quantity), 0)).where(
-                ProductBatch.product_id == product_id
-            )
+        Blocked as soon as a single batch has ever existed for it (received,
+        sold, returned, or adjusted) — mirrors the same rule used for deleting
+        a purchase invoice. Once a product has real history, deactivate it
+        instead (is_active) rather than destroying the record.
+        """
+        product = await self.get_product(product_id)
+
+        has_batch = await self.session.execute(
+            select(ProductBatch.id).where(ProductBatch.product_id == product_id).limit(1)
         )
-        total_stock = stock_check.scalar()
-        if total_stock > 0:
+        if has_batch.scalar_one_or_none() is not None:
             raise AppException(
-                400, "لا يمكن حذف الصنف لوجود مخزون متبقي في التشغيلات."
+                400,
+                "لا يمكن حذف هذا الصنف لوجود حركات مخزنية عليه؛ يمكنك إيقافه بدلاً من ذلك.",
             )
+
         await self.session.delete(product)
         await self.session.commit()
 
-    async def list_products(self, search: str | None = None, is_active: bool | None = None) -> list[Product]:
+    async def list_products(self, search: str | None = None) -> list[Product]:
+        """Products, optionally filtered by a search across name, SKU and barcode."""
         stmt = select(Product).options(selectinload(Product.units)).order_by(Product.id)
         if search:
             pattern = f"%{search}%"
-            stmt = stmt.where(Product.name.ilike(pattern) | Product.sku.ilike(pattern))
-        if is_active is not None:
-            stmt = stmt.where(Product.is_active == is_active)
+            stmt = stmt.where(
+                Product.name.ilike(pattern)
+                | Product.sku.ilike(pattern)
+                | Product.barcode.ilike(pattern)
+            )
         result = await self.session.execute(stmt)
         return list(result.scalars().all())

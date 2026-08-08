@@ -1,352 +1,453 @@
+// The cash desk. Every cash or card invoice waits here until the cashier
+// actually takes the money, and every purchase invoice or expense waits until
+// the cashier actually pays it out.
+//
+// That gate is deliberate: an invoice being issued is not the same event as the
+// money changing hands, and the two are frequently minutes or hours apart. The
+// day is closed with a summary that should match what is physically in the till.
 import { useState } from "react";
-import {
-  Alert,
-  Badge,
-  Button,
-  Card,
-  Loading,
-  Modal,
-  PaginatedTable,
-  money,
-} from "../components/Ui";
+import { Alert, Badge, Button, CancelButton, Card, Input, Modal, Stat, Table, money, qty, todayStr } from "../components/Ui";
 import useFetch from "../hooks/useFetch";
 import api, { apiMessage } from "../services/api";
 
-const TYPE_COLORS = {
-  sales: "green",
-  purchase: "blue",
-  expense: "amber",
+const PAYMENT_METHOD_LABELS = { cash: "نقدي", card: "بطاقة" };
+const PAYMENT_METHOD_TONE = { cash: "green", card: "blue" };
+const PAYABLE_TYPE_LABELS = { purchase_invoice: "فاتورة شراء", expense: "مصروف" };
+const REFERENCE_TYPE_LABELS = {
+  sales_invoice: "فاتورة مبيعات",
+  purchase_invoice: "فاتورة شراء",
+  expense: "مصروف",
 };
 
-/** Shared columns for both receivables and payables tables. */
-function buildColumns(tab, onAction) {
-  const actionLabel = tab === "receivables" ? "تحصيل" : "صرف";
-  const actionVariant = tab === "receivables" ? "primary" : "danger";
-  return [
-    { key: "type", label: "النوع", render: (r) => <Badge tone={TYPE_COLORS[r.type] || "slate"}>{r.type_label}</Badge>, searchable: (r) => r.type_label },
-    { key: "id", label: "#", searchable: (r) => String(r.id) },
-    { key: "date", label: "التاريخ" },
-    { key: "party_name", label: "الطرف" },
-    { key: "payment_method", label: "الدفع", render: (r) => r.payment_method === "cash" ? <Badge tone="green">نقدي</Badge> : <Badge tone="blue">بطاقة</Badge> },
-    { key: "total", label: "الإجمالي", render: (r) => money(r.total) },
-    { key: "paid_amount", label: "المدفوع", render: (r) => money(r.paid_amount) },
-    { key: "remaining", label: "المتبقي", render: (r) => <b className="text-rose-600">{money(r.remaining)}</b> },
-    { key: "actions", label: "", render: (r) => <Button variant={actionVariant} onClick={() => onAction(r)}>{actionLabel}</Button> },
-  ];
-}
+// What the customer still owes, which is not the same as what was billed.
+//
+// `amount_due` comes from the server as total - returned_total - paid_amount. The
+// fallback covers documents from endpoints that do not compute it. Subtracting
+// returns here matters: an invoice for 100 with 30 returned used to ask the cashier
+// for the full 100, and collecting the correct 70 left it forever unconfirmed and
+// undeliverable.
+const remaining = (doc) =>
+  (doc.amount_due != null
+    ? Number(doc.amount_due)
+    : Number(doc.total) - Number(doc.returned_total ?? 0) - Number(doc.paid_amount)
+  ).toFixed(2);
+const payableRemaining = (payable) => Number(payable.remaining).toFixed(2);
 
 export default function CashierPage() {
-  const [tab, setTab] = useState("receivables");
+  const [viewing, setViewing] = useState(null);
+  const [collectingFor, setCollectingFor] = useState(null);
+  const [payingFor, setPayingFor] = useState(null);
+  const [amount, setAmount] = useState("");
+  const [dialogError, setDialogError] = useState(null);
   const [notice, setNotice] = useState(null);
-  const [payTarget, setPayTarget] = useState(null);
-  const [payAmount, setPayAmount] = useState("");
-  const [paying, setPaying] = useState(false);
+  const [error, setError] = useState(null);
+  const [summaryDay, setSummaryDay] = useState(todayStr());
 
-  const receivables = useFetch(() => api.get("/cashier/receivables"));
+  const invoices = useFetch(() => api.get("/cashier/invoices"));
   const payables = useFetch(() => api.get("/cashier/payables"));
-  const summary = useFetch(() => api.get("/cashier/daily-summary"));
+  // Credits a human already decided to refund in cash. They wait here because
+  // handing the money over is the till's job, not the decision-maker's.
+  const credits = useFetch(() => api.get("/sales/credits"));
+  const customers = useFetch(() => api.get("/sales/customers"));
+  const summary = useFetch(
+    () => api.get("/cashier/daily-summary", { params: { day: summaryDay } }),
+    [summaryDay]
+  );
 
-  const openPayDialog = (item) => {
-    setPayTarget(item);
-    setPayAmount(String(item.remaining));
+  if (customers.loading) return null;
+
+  const customerName = (id) => customers.data?.find((c) => c.id === id)?.name ?? id;
+
+  const reloadAll = () => {
+    invoices.reload();
+    payables.reload();
+    credits.reload();
+    summary.reload();
   };
 
-  const submitPayment = async () => {
-    if (!payTarget) return;
-    const amt = parseFloat(payAmount);
-    if (!amt || amt <= 0) {
-      alert("أدخل مبلغ صحيح أكبر من صفر.");
-      return;
-    }
-    setPaying(true);
+  const openCollectDialog = (invoice) => {
+    setDialogError(null);
+    setAmount(remaining(invoice));
+    setCollectingFor(invoice);
+  };
+
+  const refundCredit = async (credit) => {
+    if (!window.confirm(`ردّ ${money(credit.amount)} نقداً للعميل؟`)) return;
+    setError(null);
     try {
-      const { data } = await api.post("/cashier/pay", {
-        reference_type: payTarget.type,
-        reference_id: payTarget.id,
-        amount: amt,
-      });
-      const result = data.data;
-      const isReceivable = payTarget.type === "sales";
-      const verb = isReceivable ? "تحصيل" : "صرف";
-      if (parseFloat(result.paid_amount) >= parseFloat(result.total)) {
-        setNotice(`تم ${verb} ${money(amt)} من ${payTarget.type_label} رقم ${payTarget.id} — مسدّد بالكامل.`);
-      } else {
-        setNotice(`تم ${verb} ${money(amt)} من ${payTarget.type_label} رقم ${payTarget.id}. المتبقي: ${money(result.remaining)}.`);
-      }
-      setPayTarget(null);
-      receivables.reload();
-      payables.reload();
-      summary.reload();
+      await api.post(`/cashier/customer-credits/${credit.id}/refund`);
+      setNotice(`تم ردّ ${money(credit.amount)} للعميل من الصندوق.`);
+      reloadAll();
     } catch (err) {
-      alert(apiMessage(err));
-    } finally {
-      setPaying(false);
+      setError(apiMessage(err));
     }
   };
 
-  if (receivables.loading || payables.loading || summary.loading) return <Loading />;
+  const openPayDialog = (payable) => {
+    setDialogError(null);
+    setAmount(payableRemaining(payable));
+    setPayingFor(payable);
+  };
 
-  const currentData = tab === "receivables" ? receivables.data : payables.data;
-  const currentError = tab === "receivables" ? receivables.error : payables.error;
-  const actionLabel = tab === "receivables" ? "تحصيل" : "صرف";
+  const submitCollection = async (event) => {
+    event.preventDefault();
+    setDialogError(null);
+    try {
+      const { data } = await api.post(
+        `/cashier/invoices/${collectingFor.id}/collect`,
+        { amount }
+      );
+      setNotice(data.message);
+      setError(null);
+      setCollectingFor(null);
+      setViewing(null);
+      reloadAll();
+    } catch (err) {
+      setDialogError(apiMessage(err));
+    }
+  };
 
-  // Summary totals
-  const receivablesTotal = receivables.data?.reduce((s, r) => s + parseFloat(r.remaining), 0) || 0;
-  const payablesTotal = payables.data?.reduce((s, r) => s + parseFloat(r.remaining), 0) || 0;
+  const submitPayment = async (event) => {
+    event.preventDefault();
+    setDialogError(null);
+    const path =
+      payingFor.payable_type === "purchase_invoice"
+        ? `/cashier/purchases/${payingFor.id}/pay`
+        : `/cashier/expenses/${payingFor.id}/pay`;
+    try {
+      const { data } = await api.post(path, { amount });
+      setNotice(data.message);
+      setError(null);
+      setPayingFor(null);
+      reloadAll();
+    } catch (err) {
+      setDialogError(apiMessage(err));
+    }
+  };
 
   return (
     <div className="space-y-6">
-      <div className="flex items-center justify-between">
-        <h1 className="text-2xl font-extrabold">الصندوق</h1>
-        <div className="flex gap-2">
-          {receivables.data?.length > 0 && (
-            <Badge tone="green">{receivables.data.length} ذمم مدينة</Badge>
-          )}
-          {payables.data?.length > 0 && (
-            <Badge tone="red">{payables.data.length} ذمم دائنة</Badge>
-          )}
-        </div>
-      </div>
+      <h1 className="text-2xl font-extrabold">الصندوق</h1>
+      <Alert>{invoices.error || payables.error || error}</Alert>
+      <Alert tone="success">{notice}</Alert>
 
-      {notice && <Alert>{notice}</Alert>}
-
-      {/* Tab buttons */}
-      <div className="flex gap-2">
-        <Button
-          variant={tab === "receivables" ? "primary" : "secondary"}
-          onClick={() => setTab("receivables")}
-        >
-          الذمم المدينة (المبيعات)
-        </Button>
-        <Button
-          variant={tab === "payables" ? "primary" : "secondary"}
-          onClick={() => setTab("payables")}
-        >
-          الذمم الدائنة (المشتريات والمصاريف)
-        </Button>
-        <Button
-          variant={tab === "summary" ? "primary" : "secondary"}
-          onClick={() => { setTab("summary"); summary.reload(); }}
-        >
-          تسوية نهاية اليوم
-        </Button>
-      </div>
-
-      {/* Receivables / Payables tab */}
-      {(tab === "receivables" || tab === "payables") && (
-        <Card>
-          {/* GL account info bar */}
-          <div className={`mb-4 flex items-center justify-between rounded-lg p-3 text-sm font-bold ${
-            tab === "receivables"
-              ? "border border-emerald-200 bg-emerald-50 text-emerald-800"
-              : "border border-rose-200 bg-rose-50 text-rose-800"
-          }`}>
-            <span>
-              {tab === "receivables"
-                ? "ذمم العملاء (1020) — المستحق لنا من العملاء"
-                : "ذمم الموردين (2010) — المستحق منا للموردين والمصروفات"}
-            </span>
-            <span className="text-lg">
-              {tab === "receivables" ? money(receivablesTotal) : money(payablesTotal)}
-            </span>
+      <Card
+        title="ملخص الصندوق — لإغلاق يومك"
+        actions={
+          <Input
+            type="date"
+            value={summaryDay}
+            onChange={(e) => setSummaryDay(e.target.value)}
+            max={todayStr()}
+          />
+        }
+      >
+        {summary.loading || !summary.data ? null : (
+          <div className="space-y-4">
+            <div className="grid grid-cols-2 gap-4 sm:grid-cols-3">
+              <Stat label="إجمالي المُحصّل (وارد)" value={money(summary.data.total_in)} tone="emerald" />
+              <Stat label="إجمالي المصروف (صادر)" value={money(summary.data.total_out)} tone="rose" />
+              <Stat
+                label="الصافي"
+                value={money(summary.data.net)}
+                tone={Number(summary.data.net) >= 0 ? "emerald" : "rose"}
+              />
+              <Stat label="نقدي وارد" value={money(summary.data.cash_in)} tone="slate" />
+              <Stat label="بطاقة واردة" value={money(summary.data.card_in)} tone="slate" />
+              <Stat label="عدد الحركات" value={summary.data.movement_count} tone="slate" />
+            </div>
+            <Table
+              columns={[
+                {
+                  key: "direction",
+                  label: "الاتجاه",
+                  render: (m) =>
+                    m.direction === "in" ? (
+                      <Badge tone="green">وارد ↓</Badge>
+                    ) : (
+                      <Badge tone="red">صادر ↑</Badge>
+                    ),
+                },
+                {
+                  key: "reference_type",
+                  label: "النوع",
+                  render: (m) => REFERENCE_TYPE_LABELS[m.reference_type] ?? m.reference_type,
+                },
+                { key: "reference_id", label: "رقم المستند" },
+                {
+                  key: "collected_at",
+                  label: "الوقت",
+                  render: (m) => new Date(m.collected_at).toLocaleTimeString("ar-EG"),
+                },
+                {
+                  key: "method",
+                  label: "طريقة الدفع",
+                  render: (m) => (
+                    <Badge tone={PAYMENT_METHOD_TONE[m.method]}>
+                      {PAYMENT_METHOD_LABELS[m.method]}
+                    </Badge>
+                  ),
+                },
+                { key: "amount", label: "المبلغ", render: (m) => money(m.amount) },
+              ]}
+              rows={summary.data.movements}
+              empty="لا توجد حركات صندوق في هذا اليوم."
+            />
           </div>
+        )}
+      </Card>
 
-          <Alert>{currentError}</Alert>
-          <PaginatedTable
-            columns={buildColumns(tab, openPayDialog)}
-            rows={currentData || []}
-            empty={tab === "receivables" ? "لا توجد فواتير مبيعات معلقة." : "لا توجد فواتير مشتريات أو مصاريف معلقة."}
-            searchable
-            searchPlaceholder="بحث..."
-            dateFromField="date"
-            dateToField="date"
-            amountField="total"
-            amountLabel="الإجمالي"
+      <Card title="فواتير بانتظار التحصيل (وارد)">
+        {invoices.loading ? null : (
+          <Table
+            columns={[
+              { key: "id", label: "#" },
+              { key: "invoice_date", label: "التاريخ" },
+              {
+                key: "customer_id",
+                label: "العميل",
+                render: (r) => customerName(r.customer_id),
+              },
+              {
+                key: "payment_method",
+                label: "طريقة الدفع",
+                render: (r) => (
+                  <Badge tone={PAYMENT_METHOD_TONE[r.payment_method]}>
+                    {PAYMENT_METHOD_LABELS[r.payment_method]}
+                  </Badge>
+                ),
+              },
+              {
+                key: "paid_amount",
+                label: "محصّل حتى الآن",
+                render: (r) =>
+                  Number(r.paid_amount) > 0 ? (
+                    <Badge tone="amber">{money(r.paid_amount)}</Badge>
+                  ) : (
+                    "—"
+                  ),
+              },
+              {
+                key: "remaining",
+                label: "المتبقي للتحصيل",
+                sortValue: (r) => remaining(r),
+                render: (r) => <b>{money(remaining(r))}</b>,
+              },
+              {
+                key: "actions",
+                label: "",
+                sortable: false,
+                render: (r) => (
+                  <div className="flex flex-wrap gap-2">
+                    <Button variant="secondary" onClick={() => setViewing(r)}>
+                      عرض
+                    </Button>
+                    <Button onClick={() => openCollectDialog(r)}>💰 تحصيل</Button>
+                  </div>
+                ),
+              },
+            ]}
+            rows={invoices.data}
+            empty="لا توجد فواتير بانتظار التحصيل حالياً."
+          />
+        )}
+      </Card>
+
+      {/* Refunds a person has decided on but the till has not yet paid. Kept as its
+          own card rather than folded into payables: this is money going back to a
+          customer, not a supplier bill, and the reason it exists is a return. */}
+      {(credits.data ?? []).some((c) => c.resolution === "awaiting_refund") && (
+        <Card title="مبالغ بانتظار الردّ للعملاء (صادر)">
+          <Table
+            columns={[
+              { key: "id", label: "الرقم", render: (r) => `#${r.id}` },
+              { key: "invoice_id", label: "عن الفاتورة", render: (r) => `#${r.invoice_id}` },
+              { key: "amount", label: "المبلغ", render: (r) => <b>{money(r.amount)}</b> },
+              { key: "notes", label: "الملاحظات" },
+              {
+                key: "actions",
+                label: "",
+                render: (r) => (
+                  <Button onClick={() => refundCredit(r)}>ردّ نقدي</Button>
+                ),
+              },
+            ]}
+            rows={(credits.data ?? []).filter((c) => c.resolution === "awaiting_refund")}
+            empty="لا توجد مبالغ بانتظار الردّ."
           />
         </Card>
       )}
 
-      {/* Daily Summary tab */}
-      {tab === "summary" && (
-        <div className="space-y-6">
-          <Card>
-            <h2 className="mb-4 text-lg font-bold">
-              ملخص حركات الصندوق — {summary.data?.date}
-            </h2>
-            <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-4 mb-6">
-              {/* Total collections */}
-              <div className="rounded-lg border bg-emerald-50 p-4 text-center">
-                <div className="text-sm text-emerald-700">إجمالي التحصيلات (مدخل)</div>
-                <div className="text-2xl font-extrabold text-emerald-800">
-                  {money(summary.data?.by_type?.sales?.total || 0)}
-                </div>
-                <div className="text-xs text-emerald-600">
-                  {summary.data?.by_type?.sales?.count || 0} دفعة — ذمم مدينة
-                </div>
-              </div>
-              {/* Total payments */}
-              <div className="rounded-lg border bg-rose-50 p-4 text-center">
-                <div className="text-sm text-rose-700">إجمالي الصرف (مدرج)</div>
-                <div className="text-2xl font-extrabold text-rose-800">
-                  {money(
-                    (parseFloat(summary.data?.by_type?.purchase?.total || 0)) +
-                    (parseFloat(summary.data?.by_type?.expense?.total || 0))
-                  )}
-                </div>
-                <div className="text-xs text-rose-600">
-                  {(summary.data?.by_type?.purchase?.count || 0) + (summary.data?.by_type?.expense?.count || 0)} دفعة — ذمم دائنة
-                </div>
-              </div>
-              {/* Count */}
-              <div className="rounded-lg border bg-blue-50 p-4 text-center">
-                <div className="text-sm text-blue-700">عدد الدفعات</div>
-                <div className="text-2xl font-extrabold text-blue-800">
-                  {summary.data?.total_count || 0}
-                </div>
-              </div>
-              {/* Cash flow */}
-              <div className="rounded-lg border bg-violet-50 p-4 text-center">
-                <div className="text-sm text-violet-700">صافي التدفق النقدي</div>
-                <div className="text-2xl font-extrabold text-violet-800">
-                  {money(
-                    (parseFloat(summary.data?.by_type?.sales?.total || 0)) -
-                    (parseFloat(summary.data?.by_type?.purchase?.total || 0)) -
-                    (parseFloat(summary.data?.by_type?.expense?.total || 0))
-                  )}
-                </div>
-              </div>
-            </div>
-
-            {/* By method breakdown */}
-            <div className="mb-6">
-              <h3 className="mb-2 text-sm font-bold text-slate-600">حسب طريقة الدفع</h3>
-              <div className="flex gap-4">
-                {Object.entries(summary.data?.by_method || {}).map(([method, total]) => (
-                  <div key={method} className="rounded-lg border bg-slate-50 px-4 py-2">
-                    <span className="text-sm text-slate-600">{method === "cash" ? "نقدي" : method === "credit_card" ? "بطاقة ائتمان" : method}: </span>
-                    <span className="font-bold">{money(total)}</span>
-                  </div>
-                ))}
-              </div>
-            </div>
-
-            <PaginatedTable
-              columns={[
-                { key: "id", label: "#", searchable: (r) => String(r.id) },
-                {
-                  key: "reference_type",
-                  label: "النوع",
-                  render: (r) => (
-                    <Badge tone={r.reference_type === "sales" ? "green" : "red"}>
-                      {r.reference_type === "sales" ? "تحصيل (مدينة)" : r.reference_type === "purchase" ? "صرف (دائنة)" : "صرف (دائنة)"}
-                    </Badge>
+      <Card title="مستحقات بانتظار السداد (صادر) — فواتير شراء ومصاريف">
+        {payables.loading ? null : (
+          <Table
+            columns={[
+              { key: "id", label: "#" },
+              {
+                key: "payable_type",
+                label: "النوع",
+                render: (r) => (
+                  <Badge tone={r.payable_type === "expense" ? "amber" : "blue"}>
+                    {PAYABLE_TYPE_LABELS[r.payable_type]}
+                  </Badge>
+                ),
+              },
+              { key: "date", label: "التاريخ" },
+              { key: "description", label: "الوصف" },
+              {
+                key: "payment_method",
+                label: "طريقة الدفع",
+                render: (r) => (
+                  <Badge tone={PAYMENT_METHOD_TONE[r.payment_method]}>
+                    {PAYMENT_METHOD_LABELS[r.payment_method]}
+                  </Badge>
+                ),
+              },
+              {
+                key: "paid_amount",
+                label: "مسدّد حتى الآن",
+                render: (r) =>
+                  Number(r.paid_amount) > 0 ? (
+                    <Badge tone="amber">{money(r.paid_amount)}</Badge>
+                  ) : (
+                    "—"
                   ),
-                  searchable: (r) => r.reference_type,
-                },
-                {
-                  key: "reference_id",
-                  label: "رقم المصدر",
-                  searchable: (r) => String(r.reference_id),
-                },
-                {
-                  key: "payment_method",
-                  label: "الدفع",
-                  render: (r) =>
-                    r.payment_method === "cash" ? (
-                      <Badge tone="green">نقدي</Badge>
-                    ) : (
-                      <Badge tone="blue">بطاقة</Badge>
-                    ),
-                },
-                {
-                  key: "amount",
-                  label: "المبلغ",
-                  render: (r) => (
-                    <b className={r.reference_type === "sales" ? "text-emerald-700" : "text-rose-700"}>
-                      {r.reference_type === "sales" ? "+" : "-"}{money(r.amount)}
-                    </b>
-                  ),
-                },
-              ]}
-              rows={summary.data?.payments || []}
-              empty="لا توجد حركات اليوم."
-              searchable
-              searchPlaceholder="بحث..."
-            />
-          </Card>
-        </div>
-      )}
+              },
+              {
+                key: "remaining",
+                label: "المتبقي للسداد",
+                render: (r) => <b>{money(r.remaining)}</b>,
+              },
+              {
+                key: "actions",
+                label: "",
+                sortable: false,
+                render: (r) => <Button onClick={() => openPayDialog(r)}>💸 سداد</Button>,
+              },
+            ]}
+            rows={payables.data}
+            empty="لا توجد مستحقات بانتظار السداد حالياً."
+          />
+        )}
+      </Card>
 
-      {/* Payment Dialog */}
       <Modal
-        open={!!payTarget}
-        title={`${payTarget?.type === "sales" ? "تحصيل" : "صرف"} — ${payTarget?.type_label || ""} رقم ${payTarget?.id || ""}`}
-        onClose={() => setPayTarget(null)}
+        open={!!viewing}
+        title={viewing ? `فاتورة رقم ${viewing.id} — ${customerName(viewing.customer_id)}` : ""}
+        onClose={() => setViewing(null)}
+        wide
       >
-        {payTarget && (
+        {viewing && (
           <div className="space-y-4">
-            <div className={`rounded-lg p-4 text-sm space-y-1 ${
-              payTarget.type === "sales" ? "bg-emerald-50 border border-emerald-200" : "bg-rose-50 border border-rose-200"
-            }`}>
-              <div>
-                <span className="text-slate-500">النوع: </span>
-                <Badge tone={TYPE_COLORS[payTarget.type]}>{payTarget.type_label}</Badge>
+            <Table
+              columns={[
+                { key: "product_id", label: "رقم الصنف" },
+                { key: "batch_number", label: "التشغيلة" },
+                { key: "quantity", label: "الكمية", render: (r) => qty(r.quantity) },
+                { key: "unit_price", label: "سعر الوحدة", render: (r) => money(r.unit_price) },
+                { key: "line_total", label: "الإجمالي", render: (r) => money(r.line_total) },
+              ]}
+              rows={viewing.lines}
+            />
+            <div className="flex flex-wrap items-center justify-between gap-4">
+              <div className="flex flex-wrap gap-6 text-sm font-bold">
+                <span>قبل الضريبة: {money(viewing.subtotal)}</span>
+                {viewing.taxes.map((t) => (
+                  <span key={t.id}>
+                    {t.name} ({t.rate}%): {money(t.amount)}
+                  </span>
+                ))}
+                <span className="text-emerald-700 dark:text-emerald-400">الإجمالي: {money(viewing.total)}</span>
+                {Number(viewing.paid_amount) > 0 && (
+                  <span className="text-amber-700 dark:text-amber-400">
+                    محصّل: {money(viewing.paid_amount)} — المتبقي: {money(remaining(viewing))}
+                  </span>
+                )}
               </div>
-              <div>
-                <span className="text-slate-500">الحساب: </span>
-                <span className="font-bold">{payTarget.account_label}</span>
-              </div>
-              <div>
-                <span className="text-slate-500">الطرف: </span>
-                <span className="font-bold">{payTarget.party_name}</span>
-              </div>
-              <div>
-                <span className="text-slate-500">الإجمالي: </span>
-                <span className="font-bold">{money(payTarget.total)}</span>
-              </div>
-              <div>
-                <span className="text-slate-500">المدفوع سابقاً: </span>
-                <span className="font-bold text-emerald-600">{money(payTarget.paid_amount)}</span>
-              </div>
-              <div>
-                <span className="text-slate-500">المتبقي: </span>
-                <span className="font-bold text-rose-600">{money(payTarget.remaining)}</span>
-              </div>
-            </div>
-
-            <div className={`rounded-lg p-3 text-xs font-bold ${
-              payTarget.type === "sales"
-                ? "bg-emerald-100 text-emerald-700"
-                : "bg-rose-100 text-rose-700"
-            }`}>
-              {payTarget.type === "sales"
-                ? "القيد: مدين الصندوق / البنك، دائن ذمم العملاء (1020)"
-                : "القيد: مدين ذمم الموردين (2010)، دائن الصندوق / البنك"}
-            </div>
-
-            <div>
-              <label className="mb-1 block text-sm font-bold text-slate-700">
-                {payTarget.type === "sales" ? "مبلغ التحصيل" : "مبلغ الصرف"}
-              </label>
-              <input
-                type="number"
-                min="0.01"
-                step="0.01"
-                max={payTarget.remaining}
-                value={payAmount}
-                onChange={(e) => setPayAmount(e.target.value)}
-                className="w-full rounded-lg border px-3 py-2 text-lg font-bold focus:border-emerald-500 focus:ring-1 focus:ring-emerald-500"
-                autoFocus
-              />
-            </div>
-
-            <div className="flex gap-2">
-              <Button variant={payTarget.type === "sales" ? "primary" : "danger"} onClick={submitPayment} disabled={paying}>
-                {paying ? "جاري التسجيل..." : payTarget.type === "sales" ? "تسجيل التحصيل" : "تسجيل الصرف"}
-              </Button>
-              <Button onClick={() => setPayTarget(null)}>إلغاء</Button>
+              <Button onClick={() => openCollectDialog(viewing)}>💰 تحصيل الدفعة</Button>
             </div>
           </div>
+        )}
+      </Modal>
+
+      <Modal
+        open={!!collectingFor}
+        title={collectingFor ? `تحصيل دفعة — فاتورة رقم ${collectingFor.id}` : ""}
+        onClose={() => setCollectingFor(null)}
+      >
+        {collectingFor && (
+          <form onSubmit={submitCollection} className="space-y-4">
+            <Alert>{dialogError}</Alert>
+            <div className="rounded-lg bg-slate-50 dark:bg-slate-800/60 p-3 text-sm font-bold">
+              <div>العميل: {customerName(collectingFor.customer_id)}</div>
+              <div>الإجمالي: {money(collectingFor.total)}</div>
+              {Number(collectingFor.paid_amount) > 0 && (
+                <div>تم تحصيله سابقاً: {money(collectingFor.paid_amount)}</div>
+              )}
+              <div>المتبقي: {money(remaining(collectingFor))}</div>
+            </div>
+            <Input
+              label="المبلغ المُستلم الآن"
+              type="number"
+              step="0.01"
+              min="0.01"
+              max={remaining(collectingFor)}
+              value={amount}
+              onChange={(e) => setAmount(e.target.value)}
+              required
+              autoFocus
+            />
+            <p className="text-xs text-slate-500 dark:text-slate-400">
+              إذا كان المبلغ المُدخل أقل من المتبقي، تبقى الفاتورة بانتظار استكمال التحصيل
+              ولا تُحرَّر لفريق التوزيع إلا بعد تحصيل كامل قيمتها.
+            </p>
+            <div className="flex justify-end gap-2">
+              <CancelButton onClose={() => setCollectingFor(null)} />
+              <Button type="submit">تأكيد التحصيل</Button>
+            </div>
+          </form>
+        )}
+      </Modal>
+
+      <Modal
+        open={!!payingFor}
+        title={
+          payingFor
+            ? `سداد — ${PAYABLE_TYPE_LABELS[payingFor.payable_type]} رقم ${payingFor.id}`
+            : ""
+        }
+        onClose={() => setPayingFor(null)}
+      >
+        {payingFor && (
+          <form onSubmit={submitPayment} className="space-y-4">
+            <Alert>{dialogError}</Alert>
+            <div className="rounded-lg bg-slate-50 dark:bg-slate-800/60 p-3 text-sm font-bold">
+              <div>{payingFor.description}</div>
+              <div>الإجمالي: {money(payingFor.total)}</div>
+              {Number(payingFor.paid_amount) > 0 && (
+                <div>تم سداده سابقاً: {money(payingFor.paid_amount)}</div>
+              )}
+              <div>المتبقي: {money(payingFor.remaining)}</div>
+            </div>
+            <Input
+              label="المبلغ المدفوع الآن"
+              type="number"
+              step="0.01"
+              min="0.01"
+              max={payableRemaining(payingFor)}
+              value={amount}
+              onChange={(e) => setAmount(e.target.value)}
+              required
+              autoFocus
+            />
+            <p className="text-xs text-slate-500 dark:text-slate-400">
+              إذا كان المبلغ المُدخل أقل من المتبقي، يبقى المستند بانتظار استكمال السداد.
+            </p>
+            <div className="flex justify-end gap-2">
+              <CancelButton onClose={() => setPayingFor(null)} />
+              <Button type="submit">تأكيد السداد</Button>
+            </div>
+          </form>
         )}
       </Modal>
     </div>

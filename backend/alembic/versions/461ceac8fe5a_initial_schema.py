@@ -91,7 +91,7 @@ def upgrade() -> None:
         sa.Column("hashed_password", sa.String(length=128), nullable=False),
         sa.Column(
             "role",
-            sa.Enum("admin", "storekeeper", "sales", "cashier", "accountant", name="userrole"),
+            sa.Enum("admin", "storekeeper", "sales", "accountant", name="userrole"),
             nullable=False,
         ),
         sa.Column("is_active", sa.Boolean(), nullable=False),
@@ -360,47 +360,6 @@ def upgrade() -> None:
         unique=False,
     )
     op.create_table(
-        "cashier_payments",
-        sa.Column("id", sa.Integer(), autoincrement=True, nullable=False),
-        sa.Column("invoice_id", sa.Integer(), nullable=False),
-        sa.Column("customer_id", sa.Integer(), nullable=True),
-        sa.Column("amount", sa.Numeric(precision=14, scale=2), nullable=False),
-        sa.Column("payment_date", sa.Date(), nullable=False),
-        sa.Column(
-            "payment_method",
-            sa.Enum("cash", "credit", name="salespaymentmethod"),
-            nullable=False,
-        ),
-        sa.Column("reference", sa.String(length=50), nullable=True),
-        sa.Column("notes", sa.String(length=300), nullable=True),
-        sa.Column("created_by", sa.Integer(), nullable=True),
-        sa.Column(
-            "created_at",
-            sa.DateTime(timezone=True),
-            server_default=sa.text("(CURRENT_TIMESTAMP)"),
-            nullable=False,
-        ),
-        sa.ForeignKeyConstraint(
-            ["created_by"],
-            ["users.id"],
-        ),
-        sa.ForeignKeyConstraint(
-            ["customer_id"],
-            ["customers.id"],
-        ),
-        sa.ForeignKeyConstraint(
-            ["invoice_id"],
-            ["sales_invoices.id"],
-        ),
-        sa.PrimaryKeyConstraint("id"),
-    )
-    op.create_index(
-        op.f("ix_cashier_payments_invoice_id"),
-        "cashier_payments",
-        ["invoice_id"],
-        unique=False,
-    )
-    op.create_table(
         "journal_items",
         sa.Column("id", sa.Integer(), autoincrement=True, nullable=False),
         sa.Column("entry_id", sa.Integer(), nullable=False),
@@ -650,10 +609,6 @@ def downgrade() -> None:
         op.f("ix_customer_payments_customer_id"), table_name="customer_payments"
     )
     op.drop_table("customer_payments")
-    op.drop_index(
-        op.f("ix_cashier_payments_invoice_id"), table_name="cashier_payments"
-    )
-    op.drop_table("cashier_payments")
     op.drop_index(
         op.f("ix_supplier_payments_supplier_id"), table_name="supplier_payments"
     )

@@ -1,49 +1,29 @@
-"""Expense business logic: CRUD for payable notes."""
+"""Expenses business logic: configurable categories and payable expense notes.
+
+Business rule: every expense is cash or card (never credit) and always posts as
+a payable at creation — it only counts as settled once the cashier disburses it
+in full (see CashierService.pay_expense).
+"""
 
 from datetime import date
 from decimal import Decimal
 
-from sqlalchemy import func, select
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy.orm import selectinload
 
-from app.core.exceptions import AppException
-from app.domain.models.accounting import Account, AccountType, JournalEntry
-from app.domain.models.expenses import (
-    Expense,
-    ExpensePaymentMethod,
+from app.api.schemas.expenses import (
+    ExpenseCategoryCreate,
+    ExpenseCategoryUpdate,
+    ExpenseCreate,
 )
+from app.core.exceptions import AppException
+from app.domain.models.expenses import Expense, ExpenseCategory
+from app.domain.models.user import User
 from app.services.accounting.accounting_service import (
     ACCOUNTS_PAYABLE,
-    CASH,
+    GENERAL_EXPENSES,
     AccountingService,
-    cash_or_bank,
 )
-
-# Default expense accounts seeded on startup.
-EXPENSE_ACCOUNTS: list[tuple[str, str]] = [
-    ("5100", "فواتير المرافق"),
-    ("5200", "طعام"),
-    ("5300", "مياه شرب"),
-    ("5400", "إيجار"),
-    ("5500", "رواتب"),
-    ("5600", "نقل ومواصلات"),
-    ("5700", "صيانة"),
-    ("5800", "مكتبية"),
-    ("5900", "مصاريف أخرى"),
-]
-
-
-async def seed_expense_accounts(session: AsyncSession) -> None:
-    """Insert missing default expense accounts into the chart of accounts."""
-    existing = await session.execute(select(Account.code))
-    existing_codes = {code for (code,) in existing.all()}
-    for code, name in EXPENSE_ACCOUNTS:
-        if code not in existing_codes:
-            session.add(
-                Account(code=code, name=name, type=AccountType.EXPENSE, is_system=True)
-            )
-    await session.commit()
 
 
 class ExpenseService:
@@ -51,136 +31,98 @@ class ExpenseService:
         self.session = session
         self.accounting = AccountingService(session)
 
-    async def list_expenses(self) -> list[Expense]:
-        result = await self.session.execute(
-            select(Expense).order_by(Expense.id.desc())
-        )
+    # --- Categories ---
+    async def get_category(self, category_id: int) -> ExpenseCategory:
+        """Fetch an expense category or raise a 404."""
+        category = await self.session.get(ExpenseCategory, category_id)
+        if category is None:
+            raise AppException(404, "تصنيف المصاريف غير موجود.")
+        return category
+
+    async def list_categories(self, active_only: bool = False) -> list[ExpenseCategory]:
+        """Expense categories, optionally only the active ones."""
+        stmt = select(ExpenseCategory).order_by(ExpenseCategory.id)
+        if active_only:
+            stmt = stmt.where(ExpenseCategory.is_active.is_(True))
+        result = await self.session.execute(stmt)
         return list(result.scalars().all())
 
+    async def create_category(self, data: ExpenseCategoryCreate) -> ExpenseCategory:
+        """Add an expense category; names are unique so reports do not split."""
+        existing = await self.session.execute(
+            select(ExpenseCategory).where(ExpenseCategory.name == data.name)
+        )
+        if existing.scalar_one_or_none() is not None:
+            raise AppException(409, "يوجد تصنيف بهذا الاسم من قبل.")
+        category = ExpenseCategory(name=data.name, is_active=data.is_active)
+        self.session.add(category)
+        await self.session.commit()
+        await self.session.refresh(category)
+        return category
+
+    async def update_category(
+        self, category_id: int, data: ExpenseCategoryUpdate
+    ) -> ExpenseCategory:
+        """Rename a category or retire it from the list offered on new expenses."""
+        category = await self.get_category(category_id)
+        if data.name is not None:
+            category.name = data.name
+        if data.is_active is not None:
+            category.is_active = data.is_active
+        await self.session.commit()
+        await self.session.refresh(category)
+        return category
+
+    # --- Expenses ---
     async def get_expense(self, expense_id: int) -> Expense:
+        """Fetch a recorded expense or raise a 404."""
         expense = await self.session.get(Expense, expense_id)
         if expense is None:
-            raise AppException(404, "سند المصروف غير موجود.")
+            raise AppException(404, "المصروف غير موجود.")
         return expense
 
-    async def create_expense(
-        self, data: dict, user_id: int | None = None
-    ) -> Expense:
-        """Create a payable note. Cash expenses route through the cashier."""
-        # Validate account exists.
-        account = await self.session.execute(
-            select(Account).where(Account.code == data["account_code"])
-        )
-        if account.scalar_one_or_none() is None:
-            raise AppException(
-                400,
-                f"حساب رقم {data['account_code']} غير موجود في دليل الحسابات."
-            )
+    async def list_expenses(self, category_id: int | None = None) -> list[Expense]:
+        """Expenses, newest first, optionally for one category."""
+        stmt = select(Expense).order_by(Expense.id.desc())
+        if category_id is not None:
+            stmt = stmt.where(Expense.category_id == category_id)
+        result = await self.session.execute(stmt)
+        return list(result.scalars().all())
+
+    async def create_expense(self, data: ExpenseCreate, user: User) -> Expense:
+        """Post an expense as a payable — Dr Expense, Cr Accounts Payable.
+
+        It always starts unpaid and awaits the cashier (see CashierService).
+        """
+        category = await self.get_category(data.category_id)
+        if not category.is_active:
+            raise AppException(400, "هذا التصنيف موقوف ولا يمكن تسجيل مصروف عليه.")
 
         expense = Expense(
-            category=data["category"],
-            payee_name=data["payee_name"],
-            description=data.get("description"),
-            amount=data["amount"],
-            expense_date=data["expense_date"],
-            payment_method=data["payment_method"],
+            category_id=category.id,
+            description=data.description,
+            amount=data.amount,
+            payment_method=data.payment_method,
             paid_amount=Decimal("0"),
-            account_code=data["account_code"],
-            reference_no=data.get("reference_no"),
-            notes=data.get("notes"),
-            created_by=user_id,
+            payment_confirmed_at=None,
+            notes=data.notes,
+            created_by=user.id,
         )
         self.session.add(expense)
         await self.session.flush()
 
-        # Journal entry: Debit expense account, Credit accounts payable (cash expenses
-        # settled later by cashier; credit expenses go straight to payable).
-        credit_account = ACCOUNTS_PAYABLE
         await self.accounting.add_entry_no_commit(
-            entry_date=data["expense_date"],
-            description=f"سند مصروف ({data['payee_name']})",
+            entry_date=date.today(),
+            description=f"مصروف رقم {expense.id} — {category.name}: {data.description}",
             items=[
-                (data["account_code"], data["amount"], Decimal("0")),
-                (credit_account, Decimal("0"), data["amount"]),
+                (GENERAL_EXPENSES, data.amount, Decimal("0")),
+                (ACCOUNTS_PAYABLE, Decimal("0"), data.amount),
             ],
             reference_type="expense",
             reference_id=expense.id,
-            created_by=user_id,
+            created_by=user.id,
         )
 
         await self.session.commit()
         await self.session.refresh(expense)
         return expense
-
-    async def update_expense(
-        self, expense_id: int, data: dict, user_id: int | None = None
-    ) -> Expense:
-        """Edit an unpaid expense."""
-        expense = await self.get_expense(expense_id)
-        if expense.paid_amount > 0:
-            raise AppException(400, "لا يمكن تعديل مصروف تم تحصيل جزئي أو كلي.")
-
-        # Validate account exists.
-        account = await self.session.execute(
-            select(Account).where(Account.code == data["account_code"])
-        )
-        if account.scalar_one_or_none() is None:
-            raise AppException(
-                400,
-                f"حساب رقم {data['account_code']} غير موجود في دليل الحسابات."
-            )
-
-        # Remove old journal entries.
-        old_entries = await self.session.execute(
-            select(JournalEntry).where(
-                JournalEntry.reference_type == "expense",
-                JournalEntry.reference_id == expense_id,
-            )
-        )
-        for entry in old_entries.scalars().all():
-            await self.session.delete(entry)
-
-        expense.category = data["category"]
-        expense.payee_name = data["payee_name"]
-        expense.description = data.get("description")
-        expense.amount = data["amount"]
-        expense.expense_date = data["expense_date"]
-        expense.payment_method = data["payment_method"]
-        expense.account_code = data["account_code"]
-        expense.reference_no = data.get("reference_no")
-        expense.notes = data.get("notes")
-
-        # Re-post journal entry.
-        credit_account = ACCOUNTS_PAYABLE
-        await self.accounting.add_entry_no_commit(
-            entry_date=data["expense_date"],
-            description=f"سند مصروف ({data['payee_name']})",
-            items=[
-                (data["account_code"], data["amount"], Decimal("0")),
-                (credit_account, Decimal("0"), data["amount"]),
-            ],
-            reference_type="expense",
-            reference_id=expense.id,
-            created_by=user_id,
-        )
-
-        await self.session.commit()
-        await self.session.refresh(expense)
-        return expense
-
-    async def delete_expense(self, expense_id: int) -> None:
-        """Delete an unpaid expense and reverse journal entries."""
-        expense = await self.get_expense(expense_id)
-        if expense.paid_amount > 0:
-            raise AppException(400, "لا يمكن حذف مصروف تم تحصيل جزئي أو كلي.")
-
-        old_entries = await self.session.execute(
-            select(JournalEntry).where(
-                JournalEntry.reference_type == "expense",
-                JournalEntry.reference_id == expense_id,
-            )
-        )
-        for entry in old_entries.scalars().all():
-            await self.session.delete(entry)
-        await self.session.delete(expense)
-        await self.session.commit()

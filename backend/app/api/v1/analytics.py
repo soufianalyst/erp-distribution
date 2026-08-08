@@ -1,6 +1,8 @@
 """Analytics/dashboard endpoints: RFM, trends, waste, credit risk, delivery, reps."""
 
-from fastapi import APIRouter, Depends
+from datetime import date
+
+from fastapi import APIRouter, Depends, Query
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.deps import require_permissions
@@ -8,6 +10,8 @@ from app.api.schemas.analytics import (
     ARAgingRowOut,
     CreditRiskCustomerOut,
     CustomerRFMOut,
+    DamageReportOut,
+    DiscountReportOut,
     DashboardSummaryOut,
     DriverPerformanceOut,
     ExpiryRiskOut,
@@ -27,7 +31,7 @@ from app.services.analytics.analytics_service import AnalyticsService
 router = APIRouter(
     prefix="/analytics",
     tags=["Analytics"],
-    dependencies=[Depends(require_permissions("reports.view"))],
+    dependencies=[Depends(require_permissions("analytics.view"))],
 )
 
 
@@ -41,18 +45,32 @@ async def summary(
 
 @router.get("/customers/rfm", response_model=APIResponse[list[CustomerRFMOut]])
 async def customer_rfm(
+    product_id: int | None = Query(
+        default=None, description="حصر التحليل بصنف واحد؛ اتركه فارغاً لكل الأصناف"
+    ),
     db: AsyncSession = Depends(get_db),
 ) -> APIResponse[list[CustomerRFMOut]]:
-    """تحليل RFM للعملاء: الحداثة، التكرار، والقيمة النقدية مع تصنيف الشرائح."""
-    return APIResponse(data=await AnalyticsService(db).customer_rfm())
+    """تحليل RFM للعملاء: الحداثة، التكرار، والقيمة النقدية مع تصنيف الشرائح.
+
+    عند تحديد صنف، تُحسب المؤشرات الثلاثة على مشتريات ذلك الصنف وحده، ويبقى
+    العملاء الذين لم يشتروه في القائمة بقيمة صفر — فتصبح قائمة استهداف.
+    """
+    return APIResponse(data=await AnalyticsService(db).customer_rfm(product_id))
 
 
 @router.get("/products/rfm", response_model=APIResponse[list[ProductRFMOut]])
 async def product_rfm(
+    customer_id: int | None = Query(
+        default=None, description="حصر التحليل بعميل واحد؛ اتركه فارغاً لكل العملاء"
+    ),
     db: AsyncSession = Depends(get_db),
 ) -> APIResponse[list[ProductRFMOut]]:
-    """تحليل RFM للأصناف مع الربط بالمخزون الحالي وأقرب تاريخ انتهاء صلاحية."""
-    return APIResponse(data=await AnalyticsService(db).product_rfm())
+    """تحليل RFM للأصناف مع الربط بالمخزون الحالي وأقرب تاريخ انتهاء صلاحية.
+
+    عند تحديد عميل، تُحسب المبيعات والهامش لذلك العميل وحده، ويبقى المخزون
+    وأقرب صلاحية على مستوى الشركة لأنهما وصف للرفّ لا للعميل.
+    """
+    return APIResponse(data=await AnalyticsService(db).product_rfm(customer_id))
 
 
 @router.get("/sales/trend", response_model=APIResponse[list[SalesTrendPointOut]])
@@ -147,3 +165,27 @@ async def rep_performance(
 ) -> APIResponse[list[RepPerformanceOut]]:
     """أداء مناديب المبيعات: الإيرادات، متوسط الفاتورة، ونسبة المرتجعات."""
     return APIResponse(data=await AnalyticsService(db).rep_performance())
+
+
+@router.get("/inventory/damage-report", response_model=APIResponse[DamageReportOut])
+async def damage_report(
+    date_from: date | None = Query(default=None),
+    date_to: date | None = Query(default=None),
+    db: AsyncSession = Depends(get_db),
+) -> APIResponse[DamageReportOut]:
+    """تقرير التالف/الهالك لفترة محددة، موزعاً حسب السبب وحسب الصنف."""
+    return APIResponse(
+        data=await AnalyticsService(db).damage_report(date_from, date_to)
+    )
+
+
+@router.get("/sales/discount-report", response_model=APIResponse[DiscountReportOut])
+async def discount_report(
+    date_from: date | None = Query(default=None),
+    date_to: date | None = Query(default=None),
+    db: AsyncSession = Depends(get_db),
+) -> APIResponse[DiscountReportOut]:
+    """تقرير الخصومات الممنوحة على الفواتير لفترة محددة، حسب العميل والمندوب."""
+    return APIResponse(
+        data=await AnalyticsService(db).discount_report(date_from, date_to)
+    )

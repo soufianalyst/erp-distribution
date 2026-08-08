@@ -1,10 +1,17 @@
 """Integration tests for accounting: automatic postings, manual entries, trial balance."""
 
+from datetime import date
 from decimal import Decimal
 
 from httpx import AsyncClient
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.domain.models.accounting import JournalEntry
+from app.domain.models.purchases import PurchaseInvoice
+from app.domain.models.sales import SalesInvoice
 from app.tests.conftest import (
+    DEFAULT_TAX_RATE_ID,
     TEST_ACCOUNTANT_PASSWORD,
     TEST_ADMIN_PASSWORD,
     TEST_SALES_PASSWORD,
@@ -43,7 +50,7 @@ async def full_trade_cycle(
 ) -> dict[str, int]:
     """Purchase on credit with known costs, then sell on credit; returns document ids."""
     warehouse_id = await create_warehouse(client, admin, "الرئيسي")
-    product = await create_product(client, admin)
+    product = await create_product(client, admin, warehouse_id=warehouse_id)
     supplier_id = await create_supplier(client, admin)
 
     purchase = await client.post(
@@ -54,7 +61,7 @@ async def full_trade_cycle(
             "warehouse_id": warehouse_id,
             "payment_method": "credit",
             "shipping_cost": "20.00",
-            "vat_amount": "16.00",
+            "tax_rate_ids": [DEFAULT_TAX_RATE_ID],
             "lines": [
                 {
                     "product_id": product["id"],
@@ -86,7 +93,7 @@ async def full_trade_cycle(
             "customer_id": customer.json()["data"]["id"],
             "warehouse_id": warehouse_id,
             "payment_method": "credit",
-            "tax_type_ids": [1],
+            "tax_rate_ids": [DEFAULT_TAX_RATE_ID],
             "lines": [{"product_id": product["id"], "quantity": "25"}],
         },
     )
@@ -125,10 +132,10 @@ class TestAutomaticPostings:
         )
         assert len(entries) == 1
         items = items_by_code(entries[0])
-        # Dr inventory 820 (goods 800 + shipping 20), Dr VAT 16, Cr payable 836.
+        # Dr inventory 820 (goods 800 + shipping 20), Dr VAT 128 (16% of 800), Cr payable 948.
         assert items["1030"] == (Decimal("820.00"), Decimal("0"))
-        assert items["2020"] == (Decimal("16.00"), Decimal("0"))
-        assert items["2010"] == (Decimal("0"), Decimal("836.00"))
+        assert items["2020"] == (Decimal("128.00"), Decimal("0"))
+        assert items["2010"] == (Decimal("0"), Decimal("948.00"))
 
     async def test_credit_sale_posting_with_cogs(self, client: AsyncClient) -> None:
         admin = await login(client, "admin", TEST_ADMIN_PASSWORD)
@@ -361,3 +368,460 @@ class TestManualEntriesAndTrialBalance:
         assert report["is_balanced"] is True
         assert as_decimal(report["total_debit"]) == as_decimal(report["total_credit"])
         assert as_decimal(report["total_debit"]) > 0
+
+
+class TestTaxSummary:
+    async def test_summary_reflects_sales_and_purchases(
+        self, client: AsyncClient
+    ) -> None:
+        admin = await login(client, "admin", TEST_ADMIN_PASSWORD)
+        await full_trade_cycle(client, admin)
+
+        response = await client.get(
+            "/api/v1/accounting/reports/tax-summary", headers=admin
+        )
+        assert response.status_code == 200
+        report = response.json()["data"]
+        assert len(report["rows"]) == 1
+        row = report["rows"][0]
+        assert row["name"] == "ضريبة القيمة المضافة"
+        assert as_decimal(row["collected"]) == Decimal("42.00")
+        assert as_decimal(row["paid"]) == Decimal("128.00")
+        assert as_decimal(row["net"]) == Decimal("-86.00")
+        assert as_decimal(report["total_collected"]) == Decimal("42.00")
+        assert as_decimal(report["total_paid"]) == Decimal("128.00")
+        assert as_decimal(report["total_net"]) == Decimal("-86.00")
+
+    async def test_date_filter_excludes_other_periods(
+        self, client: AsyncClient, db_session: AsyncSession
+    ) -> None:
+        admin = await login(client, "admin", TEST_ADMIN_PASSWORD)
+        ids = await full_trade_cycle(client, admin)
+
+        # Push both documents' dates back to last year.
+        last_year = date.today().replace(year=date.today().year - 1)
+        sale_result = await db_session.execute(
+            select(SalesInvoice).where(SalesInvoice.id == ids["sale_id"])
+        )
+        sale_result.scalar_one().invoice_date = last_year
+        purchase_result = await db_session.execute(
+            select(PurchaseInvoice).where(PurchaseInvoice.id == ids["purchase_id"])
+        )
+        purchase_result.scalar_one().invoice_date = last_year
+        await db_session.commit()
+
+        this_year = await client.get(
+            "/api/v1/accounting/reports/tax-summary",
+            headers=admin,
+            params={"date_from": date.today().replace(month=1, day=1).isoformat()},
+        )
+        assert this_year.status_code == 200
+        assert this_year.json()["data"]["rows"] == []
+
+        last_year_report = await client.get(
+            "/api/v1/accounting/reports/tax-summary",
+            headers=admin,
+            params={
+                "date_from": last_year.replace(month=1, day=1).isoformat(),
+                "date_to": last_year.replace(month=12, day=31).isoformat(),
+            },
+        )
+        assert last_year_report.status_code == 200
+        assert len(last_year_report.json()["data"]["rows"]) == 1
+
+    async def test_sales_role_cannot_view_tax_summary(
+        self, client: AsyncClient
+    ) -> None:
+        sales = await login(client, "salesman", TEST_SALES_PASSWORD)
+        response = await client.get(
+            "/api/v1/accounting/reports/tax-summary", headers=sales
+        )
+        assert response.status_code == 403
+
+
+class TestIncomeStatement:
+    async def test_reflects_a_full_trade_cycle(self, client: AsyncClient) -> None:
+        admin = await login(client, "admin", TEST_ADMIN_PASSWORD)
+        await full_trade_cycle(client, admin)
+
+        response = await client.get(
+            "/api/v1/accounting/reports/income-statement", headers=admin
+        )
+        assert response.status_code == 200
+        report = response.json()["data"]
+        # Revenue: 25 x 10.50 = 262.50. COGS: 25 x 8.00 = 200.00.
+        assert as_decimal(report["total_revenue"]) == Decimal("262.50")
+        assert as_decimal(report["total_cogs"]) == Decimal("200.00")
+        assert as_decimal(report["gross_profit"]) == Decimal("62.50")
+        assert as_decimal(report["total_expenses"]) == Decimal("0")
+        assert as_decimal(report["net_profit"]) == Decimal("62.50")
+
+    async def test_resellable_return_reduces_revenue_and_cogs(
+        self, client: AsyncClient
+    ) -> None:
+        admin = await login(client, "admin", TEST_ADMIN_PASSWORD)
+        ids = await full_trade_cycle(client, admin)
+
+        ret = await client.post(
+            "/api/v1/sales/returns",
+            headers=admin,
+            json={
+                "invoice_id": ids["sale_id"],
+                "reason": "resellable",
+                "lines": [{"product_id": ids["product_id"], "quantity": "5"}],
+            },
+        )
+        assert ret.status_code == 201, ret.text
+
+        response = await client.get(
+            "/api/v1/accounting/reports/income-statement", headers=admin
+        )
+        assert response.status_code == 200
+        report = response.json()["data"]
+        # Revenue: 262.50 - (5 x 10.50) = 210.00. COGS: 200.00 - (5 x 8.00) = 160.00.
+        assert as_decimal(report["total_revenue"]) == Decimal("210.00")
+        assert as_decimal(report["total_cogs"]) == Decimal("160.00")
+        assert as_decimal(report["gross_profit"]) == Decimal("50.00")
+        assert as_decimal(report["net_profit"]) == Decimal("50.00")
+
+    async def test_date_filter_excludes_other_periods(
+        self, client: AsyncClient, db_session: AsyncSession
+    ) -> None:
+        admin = await login(client, "admin", TEST_ADMIN_PASSWORD)
+        await full_trade_cycle(client, admin)
+
+        last_year = date.today().replace(year=date.today().year - 1)
+        result = await db_session.execute(select(JournalEntry))
+        for entry in result.scalars().all():
+            entry.entry_date = last_year
+        await db_session.commit()
+
+        this_year = await client.get(
+            "/api/v1/accounting/reports/income-statement",
+            headers=admin,
+            params={"date_from": date.today().replace(month=1, day=1).isoformat()},
+        )
+        assert this_year.status_code == 200
+        this_year_report = this_year.json()["data"]
+        assert as_decimal(this_year_report["total_revenue"]) == Decimal("0")
+        assert as_decimal(this_year_report["net_profit"]) == Decimal("0")
+
+        last_year_report = await client.get(
+            "/api/v1/accounting/reports/income-statement",
+            headers=admin,
+            params={
+                "date_from": last_year.replace(month=1, day=1).isoformat(),
+                "date_to": last_year.replace(month=12, day=31).isoformat(),
+            },
+        )
+        assert last_year_report.status_code == 200
+        assert as_decimal(last_year_report.json()["data"]["total_revenue"]) == Decimal(
+            "262.50"
+        )
+
+    async def test_sales_role_cannot_view_income_statement(
+        self, client: AsyncClient
+    ) -> None:
+        sales = await login(client, "salesman", TEST_SALES_PASSWORD)
+        response = await client.get(
+            "/api/v1/accounting/reports/income-statement", headers=sales
+        )
+        assert response.status_code == 403
+
+
+class TestBalanceSheet:
+    async def test_balances_after_full_trade_cycle(self, client: AsyncClient) -> None:
+        admin = await login(client, "admin", TEST_ADMIN_PASSWORD)
+        ids = await full_trade_cycle(client, admin)
+
+        await client.post(
+            "/api/v1/sales/payments",
+            headers=admin,
+            json={"customer_id": ids["customer_id"], "amount": "100.00", "method": "cash"},
+        )
+
+        response = await client.get(
+            "/api/v1/accounting/reports/balance-sheet", headers=admin
+        )
+        assert response.status_code == 200
+        report = response.json()["data"]
+        assert report["is_balanced"] is True
+        assert as_decimal(report["total_assets"]) == as_decimal(
+            report["total_liabilities_and_equity"]
+        )
+        assert as_decimal(report["total_assets"]) > 0
+
+    async def test_retained_earnings_matches_income_statement_net_profit(
+        self, client: AsyncClient
+    ) -> None:
+        admin = await login(client, "admin", TEST_ADMIN_PASSWORD)
+        await full_trade_cycle(client, admin)
+
+        income = (
+            await client.get(
+                "/api/v1/accounting/reports/income-statement", headers=admin
+            )
+        ).json()["data"]
+        sheet = (
+            await client.get("/api/v1/accounting/reports/balance-sheet", headers=admin)
+        ).json()["data"]
+        assert as_decimal(sheet["retained_earnings"]) == as_decimal(
+            income["net_profit"]
+        )
+
+    async def test_sales_role_cannot_view_balance_sheet(
+        self, client: AsyncClient
+    ) -> None:
+        sales = await login(client, "salesman", TEST_SALES_PASSWORD)
+        response = await client.get(
+            "/api/v1/accounting/reports/balance-sheet", headers=sales
+        )
+        assert response.status_code == 403
+
+
+class TestBankReconciliation:
+    async def _bank_payment(
+        self, client: AsyncClient, admin: dict[str, str], amount: str = "100.00"
+    ) -> tuple[int, int]:
+        """Full trade cycle + a bank-method customer payment; returns (customer_id, journal_item_id)."""
+        ids = await full_trade_cycle(client, admin)
+        payment = await client.post(
+            "/api/v1/sales/payments",
+            headers=admin,
+            json={
+                "customer_id": ids["customer_id"],
+                "amount": amount,
+                "method": "bank",
+            },
+        )
+        assert payment.status_code == 201, payment.text
+        payment_id = int(payment.json()["data"]["id"])
+
+        entries = await entries_for(client, admin, "customer_payment", payment_id)
+        bank_item = next(
+            item
+            for item in entries[0]["items"]
+            if item["account"]["code"] == "1015"
+        )
+        return ids["customer_id"], bank_item["id"]
+
+    async def test_create_line(self, client: AsyncClient) -> None:
+        admin = await login(client, "admin", TEST_ADMIN_PASSWORD)
+        response = await client.post(
+            "/api/v1/accounting/bank-reconciliation/lines",
+            headers=admin,
+            json={
+                "line_date": date.today().isoformat(),
+                "description": "إيداع من عميل",
+                "amount": "100.00",
+                "direction": "in",
+            },
+        )
+        assert response.status_code == 201, response.text
+        line = response.json()["data"]
+        assert line["matched_journal_item_id"] is None
+        assert as_decimal(line["amount"]) == Decimal("100.00")
+
+    async def test_unmatched_journal_items_lists_bank_entries(
+        self, client: AsyncClient
+    ) -> None:
+        admin = await login(client, "admin", TEST_ADMIN_PASSWORD)
+        _, journal_item_id = await self._bank_payment(client, admin, "100.00")
+
+        response = await client.get(
+            "/api/v1/accounting/bank-reconciliation/unmatched-entries", headers=admin
+        )
+        assert response.status_code == 200
+        ids = [item["id"] for item in response.json()["data"]]
+        assert journal_item_id in ids
+
+    async def test_match_and_unmatch(self, client: AsyncClient) -> None:
+        admin = await login(client, "admin", TEST_ADMIN_PASSWORD)
+        _, journal_item_id = await self._bank_payment(client, admin, "100.00")
+
+        line = (
+            await client.post(
+                "/api/v1/accounting/bank-reconciliation/lines",
+                headers=admin,
+                json={
+                    "line_date": date.today().isoformat(),
+                    "description": "إيداع من عميل",
+                    "amount": "100.00",
+                    "direction": "in",
+                },
+            )
+        ).json()["data"]
+
+        match = await client.post(
+            f"/api/v1/accounting/bank-reconciliation/lines/{line['id']}/match",
+            headers=admin,
+            json={"journal_item_id": journal_item_id},
+        )
+        assert match.status_code == 200, match.text
+        matched_line = match.json()["data"]
+        assert matched_line["matched_journal_item_id"] == journal_item_id
+        assert matched_line["matched_journal_item"]["debit"] is not None
+
+        # No longer appears in the unmatched list.
+        unmatched = (
+            await client.get(
+                "/api/v1/accounting/bank-reconciliation/unmatched-entries",
+                headers=admin,
+            )
+        ).json()["data"]
+        assert journal_item_id not in [item["id"] for item in unmatched]
+
+        summary = (
+            await client.get(
+                "/api/v1/accounting/bank-reconciliation/summary", headers=admin
+            )
+        ).json()["data"]
+        assert summary["matched_count"] == 1
+        assert summary["unmatched_count"] == 0
+
+        unmatch = await client.post(
+            f"/api/v1/accounting/bank-reconciliation/lines/{line['id']}/unmatch",
+            headers=admin,
+        )
+        assert unmatch.status_code == 200
+        assert unmatch.json()["data"]["matched_journal_item_id"] is None
+
+        unmatched_again = (
+            await client.get(
+                "/api/v1/accounting/bank-reconciliation/unmatched-entries",
+                headers=admin,
+            )
+        ).json()["data"]
+        assert journal_item_id in [item["id"] for item in unmatched_again]
+
+    async def test_direction_mismatch_rejected(self, client: AsyncClient) -> None:
+        admin = await login(client, "admin", TEST_ADMIN_PASSWORD)
+        # The customer payment debits BANK (an inflow), so "out" is the wrong direction.
+        _, journal_item_id = await self._bank_payment(client, admin, "100.00")
+
+        line = (
+            await client.post(
+                "/api/v1/accounting/bank-reconciliation/lines",
+                headers=admin,
+                json={
+                    "line_date": date.today().isoformat(),
+                    "description": "سحب",
+                    "amount": "100.00",
+                    "direction": "out",
+                },
+            )
+        ).json()["data"]
+
+        match = await client.post(
+            f"/api/v1/accounting/bank-reconciliation/lines/{line['id']}/match",
+            headers=admin,
+            json={"journal_item_id": journal_item_id},
+        )
+        assert match.status_code == 400
+        assert "اتجاه الحركة" in match.json()["message"]
+
+    async def test_matching_same_journal_item_twice_rejected(
+        self, client: AsyncClient
+    ) -> None:
+        admin = await login(client, "admin", TEST_ADMIN_PASSWORD)
+        _, journal_item_id = await self._bank_payment(client, admin, "100.00")
+
+        async def _new_line() -> dict:
+            return (
+                await client.post(
+                    "/api/v1/accounting/bank-reconciliation/lines",
+                    headers=admin,
+                    json={
+                        "line_date": date.today().isoformat(),
+                        "description": "إيداع",
+                        "amount": "100.00",
+                        "direction": "in",
+                    },
+                )
+            ).json()["data"]
+
+        first_line = await _new_line()
+        second_line = await _new_line()
+
+        first_match = await client.post(
+            f"/api/v1/accounting/bank-reconciliation/lines/{first_line['id']}/match",
+            headers=admin,
+            json={"journal_item_id": journal_item_id},
+        )
+        assert first_match.status_code == 200
+
+        second_match = await client.post(
+            f"/api/v1/accounting/bank-reconciliation/lines/{second_line['id']}/match",
+            headers=admin,
+            json={"journal_item_id": journal_item_id},
+        )
+        assert second_match.status_code == 400
+        assert "مطابقة ببند آخر" in second_match.json()["message"]
+
+    async def test_non_bank_account_item_rejected(self, client: AsyncClient) -> None:
+        admin = await login(client, "admin", TEST_ADMIN_PASSWORD)
+        ids = await full_trade_cycle(client, admin)
+
+        # The receivable-side item of the sale is on account 1020, not the bank account.
+        entries = await entries_for(client, admin, "sales_invoice", ids["sale_id"])
+        receivable_item = next(
+            item
+            for entry in entries
+            for item in entry["items"]
+            if item["account"]["code"] == "1020"
+        )
+
+        line = (
+            await client.post(
+                "/api/v1/accounting/bank-reconciliation/lines",
+                headers=admin,
+                json={
+                    "line_date": date.today().isoformat(),
+                    "description": "خطأ",
+                    "amount": "100.00",
+                    "direction": "in",
+                },
+            )
+        ).json()["data"]
+
+        match = await client.post(
+            f"/api/v1/accounting/bank-reconciliation/lines/{line['id']}/match",
+            headers=admin,
+            json={"journal_item_id": receivable_item["id"]},
+        )
+        assert match.status_code == 400
+        assert "ليست على حساب البنك" in match.json()["message"]
+
+    async def test_sales_role_cannot_use_bank_reconciliation(
+        self, client: AsyncClient
+    ) -> None:
+        sales = await login(client, "salesman", TEST_SALES_PASSWORD)
+        response = await client.get(
+            "/api/v1/accounting/bank-reconciliation/lines", headers=sales
+        )
+        assert response.status_code == 403
+
+    async def test_accountant_can_create_and_match(self, client: AsyncClient) -> None:
+        admin = await login(client, "admin", TEST_ADMIN_PASSWORD)
+        _, journal_item_id = await self._bank_payment(client, admin, "50.00")
+
+        accountant = await login(client, "accountant", TEST_ACCOUNTANT_PASSWORD)
+        line = (
+            await client.post(
+                "/api/v1/accounting/bank-reconciliation/lines",
+                headers=accountant,
+                json={
+                    "line_date": date.today().isoformat(),
+                    "description": "إيداع",
+                    "amount": "50.00",
+                    "direction": "in",
+                },
+            )
+        ).json()["data"]
+
+        match = await client.post(
+            f"/api/v1/accounting/bank-reconciliation/lines/{line['id']}/match",
+            headers=accountant,
+            json={"journal_item_id": journal_item_id},
+        )
+        assert match.status_code == 200, match.text

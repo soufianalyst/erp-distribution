@@ -1,6 +1,6 @@
-"""Purchasing business logic: suppliers, purchase invoices, returns, payments, and statements."""
+"""Purchasing business logic: suppliers, purchase invoices, payments, and statements."""
 
-from datetime import date
+from datetime import date, datetime, timezone
 from decimal import ROUND_HALF_UP, Decimal
 
 from sqlalchemy import func, select
@@ -9,6 +9,11 @@ from sqlalchemy.orm import selectinload
 
 from app.api.schemas.purchases import (
     PurchaseInvoiceCreate,
+    PurchaseLineIn,
+    PurchaseOrderCreate,
+    PurchaseOrderReceiveIn,
+    PurchaseOrderUpdate,
+    PurchaseReceiptLineIn,
     PurchaseReturnCreate,
     SupplierCreate,
     SupplierPaymentCreate,
@@ -21,16 +26,19 @@ from app.domain.models.inventory import Product, ProductBatch
 from app.domain.models.purchases import (
     PurchaseInvoice,
     PurchaseInvoiceLine,
+    PurchaseInvoiceTax,
+    PurchaseOrder,
+    PurchaseOrderLine,
+    PurchaseOrderStatus,
     PurchasePaymentMethod,
     PurchaseReturn,
     PurchaseReturnLine,
     Supplier,
     SupplierPayment,
 )
+from app.domain.models.settings import TaxRate
 from app.services.accounting.accounting_service import (
     ACCOUNTS_PAYABLE,
-    CASH,
-    DAMAGE_LOSS,
     INVENTORY,
     VAT,
     AccountingService,
@@ -56,12 +64,15 @@ class PurchaseService:
         return result.scalar_one_or_none()
 
     async def get_supplier(self, supplier_id: int) -> Supplier:
+        """Fetch a supplier or raise a 404 with an Arabic message for the UI."""
         supplier = await self.session.get(Supplier, supplier_id)
         if supplier is None:
             raise AppException(404, "المورد غير موجود.")
         return supplier
 
     async def create_supplier(self, data: SupplierCreate) -> Supplier:
+        """Register a supplier; names are unique so one vendor cannot end up with
+        two separate balances."""
         if await self._get_supplier_by_name(data.name) is not None:
             raise AppException(409, "يوجد مورد بهذا الاسم من قبل.")
         supplier = Supplier(
@@ -76,6 +87,7 @@ class PurchaseService:
         return supplier
 
     async def update_supplier(self, supplier_id: int, data: SupplierUpdate) -> Supplier:
+        """Amend a supplier's details or stop dealing with them."""
         supplier = await self.get_supplier(supplier_id)
         if data.name is not None and data.name != supplier.name:
             if await self._get_supplier_by_name(data.name) is not None:
@@ -92,6 +104,7 @@ class PurchaseService:
         return supplier
 
     async def list_suppliers(self, search: str | None = None) -> list[Supplier]:
+        """All suppliers, optionally filtered by a name search."""
         stmt = select(Supplier).order_by(Supplier.id)
         if search:
             stmt = stmt.where(Supplier.name.ilike(f"%{search}%"))
@@ -99,32 +112,48 @@ class PurchaseService:
         return list(result.scalars().all())
 
     # --- Purchase invoices ---
-    async def create_invoice(
-        self, data: PurchaseInvoiceCreate, created_by: int | None = None
-    ) -> PurchaseInvoice:
-        """Post a purchase invoice and enter its goods into stock — all in ONE transaction.
+    async def _resolve_taxes(self, tax_rate_ids: list[int]) -> list[TaxRate]:
+        """Validate and fetch the configured taxes to apply; empty means tax-free.
 
-        If any line fails (unknown product, expired goods, batch conflict), nothing is saved.
+        Several taxes may be selected at once; duplicates in the input are ignored.
         """
-        supplier = await self.get_supplier(data.supplier_id)
-        if not supplier.is_active:
-            raise AppException(400, "هذا المورد موقوف ولا يمكن الشراء منه.")
-        await self.stock.get_active_warehouse(data.warehouse_id)
+        taxes: list[TaxRate] = []
+        seen: set[int] = set()
+        for tax_rate_id in tax_rate_ids:
+            if tax_rate_id in seen:
+                continue
+            seen.add(tax_rate_id)
+            tax_rate = await self.session.get(TaxRate, tax_rate_id)
+            if tax_rate is None or not tax_rate.is_active:
+                raise AppException(400, "إحدى الضرائب المحددة غير موجودة أو غير مفعّلة.")
+            taxes.append(tax_rate)
+        return taxes
 
-        invoice = PurchaseInvoice(
-            supplier_id=data.supplier_id,
-            warehouse_id=data.warehouse_id,
-            supplier_invoice_number=data.supplier_invoice_number,
-            invoice_date=data.invoice_date or date.today(),
-            payment_method=data.payment_method,
-            shipping_cost=data.shipping_cost,
-            vat_amount=data.vat_amount,
-            subtotal=Decimal("0"),
-            total=Decimal("0"),
-            created_by=created_by,
-        )
-        invoice.notes = data.notes
+    @staticmethod
+    def _apply_taxes(
+        invoice: PurchaseInvoice, tax_rates: list[TaxRate], subtotal: Decimal
+    ) -> Decimal:
+        """Snapshot each selected tax onto the invoice; returns their summed amount."""
+        total_tax = Decimal("0")
+        for tax_rate in tax_rates:
+            amount = (subtotal * tax_rate.rate / Decimal("100")).quantize(
+                TWO_PLACES, rounding=ROUND_HALF_UP
+            )
+            invoice.taxes.append(
+                PurchaseInvoiceTax(
+                    tax_rate_id=tax_rate.id,
+                    name=tax_rate.name,
+                    rate=tax_rate.rate,
+                    amount=amount,
+                )
+            )
+            total_tax += amount
+        return total_tax
 
+    async def _build_lines(
+        self, invoice: PurchaseInvoice, data: PurchaseInvoiceCreate
+    ) -> Decimal:
+        """Enter each line's goods into stock (upserting batches); returns the subtotal."""
         subtotal = Decimal("0")
         for line in data.lines:
             product = await self.session.execute(
@@ -178,38 +207,209 @@ class PurchaseService:
                 )
             )
             subtotal += line_total
+        return subtotal
+
+    async def create_invoice(
+        self,
+        data: PurchaseInvoiceCreate,
+        created_by: int | None = None,
+        purchase_order_id: int | None = None,
+    ) -> PurchaseInvoice:
+        """Post a purchase invoice and enter its goods into stock — all in ONE transaction.
+
+        If any line fails (unknown product, expired goods, batch conflict), nothing is saved.
+        `purchase_order_id` is set when the invoice is a delivery received against
+        an order (see `receive_order`); the commit here covers the order's updated
+        received quantities too, so a failed receipt leaves the order untouched.
+        """
+        supplier = await self.get_supplier(data.supplier_id)
+        if not supplier.is_active:
+            raise AppException(400, "هذا المورد موقوف ولا يمكن الشراء منه.")
+        await self.stock.get_active_warehouse(data.warehouse_id)
+        tax_rates = await self._resolve_taxes(data.tax_rate_ids)
+
+        invoice = PurchaseInvoice(
+            supplier_id=data.supplier_id,
+            warehouse_id=data.warehouse_id,
+            supplier_invoice_number=data.supplier_invoice_number,
+            purchase_order_id=purchase_order_id,
+            invoice_date=data.invoice_date or date.today(),
+            payment_method=data.payment_method,
+            shipping_cost=data.shipping_cost,
+            vat_amount=Decimal("0"),
+            subtotal=Decimal("0"),
+            total=Decimal("0"),
+            created_by=created_by,
+        )
+        invoice.notes = data.notes
+
+        subtotal = await self._build_lines(invoice, data)
 
         invoice.subtotal = subtotal
-        invoice.total = subtotal + data.shipping_cost + data.vat_amount
-        # All invoices start unpaid; cash payments are settled later by the cashier.
+        invoice.vat_amount = self._apply_taxes(invoice, tax_rates, subtotal)
+        invoice.total = subtotal + data.shipping_cost + invoice.vat_amount
+        # Cashier gate: cash/card invoices wait unpaid until the cashier actually
+        # pays the supplier (see CashierService.pay_purchase_invoice); credit
+        # invoices are confirmed immediately since they settle later via the
+        # supplier's account.
         invoice.paid_amount = Decimal("0")
+        invoice.payment_confirmed_at = (
+            None
+            if data.payment_method
+            in (PurchasePaymentMethod.CASH, PurchasePaymentMethod.CARD)
+            else datetime.now(timezone.utc)
+        )
 
         self.session.add(invoice)
         await self.session.flush()
+        await self._post_invoice_entries(invoice, supplier, subtotal, created_by)
 
-        # Automatic double-entry: goods (incl. shipping) into inventory, VAT recoverable,
-        # against accounts payable (cash purchases settled later by cashier).
-        credit_account = ACCOUNTS_PAYABLE
+        await self.session.commit()
+        return await self.get_invoice(invoice.id)
+
+    async def _post_invoice_entries(
+        self,
+        invoice: PurchaseInvoice,
+        supplier: Supplier,
+        subtotal: Decimal,
+        created_by: int | None,
+    ) -> None:
+        """Automatic double-entry: goods (incl. shipping) into inventory, VAT
+        recoverable, against the supplier's payable account.
+
+        Every invoice posts as a payable at creation regardless of payment method
+        — cash/card invoices only actually pay out once the cashier disburses it
+        (see CashierService.pay_purchase_invoice), which posts its own entry.
+        """
         await self.accounting.add_entry_no_commit(
             entry_date=invoice.invoice_date,
             description=f"فاتورة شراء رقم {invoice.id} من المورد ({supplier.name})",
             items=[
-                (INVENTORY, subtotal + data.shipping_cost, Decimal("0")),
-                (VAT, data.vat_amount, Decimal("0")),
-                (credit_account, Decimal("0"), invoice.total),
+                (INVENTORY, subtotal + invoice.shipping_cost, Decimal("0")),
+                (VAT, invoice.vat_amount, Decimal("0")),
+                (ACCOUNTS_PAYABLE, Decimal("0"), invoice.total),
             ],
             reference_type="purchase_invoice",
             reference_id=invoice.id,
             created_by=created_by,
         )
 
+    async def update_invoice(
+        self, invoice_id: int, data: PurchaseInvoiceCreate, updated_by: int | None = None
+    ) -> PurchaseInvoice:
+        """Manager-only rebuild of a posted purchase invoice, all in ONE transaction.
+
+        Reverses the previously received quantities from their batches, replaces the
+        automatic journal entries, then re-runs the normal receiving/posting pipeline
+        with the new data. Fails atomically — on any error the original invoice stays intact.
+        Blocked when any received quantity has already been sold, since reversing it
+        would drive stock negative.
+        """
+        invoice = await self.get_invoice(invoice_id)
+
+        supplier = await self.get_supplier(data.supplier_id)
+        if not supplier.is_active:
+            raise AppException(400, "هذا المورد موقوف ولا يمكن الشراء منه.")
+        await self.stock.get_active_warehouse(data.warehouse_id)
+        tax_rates = await self._resolve_taxes(data.tax_rate_ids)
+
+        # 1) Reverse the previously received quantities; block if some was already sold.
+        for line in invoice.lines:
+            batch = await self.stock.get_batch_locked(line.batch_id)
+            if batch is not None:
+                if batch.quantity < line.quantity:
+                    raise AppException(
+                        400,
+                        "لا يمكن تعديل الفاتورة؛ تم بيع جزء من هذه البضاعة بالفعل.",
+                    )
+                batch.quantity -= line.quantity
+
+        # 2) Remove the old automatic postings; fresh ones are recorded below.
+        old_entries = await self.session.execute(
+            select(JournalEntry).where(
+                JournalEntry.reference_type == "purchase_invoice",
+                JournalEntry.reference_id == invoice_id,
+            )
+        )
+        for entry in old_entries.scalars().all():
+            await self.session.delete(entry)
+
+        # 3) Reset the document, then rebuild it through the same pipeline as creation.
+        invoice.lines.clear()
+        invoice.taxes.clear()
+        invoice.supplier_id = data.supplier_id
+        invoice.warehouse_id = data.warehouse_id
+        invoice.supplier_invoice_number = data.supplier_invoice_number
+        invoice.invoice_date = data.invoice_date or date.today()
+        invoice.payment_method = data.payment_method
+        invoice.shipping_cost = data.shipping_cost
+        invoice.notes = data.notes
+        invoice.subtotal = Decimal("0")
+        invoice.vat_amount = Decimal("0")
+        invoice.total = Decimal("0")
+        invoice.paid_amount = Decimal("0")
+
+        subtotal = await self._build_lines(invoice, data)
+
+        invoice.subtotal = subtotal
+        invoice.vat_amount = self._apply_taxes(invoice, tax_rates, subtotal)
+        invoice.total = subtotal + data.shipping_cost + invoice.vat_amount
+        # Cashier gate resets on edit too: a changed total/method needs
+        # re-paying (or re-confirming) rather than trusting a stale confirmation.
+        invoice.paid_amount = Decimal("0")
+        invoice.payment_confirmed_at = (
+            None
+            if data.payment_method
+            in (PurchasePaymentMethod.CASH, PurchasePaymentMethod.CARD)
+            else datetime.now(timezone.utc)
+        )
+        invoice.payment_confirmed_by = None
+
+        await self.session.flush()
+        await self._post_invoice_entries(invoice, supplier, subtotal, updated_by)
+
         await self.session.commit()
         return await self.get_invoice(invoice.id)
 
+    async def delete_invoice(self, invoice_id: int) -> None:
+        """Hard-delete a purchase invoice: reverse its stock and drop its journal entries.
+
+        Blocked when any received quantity has already been sold, since reversing it
+        would drive stock negative.
+        """
+        invoice = await self.get_invoice(invoice_id)
+
+        for line in invoice.lines:
+            batch = await self.stock.get_batch_locked(line.batch_id)
+            if batch is not None and batch.quantity < line.quantity:
+                raise AppException(
+                    400, "لا يمكن حذف الفاتورة؛ تم بيع جزء من هذه البضاعة بالفعل."
+                )
+
+        for line in invoice.lines:
+            batch = await self.stock.get_batch_locked(line.batch_id)
+            if batch is not None:
+                batch.quantity -= line.quantity
+
+        old_entries = await self.session.execute(
+            select(JournalEntry).where(
+                JournalEntry.reference_type == "purchase_invoice",
+                JournalEntry.reference_id == invoice_id,
+            )
+        )
+        for entry in old_entries.scalars().all():
+            await self.session.delete(entry)
+
+        await self.session.delete(invoice)
+        await self.session.commit()
+
     async def get_invoice(self, invoice_id: int) -> PurchaseInvoice:
+        """Fetch a purchase invoice with its lines and taxes, or raise a 404."""
         result = await self.session.execute(
             select(PurchaseInvoice)
-            .options(selectinload(PurchaseInvoice.lines))
+            .options(
+                selectinload(PurchaseInvoice.lines), selectinload(PurchaseInvoice.taxes)
+            )
             .where(PurchaseInvoice.id == invoice_id)
         )
         invoice = result.scalar_one_or_none()
@@ -220,9 +420,12 @@ class PurchaseService:
     async def list_invoices(
         self, supplier_id: int | None = None
     ) -> list[PurchaseInvoice]:
+        """Purchase invoices, newest first, optionally for one supplier."""
         stmt = (
             select(PurchaseInvoice)
-            .options(selectinload(PurchaseInvoice.lines))
+            .options(
+                selectinload(PurchaseInvoice.lines), selectinload(PurchaseInvoice.taxes)
+            )
             .order_by(PurchaseInvoice.id.desc())
         )
         if supplier_id is not None:
@@ -230,75 +433,29 @@ class PurchaseService:
         result = await self.session.execute(stmt)
         return list(result.scalars().all())
 
-    async def update_invoice(
-        self, invoice_id: int, data: PurchaseInvoiceCreate, user_id: int | None = None
-    ) -> PurchaseInvoice:
-        """Rebuild a posted purchase invoice in ONE transaction.
+    # --- Purchase orders ---
+    async def _build_order_lines(
+        self, order: PurchaseOrder, data: PurchaseOrderCreate | PurchaseOrderUpdate
+    ) -> Decimal:
+        """Attach the ordered lines, converted to base units; returns the subtotal.
 
-        Restores previously received stock, drops old journal entries, then re-runs
-        the normal creation pipeline with the new data.
+        No stock or accounting effect — an order is only an intention to buy.
         """
-        invoice = await self.get_invoice(invoice_id)
-
-        supplier = await self.get_supplier(data.supplier_id)
-        if not supplier.is_active:
-            raise AppException(400, "هذا المورد موقوف ولا يمكن الشراء منه.")
-        await self.stock.get_active_warehouse(data.warehouse_id)
-
-        # 1) Remove old journal entries and clear old lines (release FK refs).
-        old_entries = await self.session.execute(
-            select(JournalEntry).where(
-                JournalEntry.reference_type == "purchase_invoice",
-                JournalEntry.reference_id == invoice_id,
-            )
-        )
-        for entry in old_entries.scalars().all():
-            await self.session.delete(entry)
-
-        # Collect batch info before clearing lines.
-        old_batch_info = [(line.batch_id, line.quantity) for line in invoice.lines]
-        invoice.lines.clear()
-        await self.session.flush()
-
-        # 2) Restore previously received quantities back to their original batches.
-        for batch_id, qty in old_batch_info:
-            batch = await self.session.get(ProductBatch, batch_id)
-            if batch is not None:
-                batch.quantity -= qty
-                if batch.quantity <= 0:
-                    await self.session.delete(batch)
-
-        # 3) Reset the document.
-        invoice.supplier_id = data.supplier_id
-        invoice.warehouse_id = data.warehouse_id
-        invoice.supplier_invoice_number = data.supplier_invoice_number
-        invoice.invoice_date = data.invoice_date or date.today()
-        invoice.payment_method = data.payment_method
-        invoice.shipping_cost = data.shipping_cost
-        invoice.vat_amount = data.vat_amount
-        invoice.notes = data.notes
-        invoice.subtotal = Decimal("0")
-        invoice.total = Decimal("0")
-        invoice.paid_amount = Decimal("0")
-
-        # 4) Rebuild lines through the same pipeline as creation.
         subtotal = Decimal("0")
         for line in data.lines:
-            product = await self.session.execute(
+            result = await self.session.execute(
                 select(Product)
                 .options(selectinload(Product.units))
                 .where(Product.id == line.product_id)
             )
-            product_obj = product.scalar_one_or_none()
-            if product_obj is None:
+            product = result.scalar_one_or_none()
+            if product is None:
                 raise AppException(404, f"الصنف رقم {line.product_id} غير موجود.")
-            if not product_obj.is_active:
-                raise AppException(
-                    400, f"الصنف ({product_obj.name}) موقوف ولا يمكن شراؤه."
-                )
+            if not product.is_active:
+                raise AppException(400, f"الصنف ({product.name}) موقوف ولا يمكن طلبه.")
 
             base_quantity = self.stock.to_base_quantity(
-                product_obj, line.quantity, line.unit_id
+                product, line.quantity, line.unit_id
             )
             line_total = (line.quantity * line.unit_cost).quantize(
                 TWO_PLACES, rounding=ROUND_HALF_UP
@@ -311,183 +468,350 @@ class PurchaseService:
                 else Decimal("0")
             )
 
-            batch = await self.stock.add_stock_no_commit(
-                product_id=line.product_id,
-                warehouse_id=data.warehouse_id,
-                batch_number=line.batch_number,
-                expiry_date=line.expiry_date,
-                base_quantity=base_quantity,
-                unit_cost=base_unit_cost,
-            )
-            await self.session.flush()
-
-            invoice.lines.append(
-                PurchaseInvoiceLine(
+            order.lines.append(
+                PurchaseOrderLine(
                     product_id=line.product_id,
-                    batch_id=batch.id,
-                    batch_number=line.batch_number,
-                    expiry_date=line.expiry_date,
                     quantity=base_quantity,
+                    received_quantity=Decimal("0"),
                     unit_cost=base_unit_cost,
                     line_total=line_total,
                 )
             )
             subtotal += line_total
+        return subtotal
 
-        invoice.subtotal = subtotal
-        invoice.total = subtotal + data.shipping_cost + data.vat_amount
-        invoice.paid_amount = Decimal("0")
+    async def create_order(
+        self, data: PurchaseOrderCreate, created_by: int | None = None
+    ) -> PurchaseOrder:
+        """Raise a purchase order as a draft; nothing reaches stock or the ledger yet."""
+        supplier = await self.get_supplier(data.supplier_id)
+        if not supplier.is_active:
+            raise AppException(400, "هذا المورد موقوف ولا يمكن الشراء منه.")
+        await self.stock.get_active_warehouse(data.warehouse_id)
 
-        await self.session.flush()
-
-        # New journal entries.
-        credit_account = ACCOUNTS_PAYABLE
-        await self.accounting.add_entry_no_commit(
-            entry_date=invoice.invoice_date,
-            description=f"فاتورة شراء رقم {invoice.id} من المورد ({supplier.name})",
-            items=[
-                (INVENTORY, subtotal + data.shipping_cost, Decimal("0")),
-                (VAT, data.vat_amount, Decimal("0")),
-                (credit_account, Decimal("0"), invoice.total),
-            ],
-            reference_type="purchase_invoice",
-            reference_id=invoice.id,
-            created_by=user_id,
+        order = PurchaseOrder(
+            supplier_id=data.supplier_id,
+            warehouse_id=data.warehouse_id,
+            order_date=date.today(),
+            expected_date=data.expected_date,
+            status=PurchaseOrderStatus.DRAFT,
+            subtotal=Decimal("0"),
+            notes=data.notes,
+            created_by=created_by,
         )
+        order.subtotal = await self._build_order_lines(order, data)
 
+        self.session.add(order)
         await self.session.commit()
-        return await self.get_invoice(invoice.id)
+        return await self.get_order(order.id)
 
-    async def delete_invoice(self, invoice_id: int) -> None:
-        """Hard-delete a purchase invoice: restore stock and drop journal entries."""
-        invoice = await self.get_invoice(invoice_id)
-
-        # Remove the automatic journal entries.
-        old_entries = await self.session.execute(
-            select(JournalEntry).where(
-                JournalEntry.reference_type == "purchase_invoice",
-                JournalEntry.reference_id == invoice_id,
+    async def get_order(self, order_id: int) -> PurchaseOrder:
+        """Fetch a purchase order with its lines and received deliveries, or 404."""
+        result = await self.session.execute(
+            select(PurchaseOrder)
+            .options(
+                selectinload(PurchaseOrder.lines),
+                # Eager: `received_invoice_ids` walks this and cannot lazy-load
+                # under an async session.
+                selectinload(PurchaseOrder.received_invoices),
             )
+            .where(PurchaseOrder.id == order_id)
         )
-        for entry in old_entries.scalars().all():
-            await self.session.delete(entry)
+        order = result.scalar_one_or_none()
+        if order is None:
+            raise AppException(404, "طلب الشراء غير موجود.")
+        return order
 
-        # Collect batch info before clearing lines (release FK refs).
-        old_batch_info = [(line.batch_id, line.quantity) for line in invoice.lines]
-        invoice.lines.clear()
+    async def list_orders(
+        self,
+        supplier_id: int | None = None,
+        status: PurchaseOrderStatus | None = None,
+    ) -> list[PurchaseOrder]:
+        """Purchase orders, newest first, optionally filtered by supplier or status."""
+        stmt = (
+            select(PurchaseOrder)
+            .options(
+                selectinload(PurchaseOrder.lines),
+                selectinload(PurchaseOrder.received_invoices),
+            )
+            .order_by(PurchaseOrder.id.desc())
+        )
+        if supplier_id is not None:
+            stmt = stmt.where(PurchaseOrder.supplier_id == supplier_id)
+        if status is not None:
+            stmt = stmt.where(PurchaseOrder.status == status)
+        result = await self.session.execute(stmt)
+        return list(result.scalars().all())
+
+    async def update_order(
+        self, order_id: int, data: PurchaseOrderUpdate
+    ) -> PurchaseOrder:
+        """Rewrite a draft order. Once sent, the supplier has it — editing is refused."""
+        order = await self.get_order(order_id)
+        if order.status is not PurchaseOrderStatus.DRAFT:
+            raise AppException(
+                400, "لا يمكن تعديل الطلب إلا وهو مسودة؛ أنشئ طلباً جديداً."
+            )
+
+        supplier = await self.get_supplier(data.supplier_id)
+        if not supplier.is_active:
+            raise AppException(400, "هذا المورد موقوف ولا يمكن الشراء منه.")
+        await self.stock.get_active_warehouse(data.warehouse_id)
+
+        order.supplier_id = data.supplier_id
+        order.warehouse_id = data.warehouse_id
+        order.expected_date = data.expected_date
+        order.notes = data.notes
+        order.lines.clear()
         await self.session.flush()
+        order.subtotal = await self._build_order_lines(order, data)
 
-        # Restore received quantities back to their original batches.
-        for batch_id, qty in old_batch_info:
-            batch = await self.session.get(ProductBatch, batch_id)
-            if batch is not None:
-                batch.quantity -= qty
-                if batch.quantity <= 0:
-                    await self.session.delete(batch)
-
-        await self.session.delete(invoice)
         await self.session.commit()
+        return await self.get_order(order.id)
+
+    async def send_order(self, order_id: int) -> PurchaseOrder:
+        """Mark a draft as sent to the supplier; only then can deliveries be received."""
+        order = await self.get_order(order_id)
+        if order.status is not PurchaseOrderStatus.DRAFT:
+            raise AppException(400, "تم إرسال هذا الطلب من قبل.")
+        order.status = PurchaseOrderStatus.SENT
+        order.sent_at = datetime.now(timezone.utc)
+        await self.session.commit()
+        return await self.get_order(order.id)
+
+    async def cancel_order(
+        self, order_id: int, cancel_reason: str | None = None
+    ) -> PurchaseOrder:
+        """Abandon an order and whatever is still outstanding on it.
+
+        Deliveries already received stay as their own purchase invoices — they are
+        real goods in the warehouse — so a partially received order can be
+        cancelled to mean "we are not expecting the rest".
+        """
+        order = await self.get_order(order_id)
+        if order.status is PurchaseOrderStatus.CANCELLED:
+            raise AppException(400, "هذا الطلب ملغى من قبل.")
+        if order.status is PurchaseOrderStatus.RECEIVED:
+            raise AppException(400, "لا يمكن إلغاء طلب تم استلامه بالكامل.")
+        order.status = PurchaseOrderStatus.CANCELLED
+        order.cancelled_at = datetime.now(timezone.utc)
+        order.cancel_reason = cancel_reason
+        await self.session.commit()
+        return await self.get_order(order.id)
+
+    async def receive_order(
+        self,
+        order_id: int,
+        data: PurchaseOrderReceiveIn,
+        created_by: int | None = None,
+    ) -> PurchaseInvoice:
+        """Receive a delivery against an order: raises a normal purchase invoice.
+
+        The invoice is what carries the stock and accounting effect; the order only
+        tracks how much of each line has now arrived. An order may be received over
+        several deliveries, and the whole thing is one transaction — a rejected
+        line (expired goods, batch conflict) leaves the order's received
+        quantities untouched.
+        """
+        order = await self.get_order(order_id)
+        if order.status is PurchaseOrderStatus.DRAFT:
+            raise AppException(400, "أرسل الطلب للمورد أولاً قبل استلام البضاعة.")
+        if order.status is PurchaseOrderStatus.CANCELLED:
+            raise AppException(400, "هذا الطلب ملغى ولا يمكن استلام بضاعة عليه.")
+        if order.status is PurchaseOrderStatus.RECEIVED:
+            raise AppException(400, "تم استلام هذا الطلب بالكامل.")
+
+        lines_by_id = {line.id: line for line in order.lines}
+        # Validate the whole delivery before touching anything, so a bad line
+        # cannot leave half the receipt applied.
+        receipts: list[tuple[PurchaseOrderLine, PurchaseReceiptLineIn]] = []
+        for receipt_line in data.lines:
+            order_line = lines_by_id.get(receipt_line.order_line_id)
+            if order_line is None:
+                raise AppException(400, "أحد السطور لا ينتمي إلى هذا الطلب.")
+            if receipt_line.quantity > order_line.outstanding_quantity:
+                raise AppException(
+                    400,
+                    "الكمية المستلمة أكبر من المتبقي على السطر؛ "
+                    f"المتبقي {order_line.outstanding_quantity} فقط.",
+                )
+            receipts.append((order_line, receipt_line))
+
+        invoice_data = PurchaseInvoiceCreate(
+            supplier_id=order.supplier_id,
+            warehouse_id=data.warehouse_id or order.warehouse_id,
+            payment_method=data.payment_method,
+            supplier_invoice_number=data.supplier_invoice_number,
+            invoice_date=data.invoice_date,
+            shipping_cost=data.shipping_cost,
+            tax_rate_ids=data.tax_rate_ids,
+            notes=data.notes,
+            lines=[
+                PurchaseLineIn(
+                    product_id=order_line.product_id,
+                    batch_number=receipt_line.batch_number,
+                    expiry_date=receipt_line.expiry_date,
+                    quantity=receipt_line.quantity,
+                    # Already base-unit quantities and costs on both sides.
+                    unit_id=None,
+                    unit_cost=(
+                        receipt_line.unit_cost
+                        if receipt_line.unit_cost is not None
+                        else order_line.unit_cost
+                    ),
+                )
+                for order_line, receipt_line in receipts
+            ],
+        )
+
+        for order_line, receipt_line in receipts:
+            order_line.received_quantity += receipt_line.quantity
+        order.status = (
+            PurchaseOrderStatus.RECEIVED
+            if order.is_fully_received
+            else PurchaseOrderStatus.PARTIALLY_RECEIVED
+        )
+
+        # create_invoice commits, which also persists the order changes above.
+        return await self.create_invoice(
+            invoice_data, created_by=created_by, purchase_order_id=order.id
+        )
 
     # --- Purchase returns ---
     async def create_return(
         self, data: PurchaseReturnCreate, created_by: int | None = None
     ) -> PurchaseReturn:
-        """Create a purchase return: remove stock, adjust supplier balance, journal entry."""
+        """Post a purchase return: goods always leave the warehouse back to the
+        supplier, regardless of reason (unlike sales returns, there is no
+        "resellable" branch — see PurchaseReturnReason)."""
         invoice = await self.get_invoice(data.invoice_id)
         supplier = await self.get_supplier(invoice.supplier_id)
 
-        subtotal = Decimal("0")
-        return_obj = PurchaseReturn(
-            invoice_id=data.invoice_id,
-            supplier_id=invoice.supplier_id,
+        # Quantities already returned against this invoice, per batch.
+        returned_result = await self.session.execute(
+            select(
+                PurchaseReturnLine.batch_id,
+                func.coalesce(func.sum(PurchaseReturnLine.quantity), 0),
+            )
+            .join(PurchaseReturn, PurchaseReturnLine.return_id == PurchaseReturn.id)
+            .where(PurchaseReturn.invoice_id == invoice.id)
+            .group_by(PurchaseReturnLine.batch_id)
+        )
+        returned_per_batch: dict[int, Decimal] = {
+            batch_id: Decimal(str(qty)) for batch_id, qty in returned_result.all()
+        }
+
+        purchase_return = PurchaseReturn(
+            invoice_id=invoice.id,
+            supplier_id=supplier.id,
             reason=data.reason,
             subtotal=Decimal("0"),
-            vat_amount=data.vat_amount,
+            vat_amount=Decimal("0"),
             total=Decimal("0"),
             notes=data.notes,
             created_by=created_by,
         )
-        self.session.add(return_obj)
-        await self.session.flush()
 
+        subtotal = Decimal("0")
         for line in data.lines:
-            product = await self.session.execute(
-                select(Product).where(Product.id == line.product_id)
+            product = await self.stock.get_active_product(line.product_id)
+            remaining = self.stock.to_base_quantity(
+                product, line.quantity, line.unit_id
             )
-            product_obj = product.scalar_one_or_none()
-            if product_obj is None:
-                raise AppException(404, f"الصنف رقم {line.product_id} غير موجود.")
 
-            line_total = (line.quantity * line.unit_cost).quantize(
-                TWO_PLACES, rounding=ROUND_HALF_UP
-            )
-            subtotal += line_total
+            # Walk the invoice lines of this product and take back from their batches in order.
+            for inv_line in invoice.lines:
+                if inv_line.product_id != line.product_id or remaining <= 0:
+                    continue
+                already = returned_per_batch.get(inv_line.batch_id, Decimal("0"))
+                returnable = inv_line.quantity - already
+                if returnable <= 0:
+                    continue
+                take = min(returnable, remaining)
 
-            # Find the batch used in the original invoice to reduce stock from.
-            batch_result = await self.session.execute(
-                select(ProductBatch).where(
-                    ProductBatch.product_id == line.product_id,
-                    ProductBatch.warehouse_id == invoice.warehouse_id,
-                ).order_by(ProductBatch.expiry_date, ProductBatch.id)
-            )
-            batch = batch_result.scalar_one_or_none()
-            if batch is None:
-                raise AppException(
-                    400, f"لا يوجد مخزون للصنف ({product_obj.name}) في هذا المستودع."
+                batch = await self.stock.get_batch_locked(inv_line.batch_id)
+                if batch is not None:
+                    if batch.quantity < take:
+                        raise AppException(
+                            400,
+                            f"لا يمكن إرجاع هذه الكمية من الصنف ({product.name})؛ "
+                            "جزء منها تم بيعه بالفعل.",
+                        )
+                    batch.quantity -= take
+
+                line_total = (take * inv_line.unit_cost).quantize(
+                    TWO_PLACES, rounding=ROUND_HALF_UP
                 )
-            if batch.quantity < line.quantity:
+                purchase_return.lines.append(
+                    PurchaseReturnLine(
+                        product_id=line.product_id,
+                        batch_id=inv_line.batch_id,
+                        quantity=take,
+                        unit_cost=inv_line.unit_cost,
+                        line_total=line_total,
+                    )
+                )
+                subtotal += line_total
+                returned_per_batch[inv_line.batch_id] = already + take
+                remaining -= take
+
+            if remaining > 0:
                 raise AppException(
                     400,
-                    f"الكمية المتوفرة للصنف ({product_obj.name}) في التشغيلة: {batch.quantity}، المطلوب: {line.quantity}.",
+                    f"الكمية المرتجعة للصنف ({product.name}) أكبر من الكمية المستلمة في الفاتورة.",
                 )
 
-            batch.quantity -= line.quantity
-            if batch.quantity <= 0:
-                await self.session.delete(batch)
-
-            return_obj.lines.append(
-                PurchaseReturnLine(
-                    product_id=line.product_id,
-                    batch_id=batch.id,
-                    quantity=line.quantity,
-                    unit_cost=line.unit_cost,
-                    line_total=line_total,
-                )
+        # Derive the tax proportionally from the ORIGINAL invoice's own numbers
+        # (not any currently-configured rate), same convention as sales returns.
+        effective_tax_fraction = (
+            invoice.vat_amount / invoice.subtotal if invoice.subtotal > 0 else Decimal("0")
+        )
+        purchase_return.subtotal = subtotal
+        purchase_return.vat_amount = (
+            (subtotal * effective_tax_fraction).quantize(
+                TWO_PLACES, rounding=ROUND_HALF_UP
             )
+            if invoice.vat_amount > 0
+            else Decimal("0")
+        )
+        purchase_return.total = subtotal + purchase_return.vat_amount
 
-        return_obj.subtotal = subtotal
-        return_obj.total = subtotal + data.vat_amount
-
+        self.session.add(purchase_return)
         await self.session.flush()
 
-        # Journal entry: DR DAMAGE_LOSS, CR INVENTORY (reduce stock value + AP if credit)
+        # Automatic double-entry: reverse inventory + VAT against the supplier's payable.
         await self.accounting.add_entry_no_commit(
             entry_date=date.today(),
-            description=f"مرتجع شراء رقم {return_obj.id} ({supplier.name})",
+            description=f"مرتجع مشتريات رقم {purchase_return.id} عن الفاتورة رقم {invoice.id}",
             items=[
-                (DAMAGE_LOSS, return_obj.total, Decimal("0")),
+                (ACCOUNTS_PAYABLE, purchase_return.total, Decimal("0")),
                 (INVENTORY, Decimal("0"), subtotal),
-                (VAT, Decimal("0"), data.vat_amount),
+                (VAT, Decimal("0"), purchase_return.vat_amount),
             ],
             reference_type="purchase_return",
-            reference_id=return_obj.id,
+            reference_id=purchase_return.id,
             created_by=created_by,
         )
 
         await self.session.commit()
-        await self.session.refresh(return_obj)
-        return return_obj
+        result = await self.session.execute(
+            select(PurchaseReturn)
+            .options(selectinload(PurchaseReturn.lines))
+            .where(PurchaseReturn.id == purchase_return.id)
+        )
+        return result.scalar_one()
 
     async def list_returns(
-        self, supplier_id: int | None = None
+        self, invoice_id: int | None = None
     ) -> list[PurchaseReturn]:
+        """Purchase returns, newest first, optionally for one invoice."""
         stmt = (
             select(PurchaseReturn)
             .options(selectinload(PurchaseReturn.lines))
             .order_by(PurchaseReturn.id.desc())
         )
-        if supplier_id is not None:
-            stmt = stmt.where(PurchaseReturn.supplier_id == supplier_id)
+        if invoice_id is not None:
+            stmt = stmt.where(PurchaseReturn.invoice_id == invoice_id)
         result = await self.session.execute(stmt)
         return list(result.scalars().all())
 
@@ -495,6 +819,11 @@ class PurchaseService:
     async def create_payment(
         self, data: SupplierPaymentCreate, created_by: int | None = None
     ) -> SupplierPayment:
+        """Record a payment to a supplier (سند صرف).
+
+        Refuses to pay more than is owed, which would otherwise leave the
+        supplier account in credit with no document explaining why.
+        """
         supplier = await self.get_supplier(data.supplier_id)
         balance = await self.supplier_balance(supplier.id)
         if data.amount > balance:
@@ -531,19 +860,23 @@ class PurchaseService:
         return payment
 
     async def supplier_balance(self, supplier_id: int) -> Decimal:
-        """Outstanding balance = opening + unpaid invoice amounts - payments made."""
+        """Outstanding = opening + unpaid invoice amounts - returns - payments made."""
         supplier = await self.get_supplier(supplier_id)
 
         invoiced = await self.session.execute(
             select(
                 func.coalesce(func.sum(PurchaseInvoice.total), 0),
                 func.coalesce(func.sum(PurchaseInvoice.paid_amount), 0),
-            ).where(
-                PurchaseInvoice.supplier_id == supplier_id,
-                PurchaseInvoice.payment_method == PurchasePaymentMethod.CREDIT,
-            )
+            ).where(PurchaseInvoice.supplier_id == supplier_id)
         )
         total_invoices, paid_on_invoices = invoiced.one()
+
+        returns = await self.session.execute(
+            select(func.coalesce(func.sum(PurchaseReturn.total), 0)).where(
+                PurchaseReturn.supplier_id == supplier_id
+            )
+        )
+        total_returns = returns.scalar_one()
 
         payments = await self.session.execute(
             select(func.coalesce(func.sum(SupplierPayment.amount), 0)).where(
@@ -556,19 +889,29 @@ class PurchaseService:
             supplier.opening_balance
             + Decimal(str(total_invoices))
             - Decimal(str(paid_on_invoices))
+            - Decimal(str(total_returns))
             - Decimal(str(total_payments))
         )
 
     async def supplier_statement(self, supplier_id: int) -> SupplierStatementOut:
+        """Everything owed to and paid a supplier: invoices, returns, payments and
+        the outstanding balance."""
         from app.api.schemas.purchases import (
             PurchaseInvoiceOut,
+            PurchaseReturnOut,
             SupplierOut,
             SupplierPaymentOut,
         )
 
         supplier = await self.get_supplier(supplier_id)
         invoices = await self.list_invoices(supplier_id)
-        credit_invoices = [i for i in invoices if i.payment_method == PurchasePaymentMethod.CREDIT]
+        returns_result = await self.session.execute(
+            select(PurchaseReturn)
+            .options(selectinload(PurchaseReturn.lines))
+            .where(PurchaseReturn.supplier_id == supplier_id)
+            .order_by(PurchaseReturn.id)
+        )
+        returns = list(returns_result.scalars().all())
         payments_result = await self.session.execute(
             select(SupplierPayment)
             .where(SupplierPayment.supplier_id == supplier_id)
@@ -576,16 +919,22 @@ class PurchaseService:
         )
         payments = list(payments_result.scalars().all())
 
-        total_invoices = sum((i.total for i in credit_invoices), Decimal("0"))
-        total_paid = sum((i.paid_amount for i in credit_invoices), Decimal("0")) + sum(
+        total_invoices = sum((i.total for i in invoices), Decimal("0"))
+        total_returns = sum((r.total for r in returns), Decimal("0"))
+        total_paid = sum((i.paid_amount for i in invoices), Decimal("0")) + sum(
             (p.amount for p in payments), Decimal("0")
         )
         return SupplierStatementOut(
             supplier=SupplierOut.model_validate(supplier),
             opening_balance=supplier.opening_balance,
             total_invoices=total_invoices,
+            total_returns=total_returns,
             total_paid=total_paid,
-            balance=supplier.opening_balance + total_invoices - total_paid,
+            balance=supplier.opening_balance
+            + total_invoices
+            - total_returns
+            - total_paid,
             invoices=[PurchaseInvoiceOut.model_validate(i) for i in invoices],
+            returns=[PurchaseReturnOut.model_validate(r) for r in returns],
             payments=[SupplierPaymentOut.model_validate(p) for p in payments],
         )

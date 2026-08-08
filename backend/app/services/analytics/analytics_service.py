@@ -17,6 +17,13 @@ from app.api.schemas.analytics import (
     ARAgingRowOut,
     CreditRiskCustomerOut,
     CustomerRFMOut,
+    DamageByProductOut,
+    DamageByReasonOut,
+    DamageReportOut,
+    DiscountByCustomerOut,
+    DiscountBySalesmanOut,
+    DiscountInvoiceOut,
+    DiscountReportOut,
     DashboardSummaryOut,
     DriverPerformanceOut,
     ExpiryRiskOut,
@@ -30,7 +37,14 @@ from app.api.schemas.analytics import (
     WarehouseRevenueOut,
 )
 from app.domain.models.delivery import DeliveryStop, DeliveryTrip
-from app.domain.models.inventory import Product, ProductBatch, Warehouse
+from app.domain.models.inventory import (
+    AdjustmentStatus,
+    Product,
+    ProductBatch,
+    StockAdjustment,
+    StockAdjustmentLine,
+    Warehouse,
+)
 from app.domain.models.sales import (
     Customer,
     CustomerPayment,
@@ -41,6 +55,7 @@ from app.domain.models.sales import (
     SalesReturnLine,
 )
 from app.domain.models.user import User
+from app.services.sales.returns_query import posted
 from app.services.sales.sales_service import SalesService
 
 TWO_PLACES = Decimal("0.01")
@@ -66,35 +81,96 @@ class AnalyticsService:
         self.sales = SalesService(session)
 
     # --- Customer RFM ---
-    async def customer_rfm(self) -> list[CustomerRFMOut]:
+    async def customer_rfm(self, product_id: int | None = None) -> list[CustomerRFMOut]:
+        """Score every customer on Recency, Frequency and Monetary value.
+
+        Segments them from "بطل" down to "خامل" so the sales team can see who to
+        keep, who to chase, and who has quietly stopped buying. Measured over the
+        rolling WINDOW_DAYS period, not all time, so an old spender does not look
+        active forever.
+
+        `product_id` narrows all three scores to one product: who buys it, how
+        recently, and how much of it. The three have to move together — asking "who
+        buys olive oil" and answering with the date they last bought *anything* would
+        be worse than not offering the filter, so an invoice that does not contain the
+        product is excluded from the recency and the count as well as the money.
+
+        Customers who never bought it stay in the list, scored zero. That is the
+        point: filtered by product, this report doubles as a prospect list.
+
+        One thing to know when reading it: unfiltered, the money is the invoice total
+        the customer owes — VAT included, discount deducted. Filtered, it is the value
+        of that product's lines, before VAT and before any invoice-level discount,
+        because a discount belongs to an invoice and cannot be attributed to one line
+        of it. The filtered figure therefore matches the product RFM report's basis,
+        not the unfiltered one here. Both are honest answers to different questions;
+        they are simply not the same number.
+        """
         today = date.today()
         window_start = today - timedelta(days=WINDOW_DAYS)
+
+        # Aggregate per customer first, then hang the result off Customer with an outer
+        # join. Filtering inside a subquery keeps the window and product conditions on
+        # an inner join, where a row that fails them is genuinely gone — attaching them
+        # to an outer join instead lets non-qualifying rows survive with NULLs and go
+        # on contributing to the sums, which is exactly the bug fixed in product_rfm
+        # below.
+        if product_id is None:
+            frequency = func.count(SalesInvoice.id)
+            money = func.coalesce(func.sum(SalesInvoice.total), 0)
+        else:
+            # FEFO can split one product across several lines of the same invoice, so
+            # the invoice counts once however many batches it was drawn from.
+            frequency = func.count(func.distinct(SalesInvoice.id))
+            money = func.coalesce(func.sum(SalesInvoiceLine.line_total), 0)
+
+        sales = select(
+            SalesInvoice.customer_id.label("customer_id"),
+            func.max(SalesInvoice.invoice_date).label("last_date"),
+            frequency.label("frequency"),
+            money.label("money"),
+        ).where(SalesInvoice.invoice_date >= window_start)
+        if product_id is not None:
+            # The join is what drops invoices that never contained this product, so
+            # recency and frequency narrow with the money rather than lagging behind it.
+            sales = sales.join(
+                SalesInvoiceLine,
+                (SalesInvoiceLine.invoice_id == SalesInvoice.id)
+                & (SalesInvoiceLine.product_id == product_id),
+            )
+        sales = sales.group_by(SalesInvoice.customer_id).subquery()
 
         result = await self.session.execute(
             select(
                 Customer.id,
                 Customer.name,
                 User.full_name,
-                func.max(SalesInvoice.invoice_date),
-                func.count(SalesInvoice.id),
-                func.coalesce(func.sum(SalesInvoice.total), 0),
+                sales.c.last_date,
+                func.coalesce(sales.c.frequency, 0),
+                func.coalesce(sales.c.money, 0),
             )
             .outerjoin(User, Customer.salesman_id == User.id)
-            .outerjoin(
-                SalesInvoice,
-                (SalesInvoice.customer_id == Customer.id)
-                & (SalesInvoice.invoice_date >= window_start),
-            )
-            .group_by(Customer.id, Customer.name, User.full_name)
+            .outerjoin(sales, sales.c.customer_id == Customer.id)
         )
         rows = result.all()
 
-        returns_result = await self.session.execute(
-            select(
+        # Returns come off on the same basis as the sales they reverse, or the filter
+        # would credit back a whole invoice's worth against one product's revenue.
+        if product_id is None:
+            returns_stmt = select(
                 SalesReturn.customer_id, func.coalesce(func.sum(SalesReturn.total), 0)
             )
-            .where(SalesReturn.created_at >= window_start)
-            .group_by(SalesReturn.customer_id)
+        else:
+            returns_stmt = select(
+                SalesReturn.customer_id,
+                func.coalesce(func.sum(SalesReturnLine.line_total), 0),
+            ).join(SalesReturnLine, SalesReturnLine.return_id == SalesReturn.id).where(
+                SalesReturnLine.product_id == product_id
+            )
+        returns_result = await self.session.execute(
+            returns_stmt.where(
+                SalesReturn.created_at >= window_start, posted()
+            ).group_by(SalesReturn.customer_id)
         )
         returns_by_customer = {cid: _d(t) for cid, t in returns_result.all()}
 
@@ -154,40 +230,78 @@ class AnalyticsService:
         return "خامل (Lost)"
 
     # --- Product RFM ---
-    async def product_rfm(self) -> list[ProductRFMOut]:
+    async def product_rfm(self, customer_id: int | None = None) -> list[ProductRFMOut]:
+        """The same RFM treatment applied to products rather than customers.
+
+        Surfaces the fast movers worth keeping deep and the dead stock tying up
+        cash and shelf life — the two that matter most in food distribution.
+
+        `customer_id` narrows the sales side to one customer: what they buy, how
+        recently, how much, and at what margin. Products they have never bought stay
+        in the list scored zero, which is the cross-sell list for that customer.
+
+        Stock on hand and nearest expiry stay company-wide, because they are facts
+        about the warehouse rather than about the customer — the shelf does not change
+        depending on who you are looking at.
+
+        **Fixed here:** the join let pre-window sales into the frequency and the money
+        while the recency correctly ignored them. An outer join keeps its left rows, so
+        a line whose invoice fell outside the window survived with a NULL invoice and
+        its `line_total` was still summed. Product 47 in the dev database read
+        "لم يُباع بعد" — no recency at all — while carrying 802.50 and a frequency of 1,
+        its only sale being older than the window. Restricting the *line* join to
+        in-scope invoices means a line that does not qualify never arrives, so all
+        three scores now cover the same period the docstring claims.
+        """
         today = date.today()
         window_start = today - timedelta(days=WINDOW_DAYS)
 
+        sales = (
+            select(
+                SalesInvoiceLine.product_id.label("product_id"),
+                func.max(SalesInvoice.invoice_date).label("last_date"),
+                func.count(SalesInvoiceLine.id).label("frequency"),
+                func.coalesce(func.sum(SalesInvoiceLine.line_total), 0).label("revenue"),
+                func.coalesce(
+                    func.sum(SalesInvoiceLine.quantity * SalesInvoiceLine.unit_cost), 0
+                ).label("cost"),
+            )
+            # Inner join: a line whose invoice falls outside the window is dropped
+            # here, rather than surviving with a NULL invoice and still being summed.
+            .join(SalesInvoice, SalesInvoice.id == SalesInvoiceLine.invoice_id)
+            .where(SalesInvoice.invoice_date >= window_start)
+        )
+        if customer_id is not None:
+            sales = sales.where(SalesInvoice.customer_id == customer_id)
+        sales = sales.group_by(SalesInvoiceLine.product_id).subquery()
+
         result = await self.session.execute(
+            # Outer join so products with no sales in scope stay in the list at zero —
+            # dead stock unfiltered, and the cross-sell list when a customer is chosen.
             select(
                 Product.id,
                 Product.name,
                 Product.sku,
-                func.max(SalesInvoice.invoice_date),
-                func.count(SalesInvoiceLine.id),
-                func.coalesce(func.sum(SalesInvoiceLine.line_total), 0),
-                func.coalesce(
-                    func.sum(SalesInvoiceLine.quantity * SalesInvoiceLine.unit_cost), 0
-                ),
-            )
-            .outerjoin(SalesInvoiceLine, SalesInvoiceLine.product_id == Product.id)
-            .outerjoin(
-                SalesInvoice,
-                (SalesInvoice.id == SalesInvoiceLine.invoice_id)
-                & (SalesInvoice.invoice_date >= window_start),
-            )
-            .group_by(Product.id, Product.name, Product.sku)
+                sales.c.last_date,
+                func.coalesce(sales.c.frequency, 0),
+                func.coalesce(sales.c.revenue, 0),
+                func.coalesce(sales.c.cost, 0),
+            ).outerjoin(sales, sales.c.product_id == Product.id)
         )
         rows = result.all()
 
-        returns_result = await self.session.execute(
+        returns_stmt = (
             select(
                 SalesReturnLine.product_id,
                 func.coalesce(func.sum(SalesReturnLine.line_total), 0),
             )
             .join(SalesReturn, SalesReturnLine.return_id == SalesReturn.id)
-            .where(SalesReturn.created_at >= window_start)
-            .group_by(SalesReturnLine.product_id)
+            .where(SalesReturn.created_at >= window_start, posted())
+        )
+        if customer_id is not None:
+            returns_stmt = returns_stmt.where(SalesReturn.customer_id == customer_id)
+        returns_result = await self.session.execute(
+            returns_stmt.group_by(SalesReturnLine.product_id)
         )
         returns_by_product = {pid: _d(t) for pid, t in returns_result.all()}
 
@@ -270,6 +384,12 @@ class AnalyticsService:
 
     # --- Sales performance ---
     async def sales_trend(self) -> list[SalesTrendPointOut]:
+        """Monthly revenue, cost and margin over the rolling window.
+
+        Splits cash from credit so the shape of the business is visible, not just
+        its size: growing revenue funded entirely by credit is a different story
+        from the same revenue collected at the door.
+        """
         today = date.today()
         window_start = today - timedelta(days=WINDOW_DAYS)
 
@@ -337,6 +457,7 @@ class AnalyticsService:
         return points
 
     async def revenue_by_warehouse(self) -> list[WarehouseRevenueOut]:
+        """Revenue attributed to each warehouse over the window, biggest first."""
         today = date.today()
         window_start = today - timedelta(days=WINDOW_DAYS)
         result = await self.session.execute(
@@ -360,6 +481,11 @@ class AnalyticsService:
         ]
 
     async def revenue_by_price_tier(self) -> list[PriceTierRevenueOut]:
+        """Revenue split across wholesale, half-wholesale and retail pricing.
+
+        Shows which tier actually carries the business, which is rarely the one
+        people assume.
+        """
         today = date.today()
         window_start = today - timedelta(days=WINDOW_DAYS)
         result = await self.session.execute(
@@ -382,6 +508,12 @@ class AnalyticsService:
         ]
 
     async def returns_trend(self) -> list[ReturnsTrendPointOut]:
+        """Monthly returns against sales, as a value and as a percentage.
+
+        A rising return rate in food distribution usually means an expiry or
+        handling problem upstream, so it is tracked as a ratio rather than a
+        raw figure that simply grows with volume.
+        """
         today = date.today()
         window_start = today - timedelta(days=WINDOW_DAYS)
 
@@ -396,7 +528,7 @@ class AnalyticsService:
 
         returns_result = await self.session.execute(
             select(SalesReturn.created_at, SalesReturn.total, SalesReturn.reason).where(
-                SalesReturn.created_at >= window_start
+                SalesReturn.created_at >= window_start, posted()
             )
         )
         returns_by_month: dict[str, dict] = defaultdict(
@@ -441,6 +573,11 @@ class AnalyticsService:
 
     # --- Inventory & waste ---
     async def expiry_risk(self, days: int = 30) -> list[ExpiryRiskOut]:
+        """Batches expiring within `days`, valued at cost — the money at risk.
+
+        Quantity alone understates the problem: a thousand cheap units matter
+        less than a hundred expensive ones about to be written off.
+        """
         today = date.today()
         threshold = today + timedelta(days=days)
         result = await self.session.execute(
@@ -468,6 +605,12 @@ class AnalyticsService:
         return out
 
     async def turnover(self) -> list[TurnoverOut]:
+        """How many times each product's stock turned over the window.
+
+        Low turnover on perishable goods is the early warning that stock will
+        expire before it sells; it flags dead stock long before the expiry report
+        does.
+        """
         today = date.today()
         window_start = today - timedelta(days=WINDOW_DAYS)
 
@@ -519,6 +662,11 @@ class AnalyticsService:
 
     # --- Financial / credit ---
     async def ar_aging(self) -> list[ARAgingRowOut]:
+        """Outstanding customer balances bucketed by how overdue they are.
+
+        The classic current / 30 / 60 / 90+ ladder: the further right the money
+        sits, the less likely it is to arrive.
+        """
         today = date.today()
         result = await self.session.execute(
             select(Customer).where(Customer.credit_limit > 0)
@@ -576,6 +724,11 @@ class AnalyticsService:
         return sorted(out, key=lambda r: r.total_outstanding, reverse=True)
 
     async def credit_risk(self) -> list[CreditRiskCustomerOut]:
+        """Customers ranked by how much of their credit limit is used up.
+
+        Combines the balance with their RFM recency, because a customer near
+        their limit who has also stopped buying is the one to worry about.
+        """
         rfm = {r.customer_id: r for r in await self.customer_rfm()}
         result = await self.session.execute(
             select(Customer).where(Customer.credit_limit > 0)
@@ -603,6 +756,7 @@ class AnalyticsService:
 
     # --- Delivery & fulfillment ---
     async def fulfillment_summary(self) -> list[FulfillmentSummaryOut]:
+        """Delivery versus warehouse pickup: volume and completion rate of each."""
         result = await self.session.execute(
             select(
                 SalesInvoice.id,
@@ -643,6 +797,7 @@ class AnalyticsService:
         ]
 
     async def driver_performance(self) -> list[DriverPerformanceOut]:
+        """Per-driver stop counts and delivery success rate across their trips."""
         result = await self.session.execute(
             select(DeliveryTrip.driver_name, DeliveryStop.status, DeliveryTrip.id).join(
                 DeliveryStop, DeliveryStop.trip_id == DeliveryTrip.id
@@ -675,6 +830,11 @@ class AnalyticsService:
 
     # --- Sales rep performance ---
     async def rep_performance(self) -> list[RepPerformanceOut]:
+        """Per-salesman revenue, invoice count, returns and customer reach.
+
+        The counts come from distinct invoices rather than lines, so an invoice
+        with ten items is one sale, not ten.
+        """
         today = date.today()
         window_start = today - timedelta(days=WINDOW_DAYS)
 
@@ -697,7 +857,7 @@ class AnalyticsService:
             select(User.id, func.coalesce(func.sum(SalesReturn.total), 0))
             .join(Customer, Customer.salesman_id == User.id)
             .join(SalesReturn, SalesReturn.customer_id == Customer.id)
-            .where(SalesReturn.created_at >= window_start)
+            .where(SalesReturn.created_at >= window_start, posted())
             .group_by(User.id)
         )
         returns_by_rep = {uid: _d(t) for uid, t in returns_result.all()}
@@ -727,6 +887,11 @@ class AnalyticsService:
 
     # --- Top-level KPIs ---
     async def dashboard_summary(self) -> DashboardSummaryOut:
+        """The headline figures for the analytics landing page.
+
+        Deliberately a single call: the page shows these together, and issuing one
+        query per tile would make the first paint wait on all of them.
+        """
         today = date.today()
         window_start = today - timedelta(days=WINDOW_DAYS)
 
@@ -757,7 +922,7 @@ class AnalyticsService:
 
         returns_result = await self.session.execute(
             select(func.coalesce(func.sum(SalesReturn.total), 0)).where(
-                SalesReturn.created_at >= window_start
+                SalesReturn.created_at >= window_start, posted()
             )
         )
         total_returns = _d(returns_result.scalar_one())
@@ -788,7 +953,9 @@ class AnalyticsService:
         all_returned = _d(
             (
                 await self.session.execute(
-                    select(func.coalesce(func.sum(SalesReturn.total), 0))
+                    select(func.coalesce(func.sum(SalesReturn.total), 0)).where(
+                        posted()
+                    )
                 )
             ).scalar_one()
         )
@@ -819,4 +986,181 @@ class AnalyticsService:
             waste_risk_value_30d=waste_value.quantize(TWO_PLACES),
             avg_order_value=avg_order,
             return_rate_pct_12m=_pct(total_returns, total_revenue),
+        )
+
+    async def damage_report(
+        self, date_from: date | None = None, date_to: date | None = None
+    ) -> DamageReportOut:
+        """Written-off stock over a period, broken down by reason and by product.
+
+        Cancelled write-offs are excluded: their goods went back to stock, so
+        counting them would overstate the loss.
+        """
+        stmt = (
+            select(StockAdjustment, StockAdjustmentLine, Product)
+            .join(StockAdjustmentLine, StockAdjustmentLine.adjustment_id == StockAdjustment.id)
+            .join(Product, Product.id == StockAdjustmentLine.product_id)
+            .where(StockAdjustment.status != AdjustmentStatus.CANCELLED)
+        )
+        if date_from is not None:
+            stmt = stmt.where(func.date(StockAdjustment.created_at) >= date_from)
+        if date_to is not None:
+            stmt = stmt.where(func.date(StockAdjustment.created_at) <= date_to)
+        rows = (await self.session.execute(stmt)).all()
+
+        adjustment_ids: set[int] = set()
+        total_quantity = Decimal("0")
+        total_cost = Decimal("0")
+        by_reason: dict[str, dict] = defaultdict(
+            lambda: {"ids": set(), "quantity": Decimal("0"), "cost": Decimal("0")}
+        )
+        by_product: dict[int, dict] = {}
+
+        for adjustment, line, product in rows:
+            adjustment_ids.add(adjustment.id)
+            total_quantity += line.quantity
+            total_cost += line.line_total
+
+            reason = adjustment.reason.value
+            by_reason[reason]["ids"].add(adjustment.id)
+            by_reason[reason]["quantity"] += line.quantity
+            by_reason[reason]["cost"] += line.line_total
+
+            entry = by_product.setdefault(
+                product.id,
+                {
+                    "name": product.name,
+                    "unit": product.base_unit_name,
+                    "quantity": Decimal("0"),
+                    "cost": Decimal("0"),
+                },
+            )
+            entry["quantity"] += line.quantity
+            entry["cost"] += line.line_total
+
+        return DamageReportOut(
+            date_from=date_from,
+            date_to=date_to,
+            adjustment_count=len(adjustment_ids),
+            total_quantity=total_quantity,
+            total_cost=total_cost.quantize(TWO_PLACES),
+            by_reason=[
+                DamageByReasonOut(
+                    reason=reason,
+                    adjustment_count=len(data["ids"]),
+                    total_quantity=data["quantity"],
+                    total_cost=data["cost"].quantize(TWO_PLACES),
+                )
+                for reason, data in sorted(
+                    by_reason.items(), key=lambda kv: kv[1]["cost"], reverse=True
+                )
+            ],
+            by_product=[
+                DamageByProductOut(
+                    product_id=pid,
+                    product_name=data["name"],
+                    base_unit_name=data["unit"],
+                    total_quantity=data["quantity"],
+                    total_cost=data["cost"].quantize(TWO_PLACES),
+                )
+                for pid, data in sorted(
+                    by_product.items(), key=lambda kv: kv[1]["cost"], reverse=True
+                )
+            ],
+        )
+
+    async def discount_report(
+        self, date_from: date | None = None, date_to: date | None = None
+    ) -> DiscountReportOut:
+        """Discounts granted on invoices over a period, by customer and salesman.
+
+        Only invoices whose collectable amount was adjusted down appear here, so
+        the list is exactly the set of concessions given.
+        """
+        stmt = (
+            select(SalesInvoice, Customer.name, User.full_name)
+            .join(Customer, Customer.id == SalesInvoice.customer_id)
+            .outerjoin(User, User.id == SalesInvoice.salesman_id)
+            .where(SalesInvoice.discount_amount > 0)
+            .order_by(SalesInvoice.invoice_date.desc(), SalesInvoice.id.desc())
+        )
+        if date_from is not None:
+            stmt = stmt.where(SalesInvoice.invoice_date >= date_from)
+        if date_to is not None:
+            stmt = stmt.where(SalesInvoice.invoice_date <= date_to)
+        rows = (await self.session.execute(stmt)).all()
+
+        total_discount = Decimal("0")
+        total_gross = Decimal("0")
+        total_net = Decimal("0")
+        by_customer: dict[int, dict] = {}
+        by_salesman: dict[int | None, dict] = {}
+        invoices: list[DiscountInvoiceOut] = []
+
+        for invoice, customer_name, salesman_name in rows:
+            gross = invoice.subtotal + invoice.vat_amount
+            total_discount += invoice.discount_amount
+            total_gross += gross
+            total_net += invoice.total
+
+            customer = by_customer.setdefault(
+                invoice.customer_id,
+                {"name": customer_name, "count": 0, "discount": Decimal("0")},
+            )
+            customer["count"] += 1
+            customer["discount"] += invoice.discount_amount
+
+            salesman = by_salesman.setdefault(
+                invoice.salesman_id,
+                {
+                    "name": salesman_name or "بدون مندوب",
+                    "count": 0,
+                    "discount": Decimal("0"),
+                },
+            )
+            salesman["count"] += 1
+            salesman["discount"] += invoice.discount_amount
+
+            invoices.append(
+                DiscountInvoiceOut(
+                    invoice_id=invoice.id,
+                    invoice_date=invoice.invoice_date,
+                    customer_name=customer_name,
+                    salesman_name=salesman_name,
+                    gross_amount=gross.quantize(TWO_PLACES),
+                    discount_amount=invoice.discount_amount,
+                    total=invoice.total,
+                )
+            )
+
+        return DiscountReportOut(
+            date_from=date_from,
+            date_to=date_to,
+            invoice_count=len(invoices),
+            total_discount=total_discount.quantize(TWO_PLACES),
+            total_gross=total_gross.quantize(TWO_PLACES),
+            total_net=total_net.quantize(TWO_PLACES),
+            by_customer=[
+                DiscountByCustomerOut(
+                    customer_id=cid,
+                    customer_name=data["name"],
+                    invoice_count=data["count"],
+                    discount_amount=data["discount"].quantize(TWO_PLACES),
+                )
+                for cid, data in sorted(
+                    by_customer.items(), key=lambda kv: kv[1]["discount"], reverse=True
+                )
+            ],
+            by_salesman=[
+                DiscountBySalesmanOut(
+                    salesman_id=sid,
+                    salesman_name=data["name"],
+                    invoice_count=data["count"],
+                    discount_amount=data["discount"].quantize(TWO_PLACES),
+                )
+                for sid, data in sorted(
+                    by_salesman.items(), key=lambda kv: kv[1]["discount"], reverse=True
+                )
+            ],
+            invoices=invoices,
         )

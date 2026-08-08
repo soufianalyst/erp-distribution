@@ -1,3 +1,6 @@
+// Small data-loading hook: runs a request, exposes { data, loading, error,
+// reload }, and re-runs when its dependencies change. Deliberately minimal — the
+// app has no need for a caching layer at this size.
 import { useCallback, useEffect, useState } from "react";
 import { apiMessage } from "../services/api";
 

@@ -1,0 +1,10 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="512" height="512">
+  <rect width="512" height="512" rx="96" fill="#047857" />
+  <!-- A delivery van: what the field app is for. -->
+  <g fill="none" stroke="#ffffff" stroke-width="26" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M96 176h180v144H96z" />
+    <path d="M276 224h68l72 60v36h-140z" />
+    <circle cx="168" cy="352" r="34" fill="#047857" />
+    <circle cx="360" cy="352" r="34" fill="#047857" />
+  </g>
+</svg>

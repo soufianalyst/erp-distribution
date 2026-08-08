@@ -11,7 +11,7 @@ from app.core.security import (
     create_refresh_token,
     decode_token,
     hash_password,
-    verify_password,
+    verify_password_or_dummy,
 )
 from app.domain.models.user import User
 
@@ -34,15 +34,25 @@ class AuthService:
         )
 
     async def authenticate(self, username: str, password: str) -> TokenPair:
+        """Sign a user in, returning an access/refresh pair.
+
+    A wrong username and a wrong password fail identically, in the same time, so
+    the response cannot be used to enumerate accounts.
+    """
         user = await self._get_by_username(username)
-        # Same message for unknown user and wrong password to avoid username enumeration.
-        if user is None or not verify_password(password, user.hashed_password):
+        # Same message AND same bcrypt cost for an unknown user as for a wrong
+        # password, to avoid username enumeration via response content or timing.
+        if not verify_password_or_dummy(
+            password, user.hashed_password if user else None
+        ):
             raise AppException(401, "اسم المستخدم أو كلمة المرور غير صحيحة.")
+        assert user is not None
         if not user.is_active:
             raise AppException(403, "هذا الحساب معطل، يرجى مراجعة مدير النظام.")
         return self._issue_tokens(user)
 
     async def refresh_tokens(self, refresh_token: str) -> TokenPair:
+        """Exchange a valid refresh token for a fresh pair, re-checking the account."""
         payload = decode_token(refresh_token, expected_type="refresh")
         user = await self.session.get(User, int(payload["sub"]))
         if user is None or not user.is_active:
@@ -50,6 +60,7 @@ class AuthService:
         return self._issue_tokens(user)
 
     async def create_user(self, data: UserCreate) -> User:
+        """Create a user account with a hashed password; usernames are unique."""
         if await self._get_by_username(data.username) is not None:
             raise AppException(409, "اسم المستخدم مستخدم من قبل، يرجى اختيار اسم آخر.")
         user = User(
@@ -57,6 +68,7 @@ class AuthService:
             full_name=data.full_name,
             hashed_password=hash_password(data.password),
             role=data.role,
+            commission_rate=data.commission_rate,
         )
         self.session.add(user)
         await self.session.commit()
@@ -64,6 +76,7 @@ class AuthService:
         return user
 
     async def update_user(self, user_id: int, data: UserUpdate) -> User:
+        """Amend a user: details, role, explicit permissions, or disable them."""
         user = await self.session.get(User, user_id)
         if user is None:
             raise AppException(404, "المستخدم غير موجود.")
@@ -73,6 +86,8 @@ class AuthService:
             user.hashed_password = hash_password(data.password)
         if data.role is not None:
             user.role = data.role
+        if data.commission_rate is not None:
+            user.commission_rate = data.commission_rate
         if data.is_active is not None:
             user.is_active = data.is_active
         if data.reset_permissions:
@@ -90,5 +105,6 @@ class AuthService:
         return user
 
     async def list_users(self) -> list[User]:
+        """All user accounts, in creation order."""
         result = await self.session.execute(select(User).order_by(User.id))
         return list(result.scalars().all())

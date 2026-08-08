@@ -1,6 +1,7 @@
 """Pydantic schemas (DTOs) for the authentication module."""
 
 from datetime import datetime
+from decimal import Decimal
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -28,6 +29,8 @@ class UserOut(BaseModel):
     permissions: list[str] | None
     # Permissions actually in force, resolved from the role or the overrides.
     effective_permissions: list[str]
+    # Percentage of net sales paid as commission; only meaningful for salesmen.
+    commission_rate: Decimal
     is_active: bool
     created_at: datetime
 
@@ -44,12 +47,14 @@ class UserCreate(BaseModel):
     full_name: str = Field(min_length=3, max_length=100)
     password: str = Field(min_length=8, max_length=72)
     role: UserRole = UserRole.SALES
+    commission_rate: Decimal = Field(default=Decimal("0"), ge=0, le=100)
 
 
 class UserUpdate(BaseModel):
     full_name: str | None = Field(default=None, min_length=3, max_length=100)
     password: str | None = Field(default=None, min_length=8, max_length=72)
     role: UserRole | None = None
+    commission_rate: Decimal | None = Field(default=None, ge=0, le=100)
     is_active: bool | None = None
     # Custom permission set replacing the role defaults (omit to leave unchanged).
     permissions: list[str] | None = None

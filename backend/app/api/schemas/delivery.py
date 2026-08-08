@@ -57,7 +57,6 @@ class PickingLineOut(BaseModel):
     product_name: str
     base_unit_name: str
     batch_number: str
-    warehouse_id: int
     quantity: Decimal
 
 
@@ -80,6 +79,7 @@ class DeliveryInvoiceSummary(BaseModel):
     id: int
     invoice_date: date
     customer_name: str
+    # NULL when the invoice's items come from more than one warehouse.
     warehouse_id: int | None
     fulfillment: FulfillmentType
     payment_method: SalesPaymentMethod
@@ -92,6 +92,8 @@ class PrepLineOut(BaseModel):
     batch_number: str
     quantity: Decimal
     unit: str
+    # Which warehouse to pick this line from — lines are grouped by this for printing.
+    warehouse_id: int | None
 
 
 class InvoicePrepOut(BaseModel):

@@ -13,11 +13,13 @@ TokenType = Literal["access", "refresh"]
 
 
 def hash_password(plain_password: str) -> str:
+    """Hash a password with bcrypt and a fresh per-password salt."""
     hashed: bytes = bcrypt.hashpw(plain_password.encode("utf-8"), bcrypt.gensalt())
     return hashed.decode("utf-8")
 
 
 def verify_password(plain_password: str, hashed_password: str) -> bool:
+    """Check a password against its hash, returning False on any malformed hash."""
     try:
         return bcrypt.checkpw(
             plain_password.encode("utf-8"), hashed_password.encode("utf-8")
@@ -25,6 +27,21 @@ def verify_password(plain_password: str, hashed_password: str) -> bool:
     except ValueError:
         # Malformed stored hash — treat as authentication failure, never crash.
         return False
+
+
+# A fixed bcrypt hash with no matching plaintext. Used so a login attempt for a
+# nonexistent username still pays the same bcrypt cost as a real one, closing a
+# timing side-channel that could otherwise reveal whether a username exists.
+_DUMMY_HASH = hash_password("no-such-user-timing-safety-placeholder")
+
+
+def verify_password_or_dummy(plain_password: str, hashed_password: str | None) -> bool:
+    """Verify against a real hash, or a dummy one when the user does not exist.
+
+    Always spending the same bcrypt cost keeps login timing from revealing which
+    usernames are registered.
+    """
+    return verify_password(plain_password, hashed_password or _DUMMY_HASH)
 
 
 def _create_token(
@@ -43,6 +60,7 @@ def _create_token(
 
 
 def create_access_token(subject: str, role: str) -> str:
+    """Mint a short-lived access token carrying the user id and role."""
     settings = get_settings()
     return _create_token(
         subject, role, "access", timedelta(minutes=settings.ACCESS_TOKEN_EXPIRE_MINUTES)
@@ -50,6 +68,7 @@ def create_access_token(subject: str, role: str) -> str:
 
 
 def create_refresh_token(subject: str, role: str) -> str:
+    """Mint a longer-lived refresh token used to obtain new access tokens."""
     settings = get_settings()
     return _create_token(
         subject, role, "refresh", timedelta(days=settings.REFRESH_TOKEN_EXPIRE_DAYS)

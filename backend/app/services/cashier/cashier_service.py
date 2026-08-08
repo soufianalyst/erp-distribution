@@ -1,23 +1,39 @@
-"""Cashier business logic: unified pending queue, polymorphic payments, daily summary."""
+"""Cashier business logic: the till handles money IN (sales collections) and
+money OUT (purchase invoice and expense disbursements).
 
-from datetime import date
+Business rule: credit sales/purchases settle later through the customer's or
+supplier's account and never appear here. Cash/card documents sit here — price
+visible — until the cashier actually moves the money. A document may be settled
+in installments (partial payments); it only releases (sales: to delivery/pickup)
+once the full amount has moved.
+"""
+
+from datetime import date, datetime, timezone
 from decimal import Decimal
 
-from sqlalchemy import func, select, union_all
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
+from app.api.schemas.cashier import (
+    CashierDailySummaryOut,
+    PendingPayableOut,
+)
+from app.core import business_day
 from app.core.exceptions import AppException
-from app.domain.models.accounting import JournalEntry
-from app.domain.models.expenses import Expense, ExpensePaymentMethod
-from app.domain.models.purchases import PurchaseInvoice, PurchasePaymentMethod
+from app.domain.models.cashier import CashMovement
+from app.domain.models.expenses import Expense, ExpenseCategory
+from app.domain.models.purchases import PurchaseInvoice, PurchasePaymentMethod, Supplier
 from app.domain.models.sales import (
-    CashierPayment,
-    InvoiceTaxLine,
+    CreditResolution,
+    Customer,
+    CustomerCredit,
     SalesInvoice,
     SalesPaymentMethod,
-    SalesReturn,
 )
+from app.domain.models.user import User
+from app.services.sales.returns_query import returned_totals
+from app.services.settings.settings_service import SettingsService
 from app.services.accounting.accounting_service import (
     ACCOUNTS_PAYABLE,
     ACCOUNTS_RECEIVABLE,
@@ -25,364 +41,464 @@ from app.services.accounting.accounting_service import (
     cash_or_bank,
 )
 
+TWO_PLACES = Decimal("0.01")
+
 
 class CashierService:
     def __init__(self, session: AsyncSession) -> None:
         self.session = session
         self.accounting = AccountingService(session)
 
-    # ------------------------------------------------------------------
-    # Pending lists
-    # ------------------------------------------------------------------
-
-    async def list_pending_receivables(self) -> list[dict]:
-        """Cash sales invoices awaiting collection — company receivables (ذمم العملاء).
-        
-        Only cash/card invoices appear here. Credit (آجل) invoices bypass the cashier
-        and go directly to accounts receivable.
-        """
+    # --- Sales collections (money IN) ---
+    async def _get_invoice(self, invoice_id: int) -> SalesInvoice:
         result = await self.session.execute(
             select(SalesInvoice)
             .options(
-                selectinload(SalesInvoice.lines),
-                selectinload(SalesInvoice.customer),
-                selectinload(SalesInvoice.tax_lines).selectinload(
-                    InvoiceTaxLine.tax_type
-                ),
-            )
-            .where(
-                SalesInvoice.payment_method == SalesPaymentMethod.CASH,
-                SalesInvoice.paid_amount < SalesInvoice.total,
-            )
-            .order_by(SalesInvoice.id.desc())
-        )
-        invoices = result.scalars().all()
-        return [
-            {
-                "type": "sales",
-                "type_label": "مبيعات",
-                "account_label": "ذمم العملاء",
-                "id": inv.id,
-                "date": inv.invoice_date.isoformat(),
-                "party_name": inv.customer.name if inv.customer else "",
-                "payment_method": inv.payment_method.value,
-                "total": inv.total,
-                "paid_amount": inv.paid_amount,
-                "remaining": inv.total - inv.paid_amount,
-            }
-            for inv in invoices
-        ]
-
-    async def list_pending_payables(self) -> list[dict]:
-        """Purchase invoices + expenses awaiting payment — company payables (ذمم الموردين + المصروفات)."""
-        purchases_result = await self.session.execute(
-            select(PurchaseInvoice)
-            .options(selectinload(PurchaseInvoice.supplier))
-            .where(
-                PurchaseInvoice.payment_method == PurchasePaymentMethod.CASH,
-                PurchaseInvoice.paid_amount < PurchaseInvoice.total,
-            )
-            .order_by(PurchaseInvoice.id.desc())
-        )
-        purchases = [
-            {
-                "type": "purchase",
-                "type_label": "مشتريات",
-                "account_label": "ذمم الموردين",
-                "id": inv.id,
-                "date": inv.invoice_date.isoformat(),
-                "party_name": inv.supplier.name if inv.supplier else "",
-                "payment_method": inv.payment_method.value,
-                "total": inv.total,
-                "paid_amount": inv.paid_amount,
-                "remaining": inv.total - inv.paid_amount,
-            }
-            for inv in purchases_result.scalars().all()
-        ]
-
-        expenses_result = await self.session.execute(
-            select(Expense).where(
-                Expense.payment_method == ExpensePaymentMethod.CASH,
-                Expense.paid_amount < Expense.amount,
-            )
-            .order_by(Expense.id.desc())
-        )
-        expenses = [
-            {
-                "type": "expense",
-                "type_label": "مصاريف",
-                "account_label": "ذمم الموردين",
-                "id": exp.id,
-                "date": exp.expense_date.isoformat(),
-                "party_name": exp.payee_name,
-                "payment_method": exp.payment_method.value,
-                "total": exp.amount,
-                "paid_amount": exp.paid_amount,
-                "remaining": exp.amount - exp.paid_amount,
-            }
-            for exp in expenses_result.scalars().all()
-        ]
-
-        combined = purchases + expenses
-        combined.sort(key=lambda x: (x["date"], x["id"]), reverse=True)
-        return combined
-
-    # ------------------------------------------------------------------
-    # Receive payment (polymorphic)
-    # ------------------------------------------------------------------
-
-    async def receive_payment(
-        self,
-        reference_type: str,
-        reference_id: int,
-        amount: Decimal,
-        user_id: int | None = None,
-    ) -> dict:
-        """Record a partial or full payment against any pending source.
-
-        Returns a summary dict with updated paid_amount and total.
-        """
-        if reference_type == "sales":
-            return await self._pay_sales_invoice(reference_id, amount, user_id)
-        elif reference_type == "purchase":
-            return await self._pay_purchase_invoice(reference_id, amount, user_id)
-        elif reference_type == "expense":
-            return await self._pay_expense(reference_id, amount, user_id)
-        else:
-            raise AppException(400, "نوع المصدر غير صحيح.")
-
-    async def _pay_sales_invoice(
-        self, invoice_id: int, amount: Decimal, user_id: int | None
-    ) -> dict:
-        result = await self.session.execute(
-            select(SalesInvoice)
-            .options(
-                selectinload(SalesInvoice.lines),
-                selectinload(SalesInvoice.customer),
-                selectinload(SalesInvoice.tax_lines).selectinload(
-                    InvoiceTaxLine.tax_type
-                ),
+                selectinload(SalesInvoice.lines), selectinload(SalesInvoice.taxes)
             )
             .where(SalesInvoice.id == invoice_id)
         )
         invoice = result.scalar_one_or_none()
         if invoice is None:
             raise AppException(404, "فاتورة المبيعات غير موجودة.")
-        if invoice.paid_amount >= invoice.total:
-            raise AppException(400, "الفاتورة مدفوعة بالفعل.")
+        return invoice
 
-        returns_result = await self.session.execute(
-            select(func.coalesce(func.sum(SalesReturn.total), 0)).where(
-                SalesReturn.invoice_id == invoice_id
-            )
+    async def returned_totals(self, invoice_ids: list[int]) -> dict[int, Decimal]:
+        """Credited back per invoice. Delegated — see services/sales/returns_query."""
+        return await returned_totals(self.session, invoice_ids)
+
+    async def net_due(self, invoice: SalesInvoice) -> Decimal:
+        """What the customer still owes on this invoice, after returns.
+
+            due = billed − credited back − already paid
+
+        This is the whole of the returns fix. An invoice for 100 with 30 returned
+        must ask the cashier for 70, and previously asked for 100: `remaining` was
+        `total - paid_amount` with no term for returns at all. The consequences were
+        not cosmetic — collecting the correct 70 never satisfied
+        `paid_amount >= total`, so the invoice was never confirmed, never left the
+        cashier's queue, and never became deliverable. The only way to close it was
+        to charge the customer 30 they did not owe, which is exactly how the
+        negative customer balances in the dev database were produced.
+
+        Deriving the figure rather than editing the invoice keeps the document, its
+        posted journal entries and the filed tax period all intact — and the
+        customer statement already nets returns, so reducing `invoice.total` would
+        have subtracted them twice.
+        """
+        returned = (await self.returned_totals([invoice.id])).get(
+            invoice.id, Decimal("0")
         )
-        returned_total = returns_result.scalar_one()
-        effective_total = invoice.total - Decimal(str(returned_total))
-        outstanding = effective_total - invoice.paid_amount
+        return (invoice.total - returned - invoice.paid_amount).quantize(TWO_PLACES)
 
-        if amount <= 0:
-            raise AppException(400, "مبلغ التحصيل يجب أن يكون أكبر من صفر.")
-        payment_amount = min(amount, outstanding)
-        invoice.paid_amount = invoice.paid_amount + payment_amount
+    async def list_pending_invoices(self) -> list[SalesInvoice]:
+        """Cash/card sales invoices awaiting (full) collection at the register.
+
+        Anything already settled net of returns is filtered out here as well as by
+        the confirmation flag, so an invoice returned in full stops being asked for
+        even if nobody ever collected a riyal against it.
+        """
+        result = await self.session.execute(
+            select(SalesInvoice)
+            .options(
+                selectinload(SalesInvoice.lines), selectinload(SalesInvoice.taxes)
+            )
+            .where(
+                SalesInvoice.payment_method.in_(
+                    [SalesPaymentMethod.CASH, SalesPaymentMethod.CARD]
+                ),
+                SalesInvoice.payment_confirmed_at.is_(None),
+            )
+            .order_by(SalesInvoice.id)
+        )
+        invoices = list(result.scalars().all())
+        returned = await self.returned_totals([i.id for i in invoices])
+        pending = []
+        for invoice in invoices:
+            credited = returned.get(invoice.id, Decimal("0"))
+            # Expose the net so the till shows what to actually take.
+            invoice.returned_total = credited
+            invoice.amount_due = (
+                invoice.total - credited - invoice.paid_amount
+            ).quantize(TWO_PLACES)
+            if invoice.amount_due > 0:
+                pending.append(invoice)
+        return pending
+
+    async def collect_payment(
+        self, invoice_id: int, amount: Decimal, user: User
+    ) -> SalesInvoice:
+        """Cashier action: record a cash/card collection (full or partial)."""
+        invoice = await self._get_invoice(invoice_id)
+        if invoice.payment_method == SalesPaymentMethod.CREDIT:
+            raise AppException(
+                400, "فواتير الحساب الآجل تُحصّل عبر الحسابات وليس الصندوق."
+            )
+        if invoice.payment_confirmed_at is not None:
+            raise AppException(400, "تم تحصيل قيمة هذه الفاتورة بالكامل من قبل.")
+
+        returned = (await self.returned_totals([invoice.id])).get(
+            invoice.id, Decimal("0")
+        )
+        net_billed = (invoice.total - returned).quantize(TWO_PLACES)
+        remaining = (net_billed - invoice.paid_amount).quantize(TWO_PLACES)
+        if remaining <= 0:
+            # Fully returned, or already settled net of returns. Nothing is owed, so
+            # asking for money would be wrong; the caller is told rather than
+            # silently accepted.
+            raise AppException(
+                400,
+                f"لا يوجد مبلغ مستحقّ على هذه الفاتورة "
+                f"(الإجمالي {invoice.total}، المرتجعات {returned}، "
+                f"المحصَّل {invoice.paid_amount}).",
+            )
+        if amount > remaining:
+            raise AppException(
+                400,
+                f"المبلغ المدخل ({amount}) أكبر من المتبقي على الفاتورة ({remaining})."
+                + (
+                    f" الإجمالي {invoice.total} ناقص مرتجعات {returned}."
+                    if returned > 0
+                    else ""
+                ),
+            )
+
+        customer = await self.session.get(Customer, invoice.customer_id)
+
+        invoice.paid_amount = invoice.paid_amount + amount
+        # Settled against what is actually owed, not what was originally billed.
+        fully_collected = invoice.paid_amount >= net_billed
+        if fully_collected:
+            invoice.payment_confirmed_at = datetime.now(timezone.utc)
+            invoice.payment_confirmed_by = user.id
 
         self.session.add(
-            CashierPayment(
-                reference_type="sales",
-                reference_id=invoice_id,
-                amount=payment_amount,
-                payment_method=invoice.payment_method.value,
-                received_by=user_id,
-                payment_date=date.today(),
+            CashMovement(
+                direction="in",
+                reference_type="sales_invoice",
+                reference_id=invoice.id,
+                party_id=invoice.customer_id,
+                amount=amount,
+                method=invoice.payment_method.value,
+                collected_by=user.id,
             )
         )
 
-        credit_account = cash_or_bank(invoice.payment_method.value)
         await self.accounting.add_entry_no_commit(
             entry_date=date.today(),
-            description=f"تحصيل دفعة فاتورة مبيعات رقم {invoice.id} من العميل ({invoice.customer.name})",
+            description=(
+                f"تحصيل صندوق {'(كامل)' if fully_collected else '(جزئي)'} "
+                f"لفاتورة مبيعات رقم {invoice.id} من العميل "
+                f"({customer.name if customer else invoice.customer_id})"
+            ),
             items=[
-                (credit_account, payment_amount, Decimal("0")),
-                (ACCOUNTS_RECEIVABLE, Decimal("0"), payment_amount),
+                (cash_or_bank(invoice.payment_method.value), amount, Decimal("0")),
+                (ACCOUNTS_RECEIVABLE, Decimal("0"), amount),
             ],
-            reference_type="cashier_payment",
+            reference_type="sales_invoice_payment",
             reference_id=invoice.id,
-            created_by=user_id,
+            created_by=user.id,
         )
 
         await self.session.commit()
-        return {
-            "total": invoice.total,
-            "paid_amount": invoice.paid_amount,
-            "remaining": invoice.total - invoice.paid_amount,
-        }
+        return await self._get_invoice(invoice.id)
 
-    async def _pay_purchase_invoice(
-        self, invoice_id: int, amount: Decimal, user_id: int | None
-    ) -> dict:
+    # --- Purchase invoices & expenses (money OUT) ---
+    async def _get_purchase_invoice(self, invoice_id: int) -> PurchaseInvoice:
         result = await self.session.execute(
             select(PurchaseInvoice)
-            .options(selectinload(PurchaseInvoice.supplier))
+            .options(
+                selectinload(PurchaseInvoice.lines),
+                selectinload(PurchaseInvoice.taxes),
+            )
             .where(PurchaseInvoice.id == invoice_id)
         )
         invoice = result.scalar_one_or_none()
         if invoice is None:
             raise AppException(404, "فاتورة الشراء غير موجودة.")
-        if invoice.payment_method != PurchasePaymentMethod.CASH:
-            raise AppException(400, "هذه الفاتورة آجلة ولا تمر عبر الصندوق.")
-        if invoice.paid_amount >= invoice.total:
-            raise AppException(400, "الفاتورة مدفوعة بالفعل.")
+        return invoice
 
-        outstanding = invoice.total - invoice.paid_amount
-        if amount <= 0:
-            raise AppException(400, "مبلغ التحصيل يجب أن يكون أكبر من صفر.")
-        payment_amount = min(amount, outstanding)
-        invoice.paid_amount = invoice.paid_amount + payment_amount
+    async def pay_purchase_invoice(
+        self, invoice_id: int, amount: Decimal, user: User
+    ) -> PurchaseInvoice:
+        """Cashier action: pay a supplier out of the register (full or partial)."""
+        invoice = await self._get_purchase_invoice(invoice_id)
+        if invoice.payment_method == PurchasePaymentMethod.CREDIT:
+            raise AppException(
+                400, "فواتير الشراء الآجلة تُسدد عبر كشف حساب المورد وليس الصندوق."
+            )
+        if invoice.payment_confirmed_at is not None:
+            raise AppException(400, "تم سداد قيمة هذه الفاتورة بالكامل من قبل.")
+
+        remaining = (invoice.total - invoice.paid_amount).quantize(TWO_PLACES)
+        if amount > remaining:
+            raise AppException(
+                400,
+                f"المبلغ المدخل ({amount}) أكبر من المتبقي على الفاتورة ({remaining}).",
+            )
+
+        supplier = await self.session.get(Supplier, invoice.supplier_id)
+
+        invoice.paid_amount = invoice.paid_amount + amount
+        fully_paid = invoice.paid_amount >= invoice.total
+        if fully_paid:
+            invoice.payment_confirmed_at = datetime.now(timezone.utc)
+            invoice.payment_confirmed_by = user.id
 
         self.session.add(
-            CashierPayment(
-                reference_type="purchase",
-                reference_id=invoice_id,
-                amount=payment_amount,
-                payment_method=invoice.payment_method.value,
-                received_by=user_id,
-                payment_date=date.today(),
+            CashMovement(
+                direction="out",
+                reference_type="purchase_invoice",
+                reference_id=invoice.id,
+                party_id=invoice.supplier_id,
+                amount=amount,
+                method=invoice.payment_method.value,
+                collected_by=user.id,
             )
         )
 
-        # Settlement: Cash/Bank DR, Accounts Payable CR (the payable was set at creation).
-        debit_account = cash_or_bank(invoice.payment_method.value)
         await self.accounting.add_entry_no_commit(
             entry_date=date.today(),
-            description=f"صرف دفعة فاتورة شراء رقم {invoice.id} للمورد ({invoice.supplier.name})",
+            description=(
+                f"سداد صندوق {'(كامل)' if fully_paid else '(جزئي)'} "
+                f"لفاتورة شراء رقم {invoice.id} للمورد "
+                f"({supplier.name if supplier else invoice.supplier_id})"
+            ),
             items=[
-                (ACCOUNTS_PAYABLE, payment_amount, Decimal("0")),
-                (debit_account, Decimal("0"), payment_amount),
+                (ACCOUNTS_PAYABLE, amount, Decimal("0")),
+                (cash_or_bank(invoice.payment_method.value), Decimal("0"), amount),
             ],
-            reference_type="cashier_payment",
+            reference_type="purchase_invoice_payment",
             reference_id=invoice.id,
-            created_by=user_id,
+            created_by=user.id,
         )
 
         await self.session.commit()
-        return {
-            "total": invoice.total,
-            "paid_amount": invoice.paid_amount,
-            "remaining": invoice.total - invoice.paid_amount,
-        }
+        return await self._get_purchase_invoice(invoice.id)
 
-    async def _pay_expense(
-        self, expense_id: int, amount: Decimal, user_id: int | None
-    ) -> dict:
-        result = await self.session.execute(
-            select(Expense).where(Expense.id == expense_id)
-        )
-        expense = result.scalar_one_or_none()
+    async def pay_expense(self, expense_id: int, amount: Decimal, user: User) -> Expense:
+        """Cashier action: disburse an expense out of the register (full or partial)."""
+        expense = await self.session.get(Expense, expense_id)
         if expense is None:
-            raise AppException(404, "سند المصروف غير موجود.")
-        if expense.payment_method != ExpensePaymentMethod.CASH:
-            raise AppException(400, "هذا المصروف آجل ولا يمر عبر الصندوق.")
-        if expense.paid_amount >= expense.amount:
-            raise AppException(400, "المصروف مدفوع بالفعل.")
+            raise AppException(404, "المصروف غير موجود.")
+        if expense.payment_confirmed_at is not None:
+            raise AppException(400, "تم سداد قيمة هذا المصروف بالكامل من قبل.")
 
-        outstanding = expense.amount - expense.paid_amount
-        if amount <= 0:
-            raise AppException(400, "مبلغ التحصيل يجب أن يكون أكبر من صفر.")
-        payment_amount = min(amount, outstanding)
-        expense.paid_amount = expense.paid_amount + payment_amount
+        remaining = (expense.amount - expense.paid_amount).quantize(TWO_PLACES)
+        if amount > remaining:
+            raise AppException(
+                400,
+                f"المبلغ المدخل ({amount}) أكبر من المتبقي على المصروف ({remaining}).",
+            )
+
+        expense.paid_amount = expense.paid_amount + amount
+        fully_paid = expense.paid_amount >= expense.amount
+        if fully_paid:
+            expense.payment_confirmed_at = datetime.now(timezone.utc)
+            expense.payment_confirmed_by = user.id
 
         self.session.add(
-            CashierPayment(
+            CashMovement(
+                direction="out",
                 reference_type="expense",
-                reference_id=expense_id,
-                amount=payment_amount,
-                payment_method=expense.payment_method.value,
-                received_by=user_id,
-                payment_date=date.today(),
+                reference_id=expense.id,
+                party_id=None,
+                amount=amount,
+                method=expense.payment_method.value,
+                collected_by=user.id,
             )
         )
 
-        # Settlement: Cash/Bank DR, Accounts Payable CR (the payable was set at creation).
-        debit_account = cash_or_bank(expense.payment_method.value)
         await self.accounting.add_entry_no_commit(
             entry_date=date.today(),
-            description=f"صرف دفعة مصروف ({expense.payee_name})",
+            description=(
+                f"سداد صندوق {'(كامل)' if fully_paid else '(جزئي)'} "
+                f"لمصروف رقم {expense.id}: {expense.description}"
+            ),
             items=[
-                (ACCOUNTS_PAYABLE, payment_amount, Decimal("0")),
-                (debit_account, Decimal("0"), payment_amount),
+                (ACCOUNTS_PAYABLE, amount, Decimal("0")),
+                (cash_or_bank(expense.payment_method.value), Decimal("0"), amount),
             ],
-            reference_type="cashier_payment",
+            reference_type="expense_payment",
             reference_id=expense.id,
-            created_by=user_id,
+            created_by=user.id,
         )
 
         await self.session.commit()
-        return {
-            "total": expense.amount,
-            "paid_amount": expense.paid_amount,
-            "remaining": expense.amount - expense.paid_amount,
-        }
+        await self.session.refresh(expense)
+        return expense
 
-    # ------------------------------------------------------------------
-    # Daily summary
-    # ------------------------------------------------------------------
 
-    async def daily_summary(self, summary_date: date | None = None) -> dict:
-        """Daily collection summary for cashier reconciliation."""
-        day = summary_date or date.today()
+    async def refund_customer_credit(
+        self, credit_id: int, user: User, method: str = "cash"
+    ) -> CustomerCredit:
+        """Hand a customer's credit back over the counter.
 
-        agg = await self.session.execute(
-            select(
-                CashierPayment.payment_method,
-                CashierPayment.reference_type,
-                func.coalesce(func.sum(CashierPayment.amount), 0).label("total"),
-                func.count(CashierPayment.id).label("count"),
+        The one path here that moves money. Crediting a balance to the account posts
+        nothing — receivables already carry it — but paying cash out reduces the
+        drawer, so it goes through a CashMovement like every other disbursement and
+        lands in the day-close where the till is reconciled. A refund that bypassed
+        that would make the drawer disagree with the books by exactly the amount
+        handed over.
+
+        Debit receivables, credit cash: the customer's account returns to zero and the
+        obligation is discharged.
+        """
+        credit = await self.session.get(CustomerCredit, credit_id)
+        if credit is None:
+            raise AppException(404, "المبلغ المستحقّ للعميل غير موجود.")
+        if credit.resolution is CreditResolution.REFUNDED:
+            raise AppException(400, "تم ردّ هذا المبلغ نقداً من قبل.")
+        if credit.resolution is CreditResolution.CREDITED:
+            raise AppException(
+                400, "هذا المبلغ مُسجَّل كرصيد في حساب العميل ولا يُردّ نقداً."
             )
-            .where(CashierPayment.payment_date == day)
-            .group_by(CashierPayment.payment_method, CashierPayment.reference_type)
+        if credit.resolution is not CreditResolution.AWAITING_REFUND:
+            # The till pays what was decided, and does not decide. Otherwise the
+            # cashier could refund a credit nobody chose to refund.
+            raise AppException(
+                400,
+                "لم يُتَّخذ قرار بردّ هذا المبلغ نقداً بعد؛ يُحدَّد القرار من شاشة "
+                "المبيعات أولاً.",
+            )
+
+        credit.resolution = CreditResolution.REFUNDED
+        credit.resolved_at = datetime.now(timezone.utc)
+        credit.resolved_by = user.id
+
+        self.session.add(
+            CashMovement(
+                direction="out",
+                reference_type="customer_credit",
+                reference_id=credit.id,
+                party_id=credit.customer_id,
+                amount=credit.amount,
+                method=method,
+                collected_by=user.id,
+            )
         )
+        await self.accounting.add_entry_no_commit(
+            entry_date=date.today(),
+            description=(
+                f"ردّ نقدي للعميل عن مرتجع الفاتورة رقم {credit.invoice_id}"
+            ),
+            items=[
+                (ACCOUNTS_RECEIVABLE, credit.amount, Decimal("0")),
+                (cash_or_bank(method), Decimal("0"), credit.amount),
+            ],
+            reference_type="customer_credit",
+            reference_id=credit.id,
+            created_by=user.id,
+        )
+        await self.session.commit()
+        await self.session.refresh(credit)
+        return credit
 
-        by_method: dict[str, Decimal] = {}
-        by_type: dict[str, dict] = {}
-        grand_total = Decimal("0")
-        total_count = 0
-        for row in agg:
-            method = row.payment_method
-            ref_type = row.reference_type
-            by_method[method] = by_method.get(method, Decimal("0")) + Decimal(
-                str(row.total)
+    async def list_pending_payables(self) -> list[PendingPayableOut]:
+        """Cash/card purchase invoices and expenses awaiting disbursement."""
+        payables: list[PendingPayableOut] = []
+
+        invoices_result = await self.session.execute(
+            select(PurchaseInvoice, Supplier.name)
+            .join(Supplier, PurchaseInvoice.supplier_id == Supplier.id)
+            .where(
+                PurchaseInvoice.payment_method.in_(
+                    [PurchasePaymentMethod.CASH, PurchasePaymentMethod.CARD]
+                ),
+                PurchaseInvoice.payment_confirmed_at.is_(None),
             )
-            if ref_type not in by_type:
-                by_type[ref_type] = {"total": Decimal("0"), "count": 0}
-            by_type[ref_type]["total"] += Decimal(str(row.total))
-            by_type[ref_type]["count"] += row.count
-            grand_total += Decimal(str(row.total))
-            total_count += row.count
+        )
+        for invoice, supplier_name in invoices_result.all():
+            payables.append(
+                PendingPayableOut(
+                    payable_type="purchase_invoice",
+                    id=invoice.id,
+                    date=invoice.invoice_date,
+                    description=f"فاتورة شراء من المورد ({supplier_name})",
+                    payment_method=invoice.payment_method.value,
+                    total=invoice.total,
+                    paid_amount=invoice.paid_amount,
+                    remaining=invoice.total - invoice.paid_amount,
+                )
+            )
 
-        # Detailed payment list.
+        expenses_result = await self.session.execute(
+            select(Expense, ExpenseCategory.name)
+            .join(ExpenseCategory, Expense.category_id == ExpenseCategory.id)
+            .where(Expense.payment_confirmed_at.is_(None))
+        )
+        for expense, category_name in expenses_result.all():
+            payables.append(
+                PendingPayableOut(
+                    payable_type="expense",
+                    id=expense.id,
+                    date=expense.created_at.date(),
+                    description=f"{category_name} — {expense.description}",
+                    payment_method=expense.payment_method.value,
+                    total=expense.amount,
+                    paid_amount=expense.paid_amount,
+                    remaining=expense.amount - expense.paid_amount,
+                )
+            )
+
+        payables.sort(key=lambda p: p.date)
+        return payables
+
+    # --- Daily summary (close-the-day reconciliation) ---
+    async def daily_summary(
+        self, user: User, day: date | None = None
+    ) -> CashierDailySummaryOut:
+        """Everything this cashier personally moved on a given day — money in and
+        out — to reconcile and close the register.
+        """
+        # The day is the *company's* day, not the server's. Taking "today" from the
+        # server's local calendar and then searching a UTC-midnight window is what made
+        # this report read empty between local midnight and 03:00, with the cash
+        # already in the drawer — see app/core/business_day.
+        company = await SettingsService(self.session).get_company_settings()
+        target_day = day or business_day.today_in(company.timezone)
+        start, end = business_day.day_bounds(target_day, company.timezone)
+
         result = await self.session.execute(
-            select(CashierPayment)
-            .where(CashierPayment.payment_date == day)
-            .order_by(CashierPayment.id.asc())
+            select(CashMovement)
+            .where(
+                CashMovement.collected_by == user.id,
+                CashMovement.collected_at >= start,
+                CashMovement.collected_at < end,
+            )
+            .order_by(CashMovement.collected_at)
         )
-        payments = result.scalars().all()
+        movements = list(result.scalars().all())
 
-        details = []
-        for p in payments:
-            details.append(
-                {
-                    "id": p.id,
-                    "reference_type": p.reference_type,
-                    "reference_id": p.reference_id,
-                    "amount": p.amount,
-                    "payment_method": p.payment_method,
-                }
+        def total_for(direction: str, method: str) -> Decimal:
+            """Sum the day's movements in one direction and payment method."""
+            return sum(
+                (
+                    m.amount
+                    for m in movements
+                    if m.direction == direction and m.method == method
+                ),
+                Decimal("0"),
             )
 
-        return {
-            "date": day.isoformat(),
-            "grand_total": grand_total,
-            "total_count": total_count,
-            "by_method": by_method,
-            "by_type": by_type,
-            "payments": details,
-        }
+        cash_in = total_for("in", "cash")
+        card_in = total_for("in", "card")
+        cash_out = total_for("out", "cash")
+        card_out = total_for("out", "card")
+        total_in = cash_in + card_in
+        total_out = cash_out + card_out
+
+        return CashierDailySummaryOut(
+            day=target_day,
+            cashier_id=user.id,
+            cashier_name=user.full_name,
+            total_in=total_in,
+            total_out=total_out,
+            net=total_in - total_out,
+            cash_in=cash_in,
+            card_in=card_in,
+            cash_out=cash_out,
+            card_out=card_out,
+            movement_count=len(movements),
+            movements=movements,
+        )

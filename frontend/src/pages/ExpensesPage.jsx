@@ -1,309 +1,228 @@
+// Operating expenses — rent, salaries, fuel, utilities — and the categories
+// they are filed under.
+//
+// Recording an expense does not pay it: like a purchase invoice, a cash or card
+// expense waits for the cashier to disburse it, so the till and the books stay
+// in step.
 import { useState } from "react";
-import {
-  Alert,
-  Badge,
-  Button,
-  Card,
-  Loading,
-  Modal,
-  PaginatedTable,
-  money,
-} from "../components/Ui";
+import { Alert, Badge, Button, CancelButton, Card, Input, Modal, Select, Table, money } from "../components/Ui";
+import { useAuth } from "../context/AuthContext";
 import useFetch from "../hooks/useFetch";
 import api, { apiMessage } from "../services/api";
 
-const CATEGORIES = [
-  { value: "utilities", label: "فواتير المرافق" },
-  { value: "food", label: "طعام" },
-  { value: "water", label: "مياه شرب" },
-  { value: "rent", label: "إيجار" },
-  { value: "salaries", label: "رواتب" },
-  { value: "transport", label: "نقل ومواصلات" },
-  { value: "maintenance", label: "صيانة" },
-  { value: "office", label: "مكتبية" },
-  { value: "other", label: "أخرى" },
-];
+const PAYMENT_METHOD_LABELS = { cash: "نقدي", card: "بطاقة" };
+const PAYMENT_METHOD_TONE = { cash: "green", card: "blue" };
 
-const EXPENSE_ACCOUNTS = [
-  { code: "5100", name: "فواتير المرافق" },
-  { code: "5200", name: "طعام" },
-  { code: "5300", name: "مياه شرب" },
-  { code: "5400", name: "إيجار" },
-  { code: "5500", name: "رواتب" },
-  { code: "5600", name: "نقل ومواصلات" },
-  { code: "5700", name: "صيانة" },
-  { code: "5800", name: "مكتبية" },
-  { code: "5900", name: "مصاريف أخرى" },
-];
+function CategoryForm({ onSaved, onClose }) {
+  const [name, setName] = useState("");
+  const [error, setError] = useState(null);
 
-const CATEGORY_MAP = Object.fromEntries(CATEGORIES.map((c) => [c.value, c.label]));
-const ACCOUNT_MAP = Object.fromEntries(EXPENSE_ACCOUNTS.map((a) => [a.code, a.name]));
+  const submit = async (event) => {
+    event.preventDefault();
+    setError(null);
+    try {
+      await api.post("/expenses/categories", { name });
+      onSaved();
+    } catch (err) {
+      setError(apiMessage(err));
+    }
+  };
 
-const blank = {
-  category: "utilities",
-  payee_name: "",
-  description: "",
-  amount: "",
-  expense_date: new Date().toISOString().slice(0, 10),
-  payment_method: "cash",
-  account_code: "5100",
-  reference_no: "",
-  notes: "",
-};
+  return (
+    <form onSubmit={submit} className="space-y-4">
+      <Alert>{error}</Alert>
+      <Input label="اسم التصنيف" value={name} onChange={(e) => setName(e.target.value)} required autoFocus />
+      <div className="flex justify-end gap-2">
+        <CancelButton onClose={onClose} />
+        <Button type="submit">حفظ التصنيف</Button>
+      </div>
+    </form>
+  );
+}
+
+/** Manage the categories expenses are filed under; retiring one keeps history. */
+function CategoriesSection({ canManage, categories, onReload }) {
+  const [open, setOpen] = useState(false);
+  const [notice, setNotice] = useState(null);
+
+  const toggleActive = async (category) => {
+    try {
+      await api.patch(`/expenses/categories/${category.id}`, {
+        is_active: !category.is_active,
+      });
+      onReload();
+    } catch (err) {
+      setNotice(apiMessage(err));
+    }
+  };
+
+  return (
+    <Card
+      title="تصنيفات المصاريف"
+      actions={canManage && <Button onClick={() => setOpen(true)}>+ تصنيف جديد</Button>}
+    >
+      <Alert tone="success">{notice}</Alert>
+      <Table
+        columns={[
+          { key: "name", label: "التصنيف" },
+          {
+            key: "is_active",
+            label: "الحالة",
+            render: (r) =>
+              canManage ? (
+                <button onClick={() => toggleActive(r)}>
+                  {r.is_active ? <Badge tone="green">مفعّل</Badge> : <Badge tone="red">موقوف</Badge>}
+                </button>
+              ) : r.is_active ? (
+                <Badge tone="green">مفعّل</Badge>
+              ) : (
+                <Badge tone="red">موقوف</Badge>
+              ),
+          },
+        ]}
+        rows={categories}
+        searchPlaceholder="بحث في التصنيفات..."
+      />
+      <Modal open={open} title="إضافة تصنيف مصاريف" onClose={() => setOpen(false)}>
+        <CategoryForm
+          onSaved={() => {
+            setOpen(false);
+            setNotice("تم إضافة التصنيف بنجاح.");
+            onReload();
+          }}
+          onClose={() => setOpen(false)}
+        />
+      </Modal>
+    </Card>
+  );
+}
+
+const EMPTY_EXPENSE = { category_id: "", description: "", amount: "", payment_method: "cash", notes: "" };
+
+function ExpenseForm({ categories, onCreated }) {
+  const [form, setForm] = useState(EMPTY_EXPENSE);
+  const [error, setError] = useState(null);
+  const set = (key) => (e) => setForm({ ...form, [key]: e.target.value });
+
+  const submit = async (event) => {
+    event.preventDefault();
+    setError(null);
+    try {
+      const { data } = await api.post("/expenses", {
+        ...form,
+        notes: form.notes || null,
+      });
+      setForm(EMPTY_EXPENSE);
+      onCreated(data.data, data.message);
+    } catch (err) {
+      setError(apiMessage(err));
+    }
+  };
+
+  const activeCategories = categories.filter((c) => c.is_active);
+
+  return (
+    <form onSubmit={submit} className="space-y-4">
+      <Alert>{error}</Alert>
+      <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
+        <Select label="التصنيف" value={form.category_id} onChange={set("category_id")} required>
+          <option value="">— اختر التصنيف —</option>
+          {activeCategories.map((c) => (
+            <option key={c.id} value={c.id}>
+              {c.name}
+            </option>
+          ))}
+        </Select>
+        <Select label="طريقة الدفع" value={form.payment_method} onChange={set("payment_method")}>
+          <option value="cash">نقدي</option>
+          <option value="card">بطاقة</option>
+        </Select>
+        <Input label="الوصف" value={form.description} onChange={set("description")} required />
+        <Input label="المبلغ" type="number" step="0.01" min="0.01" value={form.amount} onChange={set("amount")} required />
+      </div>
+      <Input label="ملاحظات (اختياري)" value={form.notes} onChange={set("notes")} />
+      <Button type="submit">تسجيل المصروف</Button>
+    </form>
+  );
+}
 
 export default function ExpensesPage() {
+  const { can } = useAuth();
+  const canManage = can("expenses.manage");
+
+  const categories = useFetch(() => api.get("/expenses/categories"));
+  const expenses = useFetch(() => api.get("/expenses"));
   const [notice, setNotice] = useState(null);
-  const [modal, setModal] = useState(null); // null | "new" | expense object for edit
-  const [form, setForm] = useState(blank);
-  const [saving, setSaving] = useState(false);
 
-  const expenses = useFetch(() => api.get("/expenses/"));
+  if (categories.loading || expenses.loading) return null;
 
-  const openNew = () => {
-    setForm({ ...blank });
-    setModal("new");
+  const categoryName = (id) => categories.data?.find((c) => c.id === id)?.name ?? id;
+
+  const reloadAll = () => {
+    categories.reload();
+    expenses.reload();
   };
-
-  const openEdit = (exp) => {
-    setForm({
-      category: exp.category,
-      payee_name: exp.payee_name,
-      description: exp.description || "",
-      amount: exp.amount,
-      expense_date: exp.expense_date,
-      payment_method: exp.payment_method,
-      account_code: exp.account_code,
-      reference_no: exp.reference_no || "",
-      notes: exp.notes || "",
-    });
-    setModal(exp);
-  };
-
-  const save = async () => {
-    if (!form.payee_name.trim()) {
-      alert("اسم المستلم مطلوب.");
-      return;
-    }
-    if (!form.amount || parseFloat(form.amount) <= 0) {
-      alert("أدخل مبلغ صحيح.");
-      return;
-    }
-    setSaving(true);
-    try {
-      const payload = { ...form, amount: String(form.amount) };
-      if (modal === "new") {
-        await api.post("/expenses/", payload);
-        setNotice("تم إنشاء سند المصروف بنجاح.");
-      } else {
-        await api.put(`/expenses/${modal.id}`, payload);
-        setNotice("تم تعديل سند المصروف بنجاح.");
-      }
-      setModal(null);
-      expenses.reload();
-    } catch (err) {
-      alert(apiMessage(err));
-    } finally {
-      setSaving(false);
-    }
-  };
-
-  const remove = async (exp) => {
-    if (!window.confirm(`حذف سند المصروف رقم ${exp.id}؟`)) return;
-    try {
-      await api.delete(`/expenses/${exp.id}`);
-      setNotice("تم حذف سند المصروف.");
-      expenses.reload();
-    } catch (err) {
-      alert(apiMessage(err));
-    }
-  };
-
-  if (expenses.loading) return <Loading />;
 
   return (
     <div className="space-y-6">
-      <div className="flex items-center justify-between">
-        <h1 className="text-2xl font-extrabold">المصاريف والمدفوعات</h1>
-        <Button onClick={openNew}>+ سند مصروف جديد</Button>
-      </div>
+      <h1 className="text-2xl font-extrabold">المصاريف</h1>
+      <Alert tone="success">{notice}</Alert>
 
-      {notice && <Alert>{notice}</Alert>}
+      {!canManage && (
+        <Alert>لا تملك صلاحية تسجيل المصاريف أو إدارة تصنيفاتها، يمكنك العرض فقط.</Alert>
+      )}
 
-      <Card>
-        <Alert>{expenses.error}</Alert>
-        <PaginatedTable
+      {canManage && (
+        <Card title="تسجيل مصروف جديد — يبقى بانتظار الصرف من الصندوق">
+          <ExpenseForm
+            categories={categories.data || []}
+            onCreated={(_expense, message) => {
+              setNotice(message);
+              reloadAll();
+            }}
+          />
+        </Card>
+      )}
+
+      <CategoriesSection
+        canManage={canManage}
+        categories={categories.data || []}
+        onReload={reloadAll}
+      />
+
+      <Card title="سجل المصاريف">
+        <Table
           columns={[
-            { key: "id", label: "#", searchable: (r) => String(r.id) },
-            { key: "expense_date", label: "التاريخ" },
-            {
-              key: "category",
-              label: "الفئة",
-              render: (r) => <Badge>{CATEGORY_MAP[r.category] || r.category}</Badge>,
-              searchable: (r) => CATEGORY_MAP[r.category] || r.category,
-            },
-            { key: "payee_name", label: "المستلم" },
+            { key: "id", label: "#" },
+            { key: "category_id", label: "التصنيف", render: (r) => categoryName(r.category_id) },
             { key: "description", label: "الوصف" },
             {
-              key: "amount",
-              label: "المبلغ",
-              render: (r) => money(r.amount),
-            },
-            {
               key: "payment_method",
-              label: "الدفع",
-              render: (r) =>
-                r.payment_method === "cash" ? (
-                  <Badge tone="green">نقدي</Badge>
-                ) : (
-                  <Badge tone="blue">آجل</Badge>
-                ),
-            },
-            {
-              key: "paid_amount",
-              label: "المدفوع",
-              render: (r) => money(r.paid_amount),
-            },
-            {
-              key: "account_code",
-              label: "الحساب",
-              render: (r) => `${r.account_code} - ${ACCOUNT_MAP[r.account_code] || ""}`,
-            },
-            {
-              key: "actions",
-              label: "",
+              label: "طريقة الدفع",
               render: (r) => (
-                <div className="flex gap-1">
-                  <Button variant="secondary" onClick={() => openEdit(r)}>
-                    تعديل
-                  </Button>
-                  <Button variant="danger" onClick={() => remove(r)}>
-                    حذف
-                  </Button>
-                </div>
+                <Badge tone={PAYMENT_METHOD_TONE[r.payment_method]}>
+                  {PAYMENT_METHOD_LABELS[r.payment_method]}
+                </Badge>
               ),
+            },
+            { key: "amount", label: "المبلغ", render: (r) => money(r.amount) },
+            {
+              key: "payment_confirmed_at",
+              label: "حالة السداد",
+              render: (r) =>
+                r.payment_confirmed_at ? (
+                  <Badge tone="green">تم السداد</Badge>
+                ) : Number(r.paid_amount) > 0 ? (
+                  <Badge tone="amber">سداد جزئي ({money(r.paid_amount)})</Badge>
+                ) : (
+                  <Badge tone="amber">بانتظار الصندوق</Badge>
+                ),
             },
           ]}
           rows={expenses.data}
-          empty="لا توجد مصروفات."
-          searchable
-          searchPlaceholder="بحث بالاسم أو الوصف..."
-          dateFromField="expense_date"
-          dateToField="expense_date"
-          amountField="amount"
-          amountLabel="المبلغ"
+          empty="لا توجد مصاريف مسجلة بعد."
         />
       </Card>
-
-      {/* Create/Edit Modal */}
-      <Modal
-        open={!!modal}
-        title={modal === "new" ? "سند مصروف جديد" : `تعديل سند رقم ${modal?.id}`}
-        onClose={() => setModal(null)}
-        wide
-      >
-        <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
-          <div>
-            <label className="mb-1 block text-sm font-bold">الفئة</label>
-            <select
-              value={form.category}
-              onChange={(e) => setForm({ ...form, category: e.target.value })}
-              className="w-full rounded-lg border px-3 py-2"
-            >
-              {CATEGORIES.map((c) => (
-                <option key={c.value} value={c.value}>
-                  {c.label}
-                </option>
-              ))}
-            </select>
-          </div>
-          <div>
-            <label className="mb-1 block text-sm font-bold">المستلم</label>
-            <input
-              value={form.payee_name}
-              onChange={(e) => setForm({ ...form, payee_name: e.target.value })}
-              className="w-full rounded-lg border px-3 py-2"
-              placeholder="اسم الشخص أو الجهة"
-            />
-          </div>
-          <div>
-            <label className="mb-1 block text-sm font-bold">المبلغ</label>
-            <input
-              type="number"
-              min="0.01"
-              step="0.01"
-              value={form.amount}
-              onChange={(e) => setForm({ ...form, amount: e.target.value })}
-              className="w-full rounded-lg border px-3 py-2"
-            />
-          </div>
-          <div>
-            <label className="mb-1 block text-sm font-bold">التاريخ</label>
-            <input
-              type="date"
-              value={form.expense_date}
-              onChange={(e) => setForm({ ...form, expense_date: e.target.value })}
-              className="w-full rounded-lg border px-3 py-2"
-            />
-          </div>
-          <div>
-            <label className="mb-1 block text-sm font-bold">طريقة الدفع</label>
-            <select
-              value={form.payment_method}
-              onChange={(e) => setForm({ ...form, payment_method: e.target.value })}
-              className="w-full rounded-lg border px-3 py-2"
-            >
-              <option value="cash">نقدي — الصندوق</option>
-              <option value="credit">آجل — المدفوعات المستحقة</option>
-            </select>
-          </div>
-          <div>
-            <label className="mb-1 block text-sm font-bold">حساب المصروف</label>
-            <select
-              value={form.account_code}
-              onChange={(e) => setForm({ ...form, account_code: e.target.value })}
-              className="w-full rounded-lg border px-3 py-2"
-            >
-              {EXPENSE_ACCOUNTS.map((a) => (
-                <option key={a.code} value={a.code}>
-                  {a.code} — {a.name}
-                </option>
-              ))}
-            </select>
-          </div>
-          <div className="sm:col-span-2">
-            <label className="mb-1 block text-sm font-bold">الوصف</label>
-            <input
-              value={form.description}
-              onChange={(e) => setForm({ ...form, description: e.target.value })}
-              className="w-full rounded-lg border px-3 py-2"
-              placeholder="تفاصيل المصروف"
-            />
-          </div>
-          <div>
-            <label className="mb-1 block text-sm font-bold">رقم المرجع</label>
-            <input
-              value={form.reference_no}
-              onChange={(e) => setForm({ ...form, reference_no: e.target.value })}
-              className="w-full rounded-lg border px-3 py-2"
-              placeholder="رقم الفاتورة أو الإيصال"
-            />
-          </div>
-          <div>
-            <label className="mb-1 block text-sm font-bold">ملاحظات</label>
-            <input
-              value={form.notes}
-              onChange={(e) => setForm({ ...form, notes: e.target.value })}
-              className="w-full rounded-lg border px-3 py-2"
-            />
-          </div>
-        </div>
-        <div className="mt-4 flex gap-2">
-          <Button variant="primary" onClick={save} disabled={saving}>
-            {saving ? "جاري الحفظ..." : "حفظ"}
-          </Button>
-          <Button onClick={() => setModal(null)}>إلغاء</Button>
-        </div>
-      </Modal>
     </div>
   );
 }
