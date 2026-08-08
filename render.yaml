@@ -1,6 +1,6 @@
 services:
   - type: web
-    name: erp-distribution
+    name: erp
     runtime: docker
     dockerfilePath: ./Dockerfile
     envVars:
@@ -27,6 +27,6 @@ services:
 
 databases:
   - name: erp-db
-    plan: free
+    plan: basic-256mb
     databaseName: erp
-    user: erp
+    user: erp_user
