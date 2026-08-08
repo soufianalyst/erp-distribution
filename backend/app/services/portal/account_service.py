@@ -47,7 +47,6 @@ class PortalAccountService:
             "customer_id": customer_id,
             "username": account.username,
             "is_active": account.is_active,
-            "last_login": account.last_login,
         }
 
     async def create(
