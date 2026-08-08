@@ -315,6 +315,13 @@ function StocktakeSheet({ stocktake, onSaved, onPosted }) {
     }
   };
 
+  const varianceOf = (line) => {
+    const raw = counts[line.id];
+    return raw === "" || raw == null
+      ? null
+      : Number(raw) - Number(line.expected_quantity);
+  };
+
   // Live preview so the counter sees the impact before committing.
   const preview = stocktake.lines.reduce(
     (acc, line) => {
@@ -334,82 +341,82 @@ function StocktakeSheet({ stocktake, onSaved, onPosted }) {
   return (
     <div className="space-y-4">
       <Alert>{error}</Alert>
-      <div className="-mx-4 overflow-x-auto px-4 sm:mx-0 sm:px-0">
-        <table className="w-full min-w-[44rem] text-right text-sm">
-          <thead>
-            <tr className="border-b border-slate-200 text-xs font-bold text-slate-500 dark:border-slate-700 dark:text-slate-400">
-              <th className="px-3 py-2">الصنف</th>
-              <th className="px-3 py-2">التشغيلة</th>
-              <th className="px-3 py-2">الانتهاء</th>
-              <th className="px-3 py-2">المتوقع دفترياً</th>
-              <th className="px-3 py-2">الكمية الفعلية</th>
-              <th className="px-3 py-2">الفرق</th>
-              <th className="px-3 py-2">قيمة الفرق</th>
-            </tr>
-          </thead>
-          <tbody>
-            {stocktake.lines.map((line, index) => {
-              const raw = counts[line.id];
-              const variance =
-                raw === "" || raw == null
-                  ? null
-                  : Number(raw) - Number(line.expected_quantity);
-              return (
-                <tr
-                  key={line.id}
-                  className="border-b border-slate-100 last:border-0 dark:border-slate-800"
-                >
-                  <td className="px-3 py-2 font-bold">
-                    {line.product_name}
-                    <div className="text-xs font-normal text-slate-500 dark:text-slate-400">
-                      {line.sku}
-                    </div>
-                  </td>
-                  <td className="px-3 py-2">{line.batch_number}</td>
-                  <td className="px-3 py-2">{line.expiry_date}</td>
-                  <td className="px-3 py-2">
-                    {qty(line.expected_quantity)} {line.base_unit_name}
-                  </td>
-                  <td className="px-3 py-2">
-                    {editable ? (
-                      <Input
-                        type="number"
-                        step="any"
-                        min="0"
-                        data-count-input
-                        value={raw ?? ""}
-                        onChange={(e) =>
-                          setCounts({ ...counts, [line.id]: e.target.value })
-                        }
-                        onKeyDown={(e) => {
-                          if (e.key !== "Enter") return;
-                          // Enter walks down the sheet instead of submitting.
-                          e.preventDefault();
-                          const boxes = document.querySelectorAll("input[data-count-input]");
-                          boxes[index + 1]?.focus();
-                        }}
-                      />
-                    ) : line.counted_quantity == null ? (
-                      // Never counted — showing 0 here would read as "found none".
-                      <span className="text-slate-400 dark:text-slate-500">—</span>
-                    ) : (
-                      qty(line.counted_quantity)
-                    )}
-                  </td>
-                  <td className="px-3 py-2">
-                    <Variance variance={variance} />
-                  </td>
-                  <td className="px-3 py-2">
-                    {variance == null || Number(line.unit_cost) === 0
-                      ? "—"
-                      : money(variance * Number(line.unit_cost))}
-                  </td>
-                </tr>
-              );
-            })}
-          </tbody>
-        </table>
-      </div>
+      {/* A counting sheet is still a list: a full-warehouse stocktake runs to a
+          couple of thousand batches, and this was rendering every one of them.
+          Typed counts live in `counts`, keyed by line id, so they survive paging —
+          and Enter still walks down the visible page. */}
+      <Table
+        columns={[
+          {
+            key: "product_name",
+            label: "الصنف",
+            render: (line) => (
+              <span className="font-bold">
+                {line.product_name}
+                <div className="text-xs font-normal text-slate-500 dark:text-slate-400">
+                  {line.sku}
+                </div>
+              </span>
+            ),
+            search: (line) => `${line.product_name} ${line.sku}`,
+          },
+          { key: "batch_number", label: "التشغيلة" },
+          { key: "expiry_date", label: "الانتهاء" },
+          {
+            key: "expected_quantity",
+            label: "المتوقع دفترياً",
+            render: (line) => `${qty(line.expected_quantity)} ${line.base_unit_name}`,
+            sortValue: (line) => Number(line.expected_quantity),
+          },
+          {
+            key: "counted_quantity",
+            label: "الكمية الفعلية",
+            sortable: false,
+            render: (line) =>
+              editable ? (
+                <Input
+                  type="number"
+                  step="any"
+                  min="0"
+                  data-count-input
+                  value={counts[line.id] ?? ""}
+                  onChange={(e) => setCounts({ ...counts, [line.id]: e.target.value })}
+                  onKeyDown={(e) => {
+                    if (e.key !== "Enter") return;
+                    // Enter walks down the sheet instead of submitting the form.
+                    e.preventDefault();
+                    const boxes = [...document.querySelectorAll("input[data-count-input]")];
+                    boxes[boxes.indexOf(e.target) + 1]?.focus();
+                  }}
+                />
+              ) : line.counted_quantity == null ? (
+                // Never counted — showing 0 here would read as "found none".
+                <span className="text-slate-400 dark:text-slate-500">—</span>
+              ) : (
+                qty(line.counted_quantity)
+              ),
+          },
+          {
+            key: "variance",
+            label: "الفرق",
+            render: (line) => <Variance variance={varianceOf(line)} />,
+            sortValue: (line) => varianceOf(line) ?? 0,
+          },
+          {
+            key: "variance_value",
+            label: "قيمة الفرق",
+            render: (line) => {
+              const variance = varianceOf(line);
+              return variance == null || Number(line.unit_cost) === 0
+                ? "—"
+                : money(variance * Number(line.unit_cost));
+            },
+            sortValue: (line) => (varianceOf(line) ?? 0) * Number(line.unit_cost || 0),
+          },
+        ]}
+        rows={stocktake.lines}
+        searchPlaceholder="بحث بالصنف أو الرمز أو التشغيلة..."
+      />
 
       <div className="flex flex-wrap items-center justify-between gap-3 rounded-lg bg-slate-50 p-3 text-sm font-bold dark:bg-slate-800/60">
         <span>

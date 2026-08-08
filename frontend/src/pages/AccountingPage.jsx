@@ -19,14 +19,35 @@ const TYPE_LABELS = {
   expense: "مصاريف",
 };
 
+// Every reference_type the backend posts an entry under. It had drifted to four of
+// the seventeen, so most rows in the journal read "—" and you could not tell a
+// collection from a stocktake. `referenceLabel` falls back to the raw type rather
+// than a dash, so the next one added upstream degrades to something readable.
 const REFERENCE_LABELS = {
-  purchase_invoice: "فاتورة شراء",
-  supplier_payment: "سند صرف",
   sales_invoice: "فاتورة مبيعات",
+  sales_invoice_payment: "تحصيل فاتورة مبيعات",
   sales_return: "مرتجع مبيعات",
+  sales_return_cancel: "إلغاء مرتجع مبيعات",
   customer_payment: "سند قبض",
+  customer_credit: "رصيد دائن لعميل",
+  purchase_invoice: "فاتورة شراء",
+  purchase_invoice_payment: "سداد فاتورة شراء",
+  purchase_return: "مرتجع مشتريات",
+  supplier_payment: "سند صرف",
+  expense: "مصروف",
+  expense_payment: "سداد مصروف",
+  stock_receipt: "استلام مخزون",
+  stock_adjustment: "تعديل/إتلاف مخزون",
+  stock_adjustment_cancel: "إلغاء تعديل مخزون",
+  stocktake: "ترحيل جرد",
   manual: "قيد يدوي",
 };
+
+const referenceLabel = (type) => REFERENCE_LABELS[type] || type || "—";
+
+// A balanced entry's debits equal its credits, so either side is "the amount".
+const entryTotal = (entry) =>
+  (entry.items || []).reduce((sum, item) => sum + Number(item.debit || 0), 0);
 
 const DIRECTION_LABELS = { in: "وارد", out: "صادر" };
 
@@ -438,31 +459,49 @@ export default function AccountingPage() {
           {entries.loading ? (
             <Loading />
           ) : (
-            <div className="space-y-4">
-              {(entries.data || []).map((entry) => (
-                <div key={entry.id} className="rounded-lg border border-slate-200 dark:border-slate-700 p-4">
-                  <div className="mb-2 flex items-center justify-between">
-                    <div className="font-bold">{entry.description}</div>
-                    <div className="flex items-center gap-2 text-xs text-slate-500 dark:text-slate-400">
-                      <Badge tone="blue">{REFERENCE_LABELS[entry.reference_type] || "—"}</Badge>
-                      <span>{entry.entry_date}</span>
-                      <span>قيد #{entry.id}</span>
-                    </div>
-                  </div>
-                  <Table
-                    columns={[
-                      { key: "account", label: "الحساب", render: (r) => `${r.account.code} — ${r.account.name}` },
-                      { key: "debit", label: "مدين", render: (r) => (Number(r.debit) ? money(r.debit) : "") },
-                      { key: "credit", label: "دائن", render: (r) => (Number(r.credit) ? money(r.credit) : "") },
-                    ]}
-                    rows={entry.items}
-                  />
-                </div>
-              ))}
-              {!entries.data?.length && (
-                <div className="py-10 text-center text-sm text-slate-400 dark:text-slate-500">لا توجد قيود بعد.</div>
+            // One row per entry, its double-entry lines behind the detail toggle.
+            // Previously every entry was a stacked card with its own inner table, so
+            // the list itself could not paginate and a year of trading arrived on a
+            // single page — and there was no way to search it either.
+            <Table
+              columns={[
+                { key: "id", label: "القيد", render: (r) => `#${r.id}` },
+                { key: "entry_date", label: "التاريخ" },
+                { key: "description", label: "البيان" },
+                {
+                  key: "reference_type",
+                  label: "المستند",
+                  render: (r) => (
+                    <Badge tone="blue">{referenceLabel(r.reference_type)}</Badge>
+                  ),
+                  search: (r) => referenceLabel(r.reference_type),
+                },
+                {
+                  key: "total",
+                  label: "المبلغ",
+                  render: (r) => money(entryTotal(r)),
+                  sortValue: (r) => Number(entryTotal(r)),
+                },
+              ]}
+              rows={entries.data || []}
+              empty="لا توجد قيود بعد."
+              searchPlaceholder="بحث بالبيان أو نوع المستند أو التاريخ..."
+              renderDetail={(entry) => (
+                <Table
+                  columns={[
+                    {
+                      key: "account",
+                      label: "الحساب",
+                      render: (r) => `${r.account.code} — ${r.account.name}`,
+                    },
+                    { key: "debit", label: "مدين", render: (r) => (Number(r.debit) ? money(r.debit) : "") },
+                    { key: "credit", label: "دائن", render: (r) => (Number(r.credit) ? money(r.credit) : "") },
+                  ]}
+                  rows={entry.items}
+                  searchable={false}
+                />
               )}
-            </div>
+            />
           )}
         </Card>
       )}

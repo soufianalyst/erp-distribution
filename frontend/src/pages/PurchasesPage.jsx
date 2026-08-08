@@ -332,43 +332,64 @@ function ReorderWorklist({ onAdd, addedIds }) {
             : "لا توجد أصناف نفدت أو تحت الحد الأدنى — المخزون بحالة جيدة."}
         </p>
       ) : (
-        <div className="max-h-52 overflow-auto">
-          <table className="w-full min-w-[30rem] text-xs">
-            <thead>
-              <tr className="text-amber-900 dark:text-amber-200">
-                <th className="text-right font-normal">الصنف</th>
-                <th className="text-right font-normal">المتوفر</th>
-                <th className="text-right font-normal">الحد الأدنى</th>
-                <th className="text-right font-normal">النقص</th>
-                <th />
-              </tr>
-            </thead>
-            <tbody>
-              {rows.map((s) => (
-                <tr key={s.product_id} className="border-t border-amber-200 dark:border-amber-900">
-                  <td className="py-1 font-bold">
-                    {s.sku} — {s.name}
-                    {s.out_of_stock && (
-                      <span className="ms-2">
-                        <Badge tone="red">نفد</Badge>
-                      </span>
-                    )}
-                  </td>
-                  <td>
-                    {qty(s.current_stock)} {s.base_unit_name}
-                  </td>
-                  <td>{qty(s.min_stock_level)}</td>
-                  <td className="font-bold text-rose-700 dark:text-rose-400">{qty(s.shortfall)}</td>
-                  <td className="text-left">
-                    <Button type="button" variant="secondary" onClick={() => onAdd(s)}>
-                      + أضف للطلب
-                    </Button>
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
+        // Was a hand-built table inside a fixed-height scroll box: with a thousand
+        // products, "reached its minimum" is not a short list, and scrolling a panel
+        // is not the same as paging one. The shared Table brings search and sorting
+        // with it, which is what you actually want here — sort by shortfall.
+        <Table
+          columns={[
+            {
+              key: "name",
+              label: "الصنف",
+              render: (s) => (
+                <span className="font-bold">
+                  {s.sku} — {s.name}
+                  {s.out_of_stock && (
+                    <span className="ms-2">
+                      <Badge tone="red">نفد</Badge>
+                    </span>
+                  )}
+                </span>
+              ),
+              search: (s) => `${s.sku} ${s.name}`,
+            },
+            {
+              key: "current_stock",
+              label: "المتوفر",
+              render: (s) => `${qty(s.current_stock)} ${s.base_unit_name}`,
+              sortValue: (s) => Number(s.current_stock),
+            },
+            {
+              key: "min_stock_level",
+              label: "الحد الأدنى",
+              render: (s) => qty(s.min_stock_level),
+              sortValue: (s) => Number(s.min_stock_level),
+            },
+            {
+              key: "shortfall",
+              label: "النقص",
+              render: (s) => (
+                <span className="font-bold text-rose-700 dark:text-rose-400">
+                  {qty(s.shortfall)}
+                </span>
+              ),
+              sortValue: (s) => Number(s.shortfall),
+            },
+            {
+              key: "actions",
+              label: "",
+              sortable: false,
+              render: (s) => (
+                <Button type="button" variant="secondary" onClick={() => onAdd(s)}>
+                  + أضف للطلب
+                </Button>
+              ),
+            },
+          ]}
+          rows={rows}
+          keyField="product_id"
+          searchPlaceholder="بحث في الأصناف المقترحة..."
+        />
       )}
     </div>
   );

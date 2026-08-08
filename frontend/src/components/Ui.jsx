@@ -1,5 +1,5 @@
 // Shared UI primitives used across all pages (Arabic RTL, Tailwind).
-import { createContext, useCallback, useContext, useEffect, useRef, useState } from "react";
+import { Fragment, createContext, useCallback, useContext, useEffect, useRef, useState } from "react";
 
 const DISCARD_CONFIRM =
   "لديك بيانات غير محفوظة في هذا النموذج. هل تريد الخروج وإلغاء ما أدخلته؟";
@@ -218,10 +218,17 @@ export function Table({
   pageSize = 15,
   searchable = true,
   searchPlaceholder = "بحث...",
+  // Optional per-row detail panel, opened from a toggle in the last column. Added
+  // for the journal, where each entry has its own debit/credit lines: rendering all
+  // of them as stacked cards meant the list could not be paginated at all, and a
+  // thousand entries arrived on one page. A row that can expand keeps the
+  // double-entry detail an accountant needs while the list stays 15 to a page.
+  renderDetail,
 }) {
   const [page, setPage] = useState(1);
   const [query, setQuery] = useState("");
   const [sort, setSort] = useState({ key: null, dir: "asc" });
+  const [expanded, setExpanded] = useState(() => new Set());
   useEffect(() => {
     setPage(1);
   }, [rows?.length, query]);
@@ -255,6 +262,17 @@ export function Table({
       return sort.dir === "asc" ? cmp : -cmp;
     });
   }
+
+  const rowKey = (row, index) =>
+    (typeof keyField === "function" ? keyField(row) : row[keyField]) ?? index;
+
+  const toggleExpanded = (key) =>
+    setExpanded((current) => {
+      const next = new Set(current);
+      if (next.has(key)) next.delete(key);
+      else next.add(key);
+      return next;
+    });
 
   const toggleSort = (key) =>
     setSort((prev) => {
@@ -306,28 +324,55 @@ export function Table({
                   </th>
                 );
               })}
+              {renderDetail && <th className="w-10 px-3 py-2" />}
             </tr>
           </thead>
           {pageRows.length > 0 ? (
             <tbody>
-              {pageRows.map((row, index) => (
-                <tr
-                  key={(typeof keyField === "function" ? keyField(row) : row[keyField]) ?? index}
-                  className="border-b border-slate-100 last:border-0 hover:bg-slate-50 dark:border-slate-800 dark:hover:bg-slate-800/60"
-                >
-                  {columns.map((col) => (
-                    <td key={col.key} className="px-3 py-2.5">
-                      {col.render ? col.render(row) : row[col.key]}
-                    </td>
-                  ))}
-                </tr>
-              ))}
+              {pageRows.map((row, index) => {
+                const key = rowKey(row, index);
+                const isOpen = expanded.has(key);
+                return (
+                  <Fragment key={key}>
+                    <tr className="border-b border-slate-100 last:border-0 hover:bg-slate-50 dark:border-slate-800 dark:hover:bg-slate-800/60">
+                      {columns.map((col) => (
+                        <td key={col.key} className="px-3 py-2.5">
+                          {col.render ? col.render(row) : row[col.key]}
+                        </td>
+                      ))}
+                      {renderDetail && (
+                        <td className="px-3 py-2.5">
+                          <button
+                            type="button"
+                            onClick={() => toggleExpanded(key)}
+                            aria-expanded={isOpen}
+                            title={isOpen ? "إخفاء التفاصيل" : "عرض التفاصيل"}
+                            className="rounded-lg px-2 py-1 text-xs font-bold text-emerald-700 hover:bg-emerald-50 dark:text-emerald-400 dark:hover:bg-emerald-900/30"
+                          >
+                            {isOpen ? "▲ إخفاء" : "▼ التفاصيل"}
+                          </button>
+                        </td>
+                      )}
+                    </tr>
+                    {renderDetail && isOpen && (
+                      <tr className="border-b border-slate-100 dark:border-slate-800">
+                        <td
+                          colSpan={columns.length + 1}
+                          className="bg-slate-50 px-3 py-3 dark:bg-slate-800/40"
+                        >
+                          {renderDetail(row)}
+                        </td>
+                      </tr>
+                    )}
+                  </Fragment>
+                );
+              })}
             </tbody>
           ) : (
             <tbody>
               <tr>
                 <td
-                  colSpan={columns.length}
+                  colSpan={columns.length + (renderDetail ? 1 : 0)}
                   className="py-8 text-center text-sm text-slate-400 dark:text-slate-500"
                 >
                   لا توجد نتائج مطابقة لبحثك.
