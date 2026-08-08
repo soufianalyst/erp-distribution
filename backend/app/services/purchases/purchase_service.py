@@ -150,12 +150,53 @@ class PurchaseService:
             total_tax += amount
         return total_tax
 
+    @staticmethod
+    def _freight_by_value(
+        shipping_cost: Decimal, line_values: list[Decimal]
+    ) -> list[Decimal]:
+        """Split freight across the lines in proportion to their value.
+
+        Freight belongs in the cost of the goods it carried, and the ledger already
+        capitalises it into account 1030. It was never pushed down onto the batches,
+        so the books held the freight and the shelf did not — and the two could not
+        agree, by exactly the freight paid. Measured on a freshly seeded database:
+        4,200.00 of shipping against 4,199.77 of unexplained difference.
+
+        The last line absorbs the rounding remainder so the parts always sum to the
+        whole: 500 across three equal lines gives 166.67 + 166.67 + 166.66, never
+        500.01.
+        """
+        total_value = sum(line_values)
+        if shipping_cost <= 0 or total_value <= 0 or not line_values:
+            return [Decimal("0")] * len(line_values)
+        shares = [
+            (shipping_cost * value / total_value).quantize(
+                TWO_PLACES, rounding=ROUND_HALF_UP
+            )
+            for value in line_values[:-1]
+        ]
+        shares.append(shipping_cost - sum(shares))
+        return shares
+
     async def _build_lines(
         self, invoice: PurchaseInvoice, data: PurchaseInvoiceCreate
     ) -> Decimal:
-        """Enter each line's goods into stock (upserting batches); returns the subtotal."""
+        """Enter each line's goods into stock (upserting batches); returns the subtotal.
+
+        The subtotal is the goods alone — freight is added on top of it for the
+        ledger, and folded into each batch's unit cost here so the shelf carries the
+        same money the books do.
+        """
+        line_values = [
+            (line.quantity * line.unit_cost).quantize(
+                TWO_PLACES, rounding=ROUND_HALF_UP
+            )
+            for line in data.lines
+        ]
+        freight = self._freight_by_value(data.shipping_cost, line_values)
+
         subtotal = Decimal("0")
-        for line in data.lines:
+        for index, line in enumerate(data.lines):
             product = await self.session.execute(
                 select(Product)
                 .options(selectinload(Product.units))
@@ -173,16 +214,24 @@ class PurchaseService:
             base_quantity = self.stock.to_base_quantity(
                 product_obj, line.quantity, line.unit_id
             )
-            line_total = (line.quantity * line.unit_cost).quantize(
-                TWO_PLACES, rounding=ROUND_HALF_UP
-            )
-            base_unit_cost = (
-                (line_total / base_quantity).quantize(
-                    FOUR_PLACES, rounding=ROUND_HALF_UP
+            line_total = line_values[index]
+
+            def per_base_unit(amount: Decimal) -> Decimal:
+                return (
+                    (amount / base_quantity).quantize(
+                        FOUR_PLACES, rounding=ROUND_HALF_UP
+                    )
+                    if base_quantity > 0
+                    else Decimal("0")
                 )
-                if base_quantity > 0
-                else Decimal("0")
-            )
+
+            # Two different costs, deliberately. The invoice line records what the
+            # supplier charged — it is their document, and `unit_cost × quantity`
+            # has to come back to `line_total` or the invoice contradicts itself.
+            # The batch records what the goods *landed* at, freight included,
+            # because that is what the stock is worth and what account 1030 holds.
+            goods_unit_cost = per_base_unit(line_total)
+            landed_unit_cost = per_base_unit(line_total + freight[index])
 
             batch = await self.stock.add_stock_no_commit(
                 product_id=line.product_id,
@@ -190,7 +239,7 @@ class PurchaseService:
                 batch_number=line.batch_number,
                 expiry_date=line.expiry_date,
                 base_quantity=base_quantity,
-                unit_cost=base_unit_cost,
+                unit_cost=landed_unit_cost,
             )
             # Flush so new batches get their id without ending the transaction.
             await self.session.flush()
@@ -202,7 +251,7 @@ class PurchaseService:
                     batch_number=line.batch_number,
                     expiry_date=line.expiry_date,
                     quantity=base_quantity,
-                    unit_cost=base_unit_cost,
+                    unit_cost=goods_unit_cost,
                     line_total=line_total,
                 )
             )

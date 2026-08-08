@@ -394,6 +394,7 @@ async def main() -> None:
         # --- Van sales by the assigned salesman ---
         with phase("8. Van sales"):
             van_invoices = []
+            van_already: list[dict] = []  # replayed uuids the sync already knows
             van_errors: list[str] = []
             if van_driver is None:
                 print("  no salesman holds this van — skipping (assign one to "
@@ -418,6 +419,8 @@ async def main() -> None:
                 result = r.json()["data"]
                 van_invoices.extend(
                     x for x in result["results"] if x["status"] == "created")
+                van_already.extend(
+                    x for x in result["results"] if x["status"] == "duplicate")
                 for x in result["results"]:
                     if x["status"] == "failed" and not van_errors:
                         van_errors.append(f"{x['client_uuid']}: {x['message']}")
@@ -425,16 +428,27 @@ async def main() -> None:
             if van_errors:
                 print(f"  first rejection: {van_errors[0]}")
             if van_driver is not None:
-                check("field sync created the van sales",
-                      van_invoices and not van_errors,
-                      van_errors[0] if van_errors else "nothing created")
+                # A re-run replays the same client_uuids, and the sync is idempotent
+                # by design — it answers "duplicate", not "created". Asserting on
+                # `created` alone therefore failed on every second run, reporting the
+                # replay protection as a fault. What matters is that nothing was
+                # rejected and the van has sales.
+                van_ok = not van_errors and (van_invoices or van_already)
+                check("field sync accepted the van sales",
+                      van_ok,
+                      van_errors[0] if van_errors else "no van sales exist")
 
         # --- The cashier collects, sometimes partially ---
         with phase("9. Cashier collections"):
             pending = await cashier.get("/cashier/invoices")
             collected = partial = 0
             for inv in pending:
-                due = Decimal(inv["total"]) - Decimal(inv["paid_amount"])
+                # `amount_due` is what the till screen shows: total, less returns
+                # already booked, less what has been collected. It is the whole
+                # answer — subtracting `paid_amount` from it again double-counts the
+                # payments and asks the cashier to take 0.00, which the API rightly
+                # rejects. Using `total` instead overshoots when a return exists.
+                due = Decimal(str(inv.get("amount_due") or inv["total"]))
                 if due <= 0:
                     continue
                 if random.random() < 0.15:
@@ -617,17 +631,46 @@ async def main() -> None:
               f"{len(leaked)} uncollected invoices are deliverable: {list(leaked)[:5]}")
 
         # Customer balances must equal what the ledger says they owe.
+        # One fetch, indexed by customer: the endpoint has no per-customer filter,
+        # and asking per customer inside the loop would have summed every customer's
+        # credits against each one — a check that could never fail.
+        credits_by_customer: dict[int, Decimal] = defaultdict(Decimal)
+        for credit in await admin.get("/sales/credits"):
+            credits_by_customer[credit["customer_id"]] += Decimal(str(credit["amount"]))
+
         bal_bad = []
         over_limit = []
         for cust in random.sample(customers, min(20, len(customers))):
             st = await admin.get(f"/sales/customers/{cust['id']}/statement")
             bal = Decimal(str(st["balance"]))
-            if bal < 0:
-                bal_bad.append(f"{cust['name']}: {bal}")
+            # A negative balance is legitimate when the customer is genuinely in
+            # credit: they paid in full and then returned goods, so the company owes
+            # them until the credit is refunded or applied. That path did not exist
+            # when this invariant was written, and it flagged a customer who had paid
+            # 9,106.00, returned 162.40 and held exactly one open credit note. What
+            # would be wrong is a negative balance with nothing owed behind it.
+            owed_back = credits_by_customer.get(cust["id"], Decimal("0"))
+            if bal < 0 and abs(bal) > owed_back:
+                bal_bad.append(f"{cust['name']}: {bal} with only {owed_back} in credits")
             limit = Decimal(cust["credit_limit"])
+            # The gate governs *credit* sales, so only credit exposure can breach it.
+            # Measuring the whole statement balance flagged three customers who had
+            # never taken a credit invoice at all: what they "owed" was cash invoices
+            # still sitting at the till, which the cashier gate already holds back
+            # from delivery. That is stock not yet handed over, not credit granted.
+            credit_owed = sum(
+                (
+                    Decimal(str(i["total"])) - Decimal(str(i["paid_amount"]))
+                    for i in st["invoices"]
+                    if i["payment_method"] == "credit"
+                ),
+                Decimal("0"),
+            )
             # The gate allows reaching the limit, never passing it without override.
-            if limit > 0 and bal > limit:
-                over_limit.append(f"{cust['name']}: owes {bal} on a {limit} limit")
+            if limit > 0 and credit_owed > limit:
+                over_limit.append(
+                    f"{cust['name']}: owes {credit_owed} on credit against a {limit} limit"
+                )
         check("no customer statement is negative", not bal_bad, "; ".join(bal_bad[:3]))
         check("no customer exceeded their credit limit", not over_limit,
               "; ".join(over_limit[:3]))

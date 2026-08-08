@@ -121,9 +121,26 @@ class StockService:
                 raise AppException(
                     409, "رقم التشغيلة مسجل من قبل بتاريخ انتهاء مختلف، يرجى التحقق."
                 )
-            batch.quantity += base_quantity
+            # Weighted average, not replacement. Overwriting the cost revalued every
+            # unit already on the shelf at the new price, silently and with no journal
+            # entry behind it: receive 100 at 60 and then 50 at 80, and the shelf was
+            # suddenly worth 150 × 80 = 12,000 while the ledger held 10,000. The 2,000
+            # difference was a revaluation nobody authorised and no report showed.
+            #
+            # Averaging keeps the batch worth exactly what was paid for its contents,
+            # which is what makes the shelf and account 1030 agree.
             if unit_cost is not None:
-                batch.unit_cost = unit_cost
+                previous_value = batch.quantity * (batch.unit_cost or Decimal("0"))
+                arriving_value = base_quantity * unit_cost
+                new_quantity = batch.quantity + base_quantity
+                batch.unit_cost = (
+                    ((previous_value + arriving_value) / new_quantity).quantize(
+                        Decimal("0.0001"), rounding=ROUND_HALF_UP
+                    )
+                    if new_quantity > 0
+                    else unit_cost
+                )
+            batch.quantity += base_quantity
         else:
             batch = ProductBatch(
                 product_id=product_id,

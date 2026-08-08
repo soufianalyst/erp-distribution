@@ -32,3 +32,4 @@ frontend/public/_shot.html
 
 # Generated intermediate HTML for the manual PDF
 docs/user-manual/.build/
+backups/

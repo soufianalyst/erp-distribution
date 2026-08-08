@@ -153,9 +153,11 @@ class TestAutomaticPostings:
         assert revenue_entry["4010"] == (Decimal("0"), Decimal("262.50"))
         assert revenue_entry["2020"] == (Decimal("0"), Decimal("42.00"))
 
-        # COGS: 25 x 8.00 = 200 out of inventory.
-        assert cogs_entry["5010"] == (Decimal("200.00"), Decimal("0"))
-        assert cogs_entry["1030"] == (Decimal("0"), Decimal("200.00"))
+        # COGS: 25 x 8.20 = 205 out of inventory. The unit lands at 8.20, not the
+        # supplier's 8.00, because this fixture's purchase carries 20.00 of shipping
+        # over 100 units and freight is now part of what the goods cost.
+        assert cogs_entry["5010"] == (Decimal("205.00"), Decimal("0"))
+        assert cogs_entry["1030"] == (Decimal("0"), Decimal("205.00"))
 
     async def test_customer_payment_posting(self, client: AsyncClient) -> None:
         admin = await login(client, "admin", TEST_ADMIN_PASSWORD)
@@ -227,9 +229,9 @@ class TestAutomaticPostings:
         assert revenue_entry["2020"] == (Decimal("16.80"), Decimal("0"))
         assert revenue_entry["1020"] == (Decimal("0"), Decimal("121.80"))
 
-        # Resellable: cost 80 back into inventory, out of COGS.
-        assert cost_entry["1030"] == (Decimal("80.00"), Decimal("0"))
-        assert cost_entry["5010"] == (Decimal("0"), Decimal("80.00"))
+        # Resellable: 10 x 8.20 = 82.00 of cost back into inventory, out of COGS.
+        assert cost_entry["1030"] == (Decimal("82.00"), Decimal("0"))
+        assert cost_entry["5010"] == (Decimal("0"), Decimal("82.00"))
 
     async def test_damaged_return_posts_loss_not_inventory(
         self, client: AsyncClient
@@ -253,8 +255,9 @@ class TestAutomaticPostings:
         cost_entry = next(
             items_by_code(e) for e in entries if "تكلفة" in e["description"]
         )
-        # Damaged goods become a loss (5030), never inventory (1030).
-        assert cost_entry["5030"] == (Decimal("80.00"), Decimal("0"))
+        # Damaged goods become a loss (5030), never inventory (1030) — at the same
+        # landed 8.20 a unit: 10 x 8.20 = 82.00.
+        assert cost_entry["5030"] == (Decimal("82.00"), Decimal("0"))
         assert "1030" not in cost_entry
 
 
@@ -449,12 +452,13 @@ class TestIncomeStatement:
         )
         assert response.status_code == 200
         report = response.json()["data"]
-        # Revenue: 25 x 10.50 = 262.50. COGS: 25 x 8.00 = 200.00.
+        # Revenue: 25 x 10.50 = 262.50. COGS: 25 x 8.20 landed = 205.00.
         assert as_decimal(report["total_revenue"]) == Decimal("262.50")
-        assert as_decimal(report["total_cogs"]) == Decimal("200.00")
-        assert as_decimal(report["gross_profit"]) == Decimal("62.50")
+        assert as_decimal(report["total_cogs"]) == Decimal("205.00")
+        assert as_decimal(report["gross_profit"]) == Decimal("57.50")
         assert as_decimal(report["total_expenses"]) == Decimal("0")
-        assert as_decimal(report["net_profit"]) == Decimal("62.50")
+        # No expenses, so net follows gross exactly.
+        assert as_decimal(report["net_profit"]) == Decimal("57.50")
 
     async def test_resellable_return_reduces_revenue_and_cogs(
         self, client: AsyncClient
@@ -478,11 +482,11 @@ class TestIncomeStatement:
         )
         assert response.status_code == 200
         report = response.json()["data"]
-        # Revenue: 262.50 - (5 x 10.50) = 210.00. COGS: 200.00 - (5 x 8.00) = 160.00.
+        # Revenue: 262.50 - (5 x 10.50) = 210.00. COGS: 205.00 - (5 x 8.20) = 164.00.
         assert as_decimal(report["total_revenue"]) == Decimal("210.00")
-        assert as_decimal(report["total_cogs"]) == Decimal("160.00")
-        assert as_decimal(report["gross_profit"]) == Decimal("50.00")
-        assert as_decimal(report["net_profit"]) == Decimal("50.00")
+        assert as_decimal(report["total_cogs"]) == Decimal("164.00")
+        assert as_decimal(report["gross_profit"]) == Decimal("46.00")
+        assert as_decimal(report["net_profit"]) == Decimal("46.00")
 
     async def test_date_filter_excludes_other_periods(
         self, client: AsyncClient, db_session: AsyncSession

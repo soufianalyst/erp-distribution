@@ -127,7 +127,13 @@ class TestPurchaseInvoices:
         assert invoice["taxes"][0]["tax_rate_id"] == DEFAULT_TAX_RATE_ID
         assert as_decimal(invoice["taxes"][0]["amount"]) == Decimal("128.00")
 
-        # Stock arrived with the batch and its cost.
+        # Stock arrived with the batch, valued at what it *landed* at.
+        #
+        # 8.00 from the supplier plus this line's share of the 20.00 shipping —
+        # the only line, so all of it — over 100 units: 8.20 each. The batch used
+        # to be valued at 8.00 while the ledger capitalised the freight, and the
+        # two records then differed by exactly the shipping on every purchase
+        # (see test_inventory_reconciliation.TestFreightLandsOnTheGoods).
         batches = (
             await client.get(
                 f"/api/v1/inventory/products/{product['id']}/batches", headers=admin
@@ -136,7 +142,7 @@ class TestPurchaseInvoices:
         assert len(batches) == 1
         assert batches[0]["batch_number"] == "PB-1"
         assert as_decimal(batches[0]["quantity"]) == Decimal("100")
-        assert as_decimal(batches[0]["unit_cost"]) == Decimal("8.00")
+        assert as_decimal(batches[0]["unit_cost"]) == Decimal("8.2000")
 
         # Cash purchase shows as owed until the cashier actually pays the
         # supplier out of the register (see test_cashier.py for that flow).
