@@ -1,10 +1,13 @@
-// The office's side of the customer portal (بوابة العملاء).
+// Customer requests (طلبات العملاء) — a module of the main system.
 //
-// Two jobs live here, and they are the two things the portal cannot do for
-// itself: answering the orders shops send in, and deciding who is allowed to
-// send them at all.
+// Shops send requests in from their own portal; this is where the company
+// answers them. Deliberately an ordinary ERP module beside sales and stock,
+// not a second portal: the only separate application is the customer's.
 //
-// An order arriving here is a *request*, not a sale — it has moved no stock and
+// Opening and withdrawing a customer's portal access is *not* here. That is
+// administration of the customer, and lives on the customers page.
+//
+// A request arriving here is a request, not a sale — it has moved no stock and
 // carries no price, because nothing is priced until this screen turns it into an
 // invoice. That is why the queue shows quantities and never a total: quoting one
 // would mean the portal had already decided what the sale is worth.
@@ -22,7 +25,6 @@ import {
   Table,
   qty,
 } from "../components/Ui";
-import { useAuth } from "../context/AuthContext";
 import useFetch from "../hooks/useFetch";
 import api, { apiMessage } from "../services/api";
 
@@ -395,269 +397,16 @@ function OrdersQueue({ onNotice }) {
   );
 }
 
-function AccountDialog({ onClose, onDone }) {
-  const [customerId, setCustomerId] = useState("");
-  const [loginId, setLoginId] = useState("");
-  const [password, setPassword] = useState("");
-  const [saving, setSaving] = useState(false);
-  const [error, setError] = useState(null);
-
-  const customers = useFetch(() => api.get("/sales/customers"));
-
-  const submit = async (event) => {
-    event.preventDefault();
-    setSaving(true);
-    setError(null);
-    try {
-      const { data } = await api.post("/customer-logins", {
-        customer_id: Number(customerId),
-        login_id: loginId,
-        temporary_password: password,
-      });
-      onDone(data.message);
-    } catch (err) {
-      setError(apiMessage(err));
-      setSaving(false);
-    }
-  };
-
-  return (
-    <Modal open title="فتح حساب بوابة لعميل" onClose={onClose}>
-      <form onSubmit={submit} className="space-y-4">
-        <Select
-          label="العميل"
-          value={customerId}
-          onChange={(e) => setCustomerId(e.target.value)}
-          required
-        >
-          <option value="">— اختر العميل —</option>
-          {(customers.data ?? [])
-            .filter((c) => c.is_active)
-            .map((c) => (
-              <option key={c.id} value={c.id}>
-                {c.name}
-              </option>
-            ))}
-        </Select>
-        <Input
-          label="معرّف الدخول (رقم الجوال أو البريد)"
-          value={loginId}
-          onChange={(e) => setLoginId(e.target.value)}
-          required
-          minLength={3}
-          maxLength={120}
-        />
-        <Input
-          label="كلمة مرور مؤقتة"
-          value={password}
-          onChange={(e) => setPassword(e.target.value)}
-          required
-          minLength={8}
-          maxLength={200}
-        />
-        {/* Said plainly, because the office hands this over by phone and the
-            portal refuses everything until the customer replaces it. */}
-        <p className="text-sm text-slate-500 dark:text-slate-400">
-          سلّم العميل كلمة المرور المؤقتة بنفسك؛ سيُطلب منه تغييرها عند أول دخول،
-          ولن يستطيع استخدام البوابة قبل ذلك.
-        </p>
-        <Alert>{error}</Alert>
-        <div className="flex justify-end gap-2">
-          <CancelButton onClose={onClose} />
-          <Button type="submit" disabled={saving}>
-            {saving ? "جارٍ الفتح…" : "فتح الحساب"}
-          </Button>
-        </div>
-      </form>
-    </Modal>
-  );
-}
-
-function ResetDialog({ account, onClose, onDone }) {
-  const [password, setPassword] = useState("");
-  const [saving, setSaving] = useState(false);
-  const [error, setError] = useState(null);
-
-  const submit = async (event) => {
-    event.preventDefault();
-    setSaving(true);
-    setError(null);
-    try {
-      const { data } = await api.put(`/customer-logins/${account.id}`, {
-        temporary_password: password,
-      });
-      onDone(data.message);
-    } catch (err) {
-      setError(apiMessage(err));
-      setSaving(false);
-    }
-  };
-
-  return (
-    <Modal open title={`كلمة مرور جديدة لـ ${account.customer_name}`} onClose={onClose}>
-      <form onSubmit={submit} className="space-y-4">
-        <Input
-          label="كلمة مرور مؤقتة"
-          value={password}
-          onChange={(e) => setPassword(e.target.value)}
-          required
-          minLength={8}
-          maxLength={200}
-          autoFocus
-        />
-        <p className="text-sm text-slate-500 dark:text-slate-400">
-          هذا أيضاً يفكّ الإيقاف المؤقت الناتج عن محاولات دخول خاطئة.
-        </p>
-        <Alert>{error}</Alert>
-        <div className="flex justify-end gap-2">
-          <CancelButton onClose={onClose} />
-          <Button type="submit" disabled={saving}>
-            {saving ? "جارٍ الحفظ…" : "حفظ"}
-          </Button>
-        </div>
-      </form>
-    </Modal>
-  );
-}
-
-function PortalAccounts({ onNotice }) {
-  const [creating, setCreating] = useState(false);
-  const [resetting, setResetting] = useState(null);
-  const [error, setError] = useState(null);
-  const accounts = useFetch(() => api.get("/customer-logins"));
-
-  const toggle = async (account) => {
-    setError(null);
-    try {
-      const { data } = await api.put(`/customer-logins/${account.id}`, {
-        is_active: !account.is_active,
-      });
-      onNotice(data.message);
-      accounts.reload();
-    } catch (err) {
-      setError(apiMessage(err));
-    }
-  };
-
-  const columns = [
-    { key: "customer_name", label: "العميل" },
-    { key: "login_id", label: "معرّف الدخول" },
-    {
-      key: "state",
-      label: "الحالة",
-      search: (row) => (row.is_active ? "مفعل" : "موقوف"),
-      render: (row) => (
-        <div className="flex flex-wrap gap-1">
-          <Badge tone={row.is_active ? "green" : "slate"}>
-            {row.is_active ? "مفعّل" : "موقوف"}
-          </Badge>
-          {row.is_locked ? <Badge tone="red">موقوف مؤقتاً</Badge> : null}
-          {row.must_change_password ? (
-            <Badge tone="amber">بانتظار تغيير كلمة المرور</Badge>
-          ) : null}
-        </div>
-      ),
-    },
-    {
-      key: "last_login_at",
-      label: "آخر دخول",
-      render: (row) =>
-        row.last_login_at ? new Date(row.last_login_at).toLocaleString("ar") : "لم يدخل بعد",
-    },
-    {
-      key: "actions",
-      label: "",
-      sortable: false,
-      render: (row) => (
-        <div className="flex flex-wrap gap-2">
-          <Button variant="secondary" onClick={() => setResetting(row)}>
-            كلمة مرور جديدة
-          </Button>
-          <Button
-            variant={row.is_active ? "danger" : "secondary"}
-            onClick={() => toggle(row)}
-          >
-            {row.is_active ? "إيقاف" : "إعادة تفعيل"}
-          </Button>
-        </div>
-      ),
-    },
-  ];
-
-  return (
-    <Card
-      title="حسابات العملاء على البوابة"
-      actions={<Button onClick={() => setCreating(true)}>فتح حساب جديد</Button>}
-    >
-      <Alert>{error ?? accounts.error}</Alert>
-      <Table
-        columns={columns}
-        rows={accounts.data ?? []}
-        empty="لم يُفتح أي حساب بوابة بعد."
-      />
-      {creating ? (
-        <AccountDialog
-          onClose={() => setCreating(false)}
-          onDone={(message) => {
-            setCreating(false);
-            onNotice(message);
-            accounts.reload();
-          }}
-        />
-      ) : null}
-      {resetting ? (
-        <ResetDialog
-          account={resetting}
-          onClose={() => setResetting(null)}
-          onDone={(message) => {
-            setResetting(null);
-            onNotice(message);
-            accounts.reload();
-          }}
-        />
-      ) : null}
-    </Card>
-  );
-}
-
-export default function PortalOrdersPage() {
-  const { can } = useAuth();
-  const canReview = can("sales.orders_review");
-  const canManageAccounts = can("customers.portal_access");
-  const [tab, setTab] = useState(canReview ? "orders" : "accounts");
+export default function CustomerRequestsPage() {
   const [notice, setNotice] = useState(null);
 
   return (
     <div className="space-y-4">
-      <div className="flex flex-wrap items-center gap-2">
-        <h1 className="ms-auto text-xl font-bold text-slate-800 dark:text-slate-100">
-          بوابة العملاء
-        </h1>
-      </div>
-
-      {canReview && canManageAccounts ? (
-        <div className="flex flex-wrap gap-2">
-          <Button
-            variant={tab === "orders" ? "primary" : "secondary"}
-            onClick={() => setTab("orders")}
-          >
-            الطلبات
-          </Button>
-          <Button
-            variant={tab === "accounts" ? "primary" : "secondary"}
-            onClick={() => setTab("accounts")}
-          >
-            الحسابات
-          </Button>
-        </div>
-      ) : null}
-
+      <h1 className="text-xl font-bold text-slate-800 dark:text-slate-100">
+        طلبات العملاء
+      </h1>
       <Alert tone="success">{notice}</Alert>
-
-      {tab === "orders" && canReview ? <OrdersQueue onNotice={setNotice} /> : null}
-      {tab === "accounts" && canManageAccounts ? (
-        <PortalAccounts onNotice={setNotice} />
-      ) : null}
+      <OrdersQueue onNotice={setNotice} />
     </div>
   );
 }

@@ -3,6 +3,10 @@
 //
 // Also where receipts (سند قبض) are recorded against a customer's balance and
 // where their statement is read — the document handed over when settling up.
+//
+// Portal access lives here too: giving a shop a way to sign in is administration
+// of that customer, not review of the requests they later send. Those are two
+// different jobs held by two different permissions, so they sit on two screens.
 import { useState } from "react";
 import {
   CancelButton,
@@ -31,6 +35,232 @@ const EMPTY_FORM = {
   credit_limit: "0",
   salesman_id: "",
 };
+
+function AccountDialog({ onClose, onDone }) {
+  const [customerId, setCustomerId] = useState("");
+  const [loginId, setLoginId] = useState("");
+  const [password, setPassword] = useState("");
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState(null);
+
+  const customers = useFetch(() => api.get("/sales/customers"));
+
+  const submit = async (event) => {
+    event.preventDefault();
+    setSaving(true);
+    setError(null);
+    try {
+      const { data } = await api.post("/customer-logins", {
+        customer_id: Number(customerId),
+        login_id: loginId,
+        temporary_password: password,
+      });
+      onDone(data.message);
+    } catch (err) {
+      setError(apiMessage(err));
+      setSaving(false);
+    }
+  };
+
+  return (
+    <Modal open title="فتح حساب بوابة لعميل" onClose={onClose}>
+      <form onSubmit={submit} className="space-y-4">
+        <Select
+          label="العميل"
+          value={customerId}
+          onChange={(e) => setCustomerId(e.target.value)}
+          required
+        >
+          <option value="">— اختر العميل —</option>
+          {(customers.data ?? [])
+            .filter((c) => c.is_active)
+            .map((c) => (
+              <option key={c.id} value={c.id}>
+                {c.name}
+              </option>
+            ))}
+        </Select>
+        <Input
+          label="معرّف الدخول (رقم الجوال أو البريد)"
+          value={loginId}
+          onChange={(e) => setLoginId(e.target.value)}
+          required
+          minLength={3}
+          maxLength={120}
+        />
+        <Input
+          label="كلمة مرور مؤقتة"
+          value={password}
+          onChange={(e) => setPassword(e.target.value)}
+          required
+          minLength={8}
+          maxLength={200}
+        />
+        {/* Said plainly, because the office hands this over by phone and the
+            portal refuses everything until the customer replaces it. */}
+        <p className="text-sm text-slate-500 dark:text-slate-400">
+          سلّم العميل كلمة المرور المؤقتة بنفسك؛ سيُطلب منه تغييرها عند أول دخول،
+          ولن يستطيع استخدام البوابة قبل ذلك.
+        </p>
+        <Alert>{error}</Alert>
+        <div className="flex justify-end gap-2">
+          <CancelButton onClose={onClose} />
+          <Button type="submit" disabled={saving}>
+            {saving ? "جارٍ الفتح…" : "فتح الحساب"}
+          </Button>
+        </div>
+      </form>
+    </Modal>
+  );
+}
+
+function ResetDialog({ account, onClose, onDone }) {
+  const [password, setPassword] = useState("");
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState(null);
+
+  const submit = async (event) => {
+    event.preventDefault();
+    setSaving(true);
+    setError(null);
+    try {
+      const { data } = await api.put(`/customer-logins/${account.id}`, {
+        temporary_password: password,
+      });
+      onDone(data.message);
+    } catch (err) {
+      setError(apiMessage(err));
+      setSaving(false);
+    }
+  };
+
+  return (
+    <Modal open title={`كلمة مرور جديدة لـ ${account.customer_name}`} onClose={onClose}>
+      <form onSubmit={submit} className="space-y-4">
+        <Input
+          label="كلمة مرور مؤقتة"
+          value={password}
+          onChange={(e) => setPassword(e.target.value)}
+          required
+          minLength={8}
+          maxLength={200}
+          autoFocus
+        />
+        <p className="text-sm text-slate-500 dark:text-slate-400">
+          هذا أيضاً يفكّ الإيقاف المؤقت الناتج عن محاولات دخول خاطئة.
+        </p>
+        <Alert>{error}</Alert>
+        <div className="flex justify-end gap-2">
+          <CancelButton onClose={onClose} />
+          <Button type="submit" disabled={saving}>
+            {saving ? "جارٍ الحفظ…" : "حفظ"}
+          </Button>
+        </div>
+      </form>
+    </Modal>
+  );
+}
+
+function PortalAccounts({ onNotice }) {
+  const [creating, setCreating] = useState(false);
+  const [resetting, setResetting] = useState(null);
+  const [error, setError] = useState(null);
+  const accounts = useFetch(() => api.get("/customer-logins"));
+
+  const toggle = async (account) => {
+    setError(null);
+    try {
+      const { data } = await api.put(`/customer-logins/${account.id}`, {
+        is_active: !account.is_active,
+      });
+      onNotice(data.message);
+      accounts.reload();
+    } catch (err) {
+      setError(apiMessage(err));
+    }
+  };
+
+  const columns = [
+    { key: "customer_name", label: "العميل" },
+    { key: "login_id", label: "معرّف الدخول" },
+    {
+      key: "state",
+      label: "الحالة",
+      search: (row) => (row.is_active ? "مفعل" : "موقوف"),
+      render: (row) => (
+        <div className="flex flex-wrap gap-1">
+          <Badge tone={row.is_active ? "green" : "slate"}>
+            {row.is_active ? "مفعّل" : "موقوف"}
+          </Badge>
+          {row.is_locked ? <Badge tone="red">موقوف مؤقتاً</Badge> : null}
+          {row.must_change_password ? (
+            <Badge tone="amber">بانتظار تغيير كلمة المرور</Badge>
+          ) : null}
+        </div>
+      ),
+    },
+    {
+      key: "last_login_at",
+      label: "آخر دخول",
+      render: (row) =>
+        row.last_login_at ? new Date(row.last_login_at).toLocaleString("ar") : "لم يدخل بعد",
+    },
+    {
+      key: "actions",
+      label: "",
+      sortable: false,
+      render: (row) => (
+        <div className="flex flex-wrap gap-2">
+          <Button variant="secondary" onClick={() => setResetting(row)}>
+            كلمة مرور جديدة
+          </Button>
+          <Button
+            variant={row.is_active ? "danger" : "secondary"}
+            onClick={() => toggle(row)}
+          >
+            {row.is_active ? "إيقاف" : "إعادة تفعيل"}
+          </Button>
+        </div>
+      ),
+    },
+  ];
+
+  return (
+    <Card
+      title="حسابات الدخول إلى بوابة العملاء"
+      actions={<Button onClick={() => setCreating(true)}>فتح حساب جديد</Button>}
+    >
+      <Alert>{error ?? accounts.error}</Alert>
+      <Table
+        columns={columns}
+        rows={accounts.data ?? []}
+        empty="لم يُفتح أي حساب بوابة بعد."
+      />
+      {creating ? (
+        <AccountDialog
+          onClose={() => setCreating(false)}
+          onDone={(message) => {
+            setCreating(false);
+            onNotice(message);
+            accounts.reload();
+          }}
+        />
+      ) : null}
+      {resetting ? (
+        <ResetDialog
+          account={resetting}
+          onClose={() => setResetting(null)}
+          onDone={(message) => {
+            setResetting(null);
+            onNotice(message);
+            accounts.reload();
+          }}
+        />
+      ) : null}
+    </Card>
+  );
+}
+
 
 /** Record a receipt against this customer's balance and show their statement. */
 function PaymentSection({ customerId, onPaid }) {
@@ -87,6 +317,8 @@ export default function CustomersPage() {
   const [form, setForm] = useState(EMPTY_FORM);
   const [formError, setFormError] = useState(null);
   const [statement, setStatement] = useState(null);
+  // Confirmation for the portal-access section below the list.
+  const [notice, setNotice] = useState(null);
   const set = (key) => (e) => setForm({ ...form, [key]: e.target.value });
 
   const submit = async (event) => {
@@ -230,6 +462,13 @@ export default function CustomersPage() {
           </div>
         ) : null}
       </Modal>
+
+      {can("customers.portal_access") ? (
+        <>
+          <Alert tone="success">{notice}</Alert>
+          <PortalAccounts onNotice={setNotice} />
+        </>
+      ) : null}
     </div>
   );
 }

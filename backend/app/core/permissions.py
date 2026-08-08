@@ -42,7 +42,7 @@ PERMISSION_GROUPS: list[dict] = [
             },
             {
                 "code": "sales.orders_review",
-                "label": "مراجعة طلبات العملاء من البوابة واعتمادها",
+                "label": "مراجعة طلبات العملاء واعتمادها",
             },
             {"code": "sales.view", "label": "عرض فواتير المبيعات"},
             {"code": "sales.create", "label": "إصدار فواتير مبيعات"},
@@ -244,7 +244,6 @@ ROLE_DEFAULT_PERMISSIONS: dict[str, frozenset[str]] = {
             "customers.view",
             "customers.manage",
             "customers.portal_access",
-            "sales.orders_review",
             "sales.view",
             "sales.payments",
             "sales.all_customers",

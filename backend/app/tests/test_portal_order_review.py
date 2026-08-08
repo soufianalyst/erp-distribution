@@ -15,8 +15,11 @@ from decimal import Decimal
 from httpx import AsyncClient
 
 from app.tests.conftest import (
+    TEST_ACCOUNTANT_PASSWORD,
     TEST_ADMIN_PASSWORD,
+    TEST_CASHIER_PASSWORD,
     TEST_SALES_PASSWORD,
+    TEST_STORE_PASSWORD,
     login,
 )
 from app.tests.test_portal_account import ready_portal_customer
@@ -225,3 +228,47 @@ class TestReach:
         assert (await client.post(
             f"/api/v1/customer-orders/{order_id}/approve", headers=customer
         )).status_code == 401
+
+
+class TestWhoMayWorkTheQueue:
+    """Answering a customer's request is the manager's job and the rep's.
+
+    Written as an explicit roster rather than a spot check, because "who can see
+    this" is the kind of rule that drifts a permission at a time — the accountant
+    held it briefly and it was not obvious from any test that they did. Reviewing
+    the request is sales work; the accountant reviews the invoice it becomes.
+    """
+
+    async def test_only_the_manager_and_the_reps_reach_it(
+        self, client: AsyncClient
+    ) -> None:
+        allowed = {
+            "admin": TEST_ADMIN_PASSWORD,
+            "salesman": TEST_SALES_PASSWORD,
+        }
+        refused = {
+            "accountant": TEST_ACCOUNTANT_PASSWORD,
+            "storekeeper": TEST_STORE_PASSWORD,
+            "cashier": TEST_CASHIER_PASSWORD,
+        }
+
+        for username, password in allowed.items():
+            headers = await login(client, username, password)
+            response = await client.get("/api/v1/customer-orders", headers=headers)
+            assert response.status_code == 200, f"{username} should reach the queue"
+
+        for username, password in refused.items():
+            headers = await login(client, username, password)
+            response = await client.get("/api/v1/customer-orders", headers=headers)
+            assert response.status_code == 403, f"{username} should not reach the queue"
+
+    async def test_opening_a_portal_account_is_a_different_authority(
+        self, client: AsyncClient
+    ) -> None:
+        """A rep works the queue but may not hand out the way in — the separation
+        that keeps the person holding the relationship from also granting access."""
+        salesman = await login(client, "salesman", TEST_SALES_PASSWORD)
+        assert (await client.get(
+            "/api/v1/customer-orders", headers=salesman)).status_code == 200
+        assert (await client.get(
+            "/api/v1/customer-logins", headers=salesman)).status_code == 403

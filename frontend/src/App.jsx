@@ -24,7 +24,7 @@ import PrintPickupPrepPage from "./pages/PrintPickupPrepPage";
 import PrintStocktakePage from "./pages/PrintStocktakePage";
 import ProductsPage from "./pages/ProductsPage";
 import PurchasesPage from "./pages/PurchasesPage";
-import PortalOrdersPage from "./pages/PortalOrdersPage";
+import CustomerRequestsPage from "./pages/CustomerRequestsPage";
 import PortalCatalog from "./portal/PortalCatalog";
 import PortalHome from "./portal/PortalHome";
 import { PortalInvoices, PortalStatement } from "./portal/PortalInvoices";
@@ -182,10 +182,10 @@ function StaffApp() {
                 }
               />
               <Route
-                path="/portal-orders"
+                path="/customer-requests"
                 element={
                   <RequirePerm perm="sales.orders_review">
-                    <PortalOrdersPage />
+                    <CustomerRequestsPage />
                   </RequirePerm>
                 }
               />
