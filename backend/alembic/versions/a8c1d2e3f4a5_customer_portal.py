@@ -10,6 +10,7 @@ from typing import Sequence, Union
 
 import sqlalchemy as sa
 from alembic import op
+from sqlalchemy.dialects import postgresql
 
 # revision identifiers, used by Alembic.
 revision: str = "a8c1d2e3f4a5"
@@ -40,11 +41,17 @@ def upgrade() -> None:
         )
 
     # --- customer_orders ---
-    # The enum type is created by the status column's own DDL (PostgreSQL's
-    # dialect emits CREATE TYPE before CREATE TABLE). An explicit
-    # .create(checkfirst=True) is deliberately NOT issued: this alembic build
-    # renders it anyway in offline (--sql) mode, duplicating the CREATE TABLE
-    # that the column emits next to it.
+    # PostgreSQL: op.create_table ignores the generic sa.Enum's create_type=False
+    # (it adapts to postgresql.ENUM, which resets the flag and re-issues a
+    # DuplicateObjectError on add_column-only types like fulfillmenttype). So the
+    # types are created explicitly with checkfirst=True upfront, and the columns
+    # reference already-created types with create_type=False — the same pattern
+    # the earlier fulfillment migration shipped with.
+    status_type = postgresql.ENUM(
+        "pending", "confirmed", "invoiced", "cancelled", name="customerorderstatus"
+    )
+    if bind.dialect.name == "postgresql":
+        status_type.create(bind, checkfirst=True)
     op.create_table(
         "customer_orders",
         sa.Column("id", sa.Integer(), primary_key=True, autoincrement=True),
@@ -52,7 +59,7 @@ def upgrade() -> None:
         sa.Column("order_date", sa.Date(), nullable=False),
         sa.Column(
             "status",
-            sa.Enum(
+            postgresql.ENUM(
                 "pending",
                 "confirmed",
                 "invoiced",
@@ -65,7 +72,9 @@ def upgrade() -> None:
         ),
         sa.Column(
             "fulfillment",
-            sa.Enum("pickup", "delivery", name="fulfillmenttype", create_type=False),
+            postgresql.ENUM(
+                "pickup", "delivery", name="fulfillmenttype", create_type=False
+            ),
             nullable=False,
             server_default="delivery",
         ),
