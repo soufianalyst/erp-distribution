@@ -12,6 +12,7 @@ from app.api.v1 import (
     delivery,
     expenses,
     inventory,
+    portal,
     purchases,
     sales,
     settings,
@@ -22,6 +23,7 @@ api_router.include_router(auth.router)
 api_router.include_router(inventory.router)
 api_router.include_router(purchases.router)
 api_router.include_router(sales.router)
+api_router.include_router(portal.router)
 api_router.include_router(cashier.router)
 api_router.include_router(expenses.router)
 api_router.include_router(accounting.router)

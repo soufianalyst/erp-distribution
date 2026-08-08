@@ -89,6 +89,73 @@ export default function CustomersPage() {
   const [statement, setStatement] = useState(null);
   const set = (key) => (e) => setForm({ ...form, [key]: e.target.value });
 
+  // Portal account dialog: balance-less credentials for the customer's login.
+  const [portal, setPortal] = useState(null);
+  const [portalForm, setPortalForm] = useState({ username: "", password: "" });
+  const [portalBusy, setPortalBusy] = useState(false);
+  const [portalError, setPortalError] = useState(null);
+  const [portalSaved, setPortalSaved] = useState(null);
+
+  const openPortal = async (customer) => {
+    setPortalError(null);
+    setPortalSaved(null);
+    setPortalForm({ username: "", password: "" });
+    setPortal(customer);
+    try {
+      const { data: res } = await api.get(`/portal/accounts/${customer.id}`);
+      const account = res.data;
+      if (account) {
+        setPortalForm({ username: account.username, password: "" });
+        setPortalSaved({
+          text: account.is_active ? `موجود (@${account.username})` : "موجود لكنه موقوف",
+          tone: account.is_active ? "green" : "amber",
+        });
+      }
+    } catch {
+      // No account yet — plain create mode.
+    }
+  };
+
+  const savePortal = async (event) => {
+    event.preventDefault();
+    setPortalBusy(true);
+    setPortalError(null);
+    try {
+      if (portalSaved && portalForm.password) {
+        // Account exists: reset password (and reactivate) only.
+        await api.patch(`/portal/accounts/${portal.id}`, {
+          password: portalForm.password,
+          is_active: true,
+        });
+      } else if (portalSaved) {
+        // No password change requested — nothing to do.
+        return;
+      } else {
+        await api.post(`/portal/accounts/${portal.id}`, {
+          username: portalForm.username,
+          password: portalForm.password,
+        });
+      }
+      setPortalSaved({ text: "تم الحفظ", tone: "green" });
+      setPortalForm({ username: portalForm.username, password: "" });
+    } catch (err) {
+      setPortalError(apiMessage(err));
+    } finally {
+      setPortalBusy(false);
+    }
+  };
+
+  const deactivatePortal = async () => {
+    if (!window.confirm("إيقاف حساب البوابة يمنع العميل من الدخول. هل تريد المتابعة؟")) return;
+    setPortalError(null);
+    try {
+      await api.patch(`/portal/accounts/${portal.id}`, { is_active: false });
+      setPortalSaved({ text: "تم إيقاف الحساب", tone: "red" });
+    } catch (err) {
+      setPortalError(apiMessage(err));
+    }
+  };
+
   const submit = async (event) => {
     event.preventDefault();
     setFormError(null);
@@ -137,9 +204,16 @@ export default function CustomersPage() {
                 key: "actions",
                 label: "",
                 render: (r) => (
-                  <Button variant="secondary" onClick={() => showStatement(r)}>
-                    كشف حساب
-                  </Button>
+                  <div className="flex flex-wrap gap-2">
+                    {canManage && (
+                      <Button variant="secondary" onClick={() => openPortal(r)}>
+                        حساب البوابة
+                      </Button>
+                    )}
+                    <Button variant="secondary" onClick={() => showStatement(r)}>
+                      كشف حساب
+                    </Button>
+                  </div>
                 ),
               },
             ]}
@@ -229,6 +303,79 @@ export default function CustomersPage() {
             )}
           </div>
         ) : null}
+      </Modal>
+
+      <Modal
+        open={!!portal}
+        title={`حساب البوابة — ${portal?.name || ""}`}
+        onClose={() => setPortal(null)}
+      >
+        <form onSubmit={savePortal} className="space-y-4">
+          <Alert>{portalError}</Alert>
+          {portalSaved && (
+            <div
+              className={`rounded-lg border px-4 py-3 text-sm font-bold ${
+                portalSaved.tone === "green"
+                  ? "border-emerald-200 bg-emerald-50 text-emerald-800 dark:border-emerald-900 dark:bg-emerald-950/50 dark:text-emerald-200"
+                  : portalSaved.tone === "red"
+                  ? "border-rose-200 bg-rose-50 text-rose-800 dark:border-rose-900 dark:bg-rose-950/50 dark:text-rose-200"
+                  : "border-amber-200 bg-amber-50 text-amber-800 dark:border-amber-900 dark:bg-amber-950/50 dark:text-amber-200"
+              }`}
+            >
+              {portalSaved.text}
+            </div>
+          )}
+          <p className="text-sm text-slate-500 dark:text-slate-400">
+            يصل العميل للنظام بحساب خاص به ليتابع كشف حسابه ويقدّم طلباته — بلا أي
+            صلاحيات داخلية.
+          </p>
+          {portalSaved && !portalSaved.text.includes("تم") ? (
+            <Input
+              label="كلمة مرور جديدة (اختياري — لتغييرها)"
+              type="password"
+              value={portalForm.password}
+              onChange={(e) => setPortalForm({ ...portalForm, password: e.target.value })}
+              placeholder="8 أحرف على الأقل"
+            />
+          ) : (
+            <>
+              <Input
+                label="اسم المستخدم"
+                value={portalForm.username}
+                onChange={(e) => setPortalForm({ ...portalForm, username: e.target.value })}
+                required
+                autoFocus
+              />
+              <Input
+                label="كلمة المرور"
+                type="password"
+                value={portalForm.password}
+                onChange={(e) => setPortalForm({ ...portalForm, password: e.target.value })}
+                required
+                minLength={8}
+              />
+            </>
+          )}
+          {portalSaved && portalSaved.text.includes("موجود") && (
+            <div className="flex flex-wrap gap-2">
+              <Button type="button" variant="danger" onClick={deactivatePortal}>
+                إيقاف الحساب
+              </Button>
+            </div>
+          )}
+          <div className="flex justify-end gap-2">
+            <CancelButton onClose={() => setPortal(null)} />
+            {portalSaved ? (
+              <Button type="submit" disabled={portalBusy || !portalForm.password}>
+                {portalBusy ? "جارٍ الحفظ..." : "حفظ كلمة المرور"}
+              </Button>
+            ) : (
+              <Button type="submit" disabled={portalBusy}>
+                {portalBusy ? "جارٍ الإنشاء..." : "إنشاء حساب البوابة"}
+              </Button>
+            )}
+          </div>
+        </form>
       </Modal>
     </div>
   );

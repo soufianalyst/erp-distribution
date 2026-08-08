@@ -1395,6 +1395,78 @@ class SalesService:
         return list(result.scalars().all())
 
     # --- Customer payments & statement ---
+    async def portal_statement(self, customer_id: int) -> CustomerStatementOut:
+        """A customer's own statement, for the portal.
+
+        Unsafe on its own — there is deliberately NO per-user access check here.
+        PortalService guarantees the caller only ever reaches this with the
+        customer bound to the authenticated token, so scoping is enforced upstream.
+        """
+        from app.api.schemas.sales import (
+            CustomerOut,
+            CustomerPaymentOut,
+            SalesInvoiceOut,
+            SalesReturnOut,
+        )
+
+        customer = await self.get_customer(customer_id)
+
+        invoices = await self.invoices_for_customer(customer_id)
+        returns_result = await self.session.execute(
+            select(SalesReturn)
+            .options(selectinload(SalesReturn.lines))
+            .where(SalesReturn.customer_id == customer_id, posted())
+            .order_by(SalesReturn.id)
+        )
+        returns = list(returns_result.scalars().all())
+        payments_result = await self.session.execute(
+            select(CustomerPayment)
+            .where(CustomerPayment.customer_id == customer_id)
+            .order_by(CustomerPayment.id)
+        )
+        payments = list(payments_result.scalars().all())
+
+        total_invoices = sum((i.total for i in invoices), Decimal("0"))
+        total_returns = sum((r.total for r in returns), Decimal("0"))
+        total_paid = sum((i.paid_amount for i in invoices), Decimal("0")) + sum(
+            (p.amount for p in payments), Decimal("0")
+        )
+        return CustomerStatementOut(
+            customer=CustomerOut.model_validate(customer),
+            opening_balance=customer.opening_balance,
+            total_invoices=total_invoices,
+            total_returns=total_returns,
+            total_paid=total_paid,
+            balance=await self.customer_balance(customer_id),
+            invoices=[SalesInvoiceOut.model_validate(i) for i in invoices],
+            returns=[SalesReturnOut.model_validate(r) for r in returns],
+            payments=[CustomerPaymentOut.model_validate(p) for p in payments],
+        )
+
+    async def invoices_for_customer(
+        self, customer_id: int, limit: int | None = None
+    ) -> list[SalesInvoice]:
+        """All of one customer's invoices, newest first, WITHOUT staff scoping.
+
+        The portal-only twin of list_invoices: no salesman visibility filter, no
+        all-customers permission. Safe because the only caller is the portal,
+        which has already resolved the customer from the token.
+        """
+        stmt = (
+            select(SalesInvoice)
+            .options(
+                selectinload(SalesInvoice.lines), selectinload(SalesInvoice.taxes)
+            )
+            .where(SalesInvoice.customer_id == customer_id)
+            .order_by(SalesInvoice.id.desc())
+        )
+        if limit is not None:
+            stmt = stmt.limit(limit)
+        result = await self.session.execute(stmt)
+        invoices = list(result.scalars().all())
+        await self._attach_return_totals(invoices)
+        return invoices
+
     async def create_payment(
         self, data: CustomerPaymentCreate, user: User
     ) -> CustomerPayment:

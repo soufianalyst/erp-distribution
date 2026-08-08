@@ -24,6 +24,7 @@ from app.api.schemas.inventory import (
     StockTransferRequest,
     WarehouseCreate,
 )
+from app.api.schemas.portal import PortalAccountCreate
 from app.api.schemas.purchases import (
     PurchaseInvoiceCreate,
     PurchaseLineIn,
@@ -42,6 +43,7 @@ from app.core.exceptions import AppException
 from app.db.session import AsyncSessionLocal
 from app.domain.models.accounting import JournalEntry
 from app.domain.models.inventory import Product
+from app.domain.models.sales import Customer
 from app.domain.models.user import User, UserRole
 from app.services.auth.auth_service import AuthService
 from app.services.inventory.stock_service import StockService
@@ -50,6 +52,7 @@ from app.services.sales.round_settlement_service import RoundSettlementService
 from app.services.delivery.delivery_service import DeliveryService
 from app.services.inventory.product_service import ProductService
 from app.services.inventory.warehouse_service import WarehouseService
+from app.services.portal.account_service import PortalAccountService
 from app.services.purchases.purchase_service import PurchaseService
 from app.services.sales.sales_service import SalesService
 
@@ -317,6 +320,31 @@ async def patch_return_date(session, sales_return, target_date: date) -> None:
     await session.commit()
 
 
+async def seed_portal_accounts(session) -> None:
+    """Give the demo VIP customers portal logins (idempotent, both paths)."""
+    print("Creating customer portal accounts...")
+    portal_service = PortalAccountService(session)
+    result = await session.execute(
+        select(Customer)
+        .where(Customer.name.like("سوبرماركت النخبة %"))
+        .order_by(Customer.id)
+        .limit(3)
+    )
+    for index, customer in enumerate(result.scalars().all(), start=1):
+        existing = await portal_service.get(customer.id)
+        if existing:
+            continue
+        await portal_service.create(
+            customer.id,
+            PortalAccountCreate(
+                username=f"portal{index}",
+                password="Portal@12345",
+            ),
+        )
+        print(f"  {customer.name}: portal{index} / Portal@12345")
+    print("  portal accounts ready")
+
+
 async def main() -> None:
     async with AsyncSessionLocal() as session:
         admin_result = await session.execute(
@@ -377,6 +405,7 @@ async def main() -> None:
         product_count = await session.scalar(select(Product).limit(1))
         if product_count is not None:
             print("Demo data already exists — skipping product/invoice generation.")
+            await seed_portal_accounts(session)
             print("Done.")
             return
 
@@ -848,6 +877,8 @@ async def main() -> None:
                 )
                 rounds_made += 1
         print(f"  {rounds_made} round(s) settled, today's left open for the alert")
+
+        await seed_portal_accounts(session)
 
         print("Done.")
 

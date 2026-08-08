@@ -588,3 +588,88 @@ class CustomerPayment(Base):
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=func.now()
     )
+
+
+class CustomerOrderStatus(str, enum.Enum):
+    PENDING = "pending"      # بانتظار تأكيد فريق المبيعات
+    CONFIRMED = "confirmed"  # تم التأكيد — التجهيز جارٍ
+    INVOICED = "invoiced"    # تحول إلى فاتورة مبيعات
+    CANCELLED = "cancelled"  # أُلغي
+
+
+class CustomerOrder(Base):
+    """A purchase order placed by a customer through the customer portal.
+
+    Carries NO prices: the portal never sees them, and the totals are computed
+    only when a sales user converts the order to a real invoice (which then runs
+    the normal FEFO / credit-limit / accounting pipeline). Stopping the order at
+    quantities-only is what makes the "no access to prices" rule structural
+    rather than a matter of UI discipline.
+    """
+
+    __tablename__ = "customer_orders"
+
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    customer_id: Mapped[int] = mapped_column(
+        ForeignKey("customers.id"), nullable=False, index=True
+    )
+    order_date: Mapped[date] = mapped_column(Date, nullable=False)
+    status: Mapped[CustomerOrderStatus] = mapped_column(
+        Enum(CustomerOrderStatus, values_callable=lambda e: [m.value for m in e]),
+        nullable=False,
+        default=CustomerOrderStatus.PENDING,
+    )
+    # How the customer wants to receive the goods; passed through to the invoice.
+    fulfillment: Mapped[FulfillmentType] = mapped_column(
+        Enum(FulfillmentType, values_callable=lambda e: [m.value for m in e]),
+        nullable=False,
+        default=FulfillmentType.DELIVERY,
+    )
+    notes: Mapped[str | None] = mapped_column(String(300))
+    # Warehouse the customer wants the goods picked from. The portal shows
+    # availability per warehouse, so an order may target a specific one.
+    warehouse_id: Mapped[int | None] = mapped_column(
+        ForeignKey("warehouses.id"), nullable=True
+    )
+    # Set when a staff user converts the order into a real sales invoice.
+    converted_invoice_id: Mapped[int | None] = mapped_column(
+        ForeignKey("sales_invoices.id"), nullable=True
+    )
+    # Auditor beyond the automatic event log: who confirmed/cancelled and when,
+    # so the order timeline can show events without reading the audit table.
+    confirmed_by: Mapped[int | None] = mapped_column(ForeignKey("users.id"))
+    confirmed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    cancelled_by: Mapped[int | None] = mapped_column(ForeignKey("users.id"))
+    cancelled_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    cancel_reason: Mapped[str | None] = mapped_column(String(300))
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+    # Who placed the order — the portal user (CUSTOMER role) or a staff user.
+    created_by: Mapped[int | None] = mapped_column(ForeignKey("users.id"))
+
+    lines: Mapped[list["CustomerOrderLine"]] = relationship(
+        back_populates="order", cascade="all, delete-orphan"
+    )
+
+    @property
+    def total_quantity(self) -> Decimal:
+        """Ordered base-unit quantity summed across lines (no money involved)."""
+        return sum((line.quantity for line in self.lines), Decimal("0"))
+
+
+class CustomerOrderLine(Base):
+    """One product on a portal order; quantity only, never a price."""
+
+    __tablename__ = "customer_order_lines"
+
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    order_id: Mapped[int] = mapped_column(
+        ForeignKey("customer_orders.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    product_id: Mapped[int] = mapped_column(ForeignKey("products.id"), nullable=False)
+    # Base-unit quantity requested. Converted to the customer's price-tier unit
+    # only at invoice time by the sales team.
+    quantity: Mapped[Decimal] = mapped_column(Numeric(14, 3), nullable=False)
+
+    order: Mapped[CustomerOrder] = relationship(back_populates="lines")

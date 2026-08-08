@@ -4,7 +4,7 @@ import enum
 from datetime import datetime
 from decimal import Decimal
 
-from sqlalchemy import JSON, Boolean, DateTime, Enum, Numeric, String, func
+from sqlalchemy import JSON, Boolean, DateTime, Enum, ForeignKey, Numeric, String, func
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.db.base import Base
@@ -17,6 +17,7 @@ class UserRole(str, enum.Enum):
     ACCOUNTANT = "accountant"  # المحاسب
     DRIVER = "driver"  # سائق التوصيل
     CASHIER = "cashier"  # أمين الصندوق
+    CUSTOMER = "customer"  # عميل — بوابة العملاء (لا يرى الأسعار)
 
 
 class User(Base):
@@ -39,6 +40,17 @@ class User(Base):
     # compute their commission; meaningless for non-sales roles, so it defaults to 0.
     commission_rate: Mapped[Decimal] = mapped_column(
         Numeric(5, 2), nullable=False, default=Decimal("0")
+    )
+    # Portal account link: a CUSTOMER-role user is bound to exactly one customer,
+    # and every portal endpoint is scoped to that customer — never to a client-
+    # supplied id. NULL for every internal role. use_alter: customers already
+    # references users via salesman_id, so the pair forms a cycle that create_all
+    # resolves by emitting this constraint as a later ALTER.
+    customer_id: Mapped[int | None] = mapped_column(
+        ForeignKey("customers.id", use_alter=True, name="fk_users_customer_id_customers"),
+        unique=True,
+        nullable=True,
+        index=True,
     )
     is_active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
     created_at: Mapped[datetime] = mapped_column(

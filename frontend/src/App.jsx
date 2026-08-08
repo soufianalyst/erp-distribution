@@ -1,5 +1,6 @@
 import { BrowserRouter, Navigate, Route, Routes } from "react-router-dom";
 import Layout from "./components/Layout";
+import PortalLayout, { CartProvider } from "./components/PortalLayout";
 import { Loading } from "./components/Ui";
 import { AuthProvider, useAuth } from "./context/AuthContext";
 import { ThemeProvider } from "./context/ThemeContext";
@@ -14,6 +15,12 @@ import DeliveryPage from "./pages/DeliveryPage";
 import ExpensesPage from "./pages/ExpensesPage";
 import FieldPage from "./pages/FieldPage";
 import LoginPage from "./pages/LoginPage";
+import PortalDashboard from "./pages/PortalDashboard";
+import PortalCatalog from "./pages/PortalCatalog";
+import PortalOrders from "./pages/PortalOrders";
+import PortalOrdersQueue from "./pages/PortalOrdersQueue";
+import PortalPlaceOrder from "./pages/PortalPlaceOrder";
+import PortalStatement from "./pages/PortalStatement";
 import PrintInvoicePage from "./pages/PrintInvoicePage";
 import PrintPickingPage from "./pages/PrintPickingPage";
 import PrintAdjustmentPage from "./pages/PrintAdjustmentPage";
@@ -40,6 +47,19 @@ function RequireAuth({ children }) {
 function RequirePerm({ perm, children }) {
   const { can } = useAuth();
   return can(perm) ? children : <Navigate to="/" replace />;
+}
+
+// Portal routes are for CUSTOMER-role accounts only; internal staff never reach
+// the portal shell, and a customer never sees the staff system.
+function RequireCustomer({ children }) {
+  const { user } = useAuth();
+  return user.role === "customer" ? children : <Navigate to="/" replace />;
+}
+
+// Landing spot after login: customers go to the portal, everyone else to the staff dashboard.
+function Home() {
+  const { user } = useAuth();
+  return user.role === "customer" ? <Navigate to="/portal" replace /> : <DashboardPage />;
 }
 
 export default function App() {
@@ -112,7 +132,7 @@ export default function App() {
                 </RequireAuth>
               }
             >
-              <Route path="/" element={<DashboardPage />} />
+              <Route path="/" element={<Home />} />
               <Route path="/products" element={<ProductsPage />} />
               <Route
                 path="/barcode-scan"
@@ -201,6 +221,31 @@ export default function App() {
                   </RequirePerm>
                 }
               />
+              <Route
+                path="/portal-orders"
+                element={
+                  <RequirePerm perm="customers.manage">
+                    <PortalOrdersQueue />
+                  </RequirePerm>
+                }
+              />
+            </Route>
+            <Route
+              element={
+                <RequireAuth>
+                  <RequireCustomer>
+                    <CartProvider>
+                      <PortalLayout />
+                    </CartProvider>
+                  </RequireCustomer>
+                </RequireAuth>
+              }
+            >
+              <Route path="/portal" element={<PortalDashboard />} />
+              <Route path="/portal/catalog" element={<PortalCatalog />} />
+              <Route path="/portal/place-order" element={<PortalPlaceOrder />} />
+              <Route path="/portal/orders" element={<PortalOrders />} />
+              <Route path="/portal/statement" element={<PortalStatement />} />
             </Route>
             <Route path="*" element={<Navigate to="/" replace />} />
           </Routes>
