@@ -8,30 +8,51 @@ Two groups live here:
 * `/customer-logins/*` — authenticated as *staff*, for opening and withdrawing
   portal access. Guarded by its own permission so a salesman cannot mint a login.
 
-Phase 0 deliberately stops at identity. There is no statement, no invoice and no
-ordering here yet: the isolation has to be right before anything is served through
-it.
+Identity came first and alone, before anything was served through it. Everything a
+customer may now do — read their statement and invoices, correct their own contact
+details, browse the catalogue, place and withdraw orders — hangs off
+`get_current_customer`, the dependency that also refuses anyone still carrying the
+office's temporary password.
+
+An order placed here is a request and nothing more: no stock moves, nothing is
+reserved, and no price is shown or stored. The office prices it and issues the
+invoice through the ordinary sales pipeline.
 """
 
 from fastapi import APIRouter, Depends
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.api.deps import get_signed_in_customer, require_permissions
+from app.api.deps import (
+    get_current_customer,
+    get_signed_in_customer,
+    require_permissions,
+)
 from app.api.schemas.common import APIResponse
 from app.api.schemas.portal import (
     CustomerLoginCreateIn,
     CustomerLoginOut,
     CustomerLoginUpdateIn,
+    CatalogItemOut,
+    InvoiceDetailOut,
+    InvoiceSummaryOut,
     PortalCustomerOut,
     PortalLoginIn,
+    PortalOrderCancelIn,
+    PortalOrderCreateIn,
+    PortalOrderOut,
     PortalPasswordChangeIn,
+    PortalProfileUpdateIn,
     PortalRefreshIn,
+    PortalStatementOut,
     PortalTokenPair,
 )
 from app.db.session import get_db
 from app.domain.models.sales import Customer, CustomerLogin
 from app.domain.models.user import User
 from app.services.portal.portal_auth_service import PortalAuthService
+from app.services.portal.portal_data_service import PortalDataService
+from app.services.portal.portal_order_service import PortalOrderService
 
 router = APIRouter(tags=["portal"])
 
@@ -79,8 +100,6 @@ async def portal_me(
     db: AsyncSession = Depends(get_db),
 ) -> APIResponse[PortalCustomerOut]:
     """بيانات العميل الحالي كما تراها البوابة."""
-    from sqlalchemy import select
-
     login = (
         await db.execute(
             select(CustomerLogin).where(CustomerLogin.customer_id == current_customer.id)
@@ -108,6 +127,132 @@ async def portal_change_password(
         current_customer.id, body.current_password, body.new_password
     )
     return APIResponse(data=None, message="تم تغيير كلمة المرور.")
+
+
+# --- What the customer may read about their own account ---
+# Every one of these takes `get_current_customer`, the strict dependency: a customer
+# still on the office's temporary password gets no further than the password screen.
+@router.get("/portal/statement", response_model=APIResponse[PortalStatementOut])
+async def portal_statement(
+    current_customer: Customer = Depends(get_current_customer),
+    db: AsyncSession = Depends(get_db),
+) -> APIResponse[PortalStatementOut]:
+    """كشف حساب العميل: الفواتير والمرتجعات والدفعات والرصيد."""
+    data = await PortalDataService(db).statement(current_customer.id)
+    return APIResponse(data=data)
+
+
+@router.get("/portal/invoices", response_model=APIResponse[list[InvoiceSummaryOut]])
+async def portal_invoices(
+    current_customer: Customer = Depends(get_current_customer),
+    db: AsyncSession = Depends(get_db),
+) -> APIResponse[list[InvoiceSummaryOut]]:
+    """فواتير العميل، الأحدث أولاً."""
+    data = await PortalDataService(db).invoices(current_customer.id)
+    return APIResponse(data=data)
+
+
+@router.get(
+    "/portal/invoices/{invoice_id}", response_model=APIResponse[InvoiceDetailOut]
+)
+async def portal_invoice(
+    invoice_id: int,
+    current_customer: Customer = Depends(get_current_customer),
+    db: AsyncSession = Depends(get_db),
+) -> APIResponse[InvoiceDetailOut]:
+    """تفاصيل فاتورة واحدة تخص العميل الحالي."""
+    data = await PortalDataService(db).invoice(current_customer.id, invoice_id)
+    return APIResponse(data=data)
+
+
+@router.put("/portal/profile", response_model=APIResponse[PortalCustomerOut])
+async def portal_update_profile(
+    body: PortalProfileUpdateIn,
+    current_customer: Customer = Depends(get_current_customer),
+    db: AsyncSession = Depends(get_db),
+) -> APIResponse[PortalCustomerOut]:
+    """تعديل رقم الهاتف والعنوان."""
+    service = PortalDataService(db)
+    customer = await service.update_profile(current_customer.id, body)
+    login = (
+        await db.execute(
+            select(CustomerLogin).where(CustomerLogin.customer_id == customer.id)
+        )
+    ).scalar_one()
+    return APIResponse(
+        data=PortalCustomerOut(
+            customer_id=customer.id,
+            name=customer.name,
+            phone=customer.phone,
+            address=customer.address,
+            must_change_password=login.must_change_password,
+        ),
+        message="تم تحديث البيانات.",
+    )
+
+
+# --- Ordering ---
+@router.get("/portal/catalog", response_model=APIResponse[list[CatalogItemOut]])
+async def portal_catalog(
+    current_customer: Customer = Depends(get_current_customer),
+    db: AsyncSession = Depends(get_db),
+) -> APIResponse[list[CatalogItemOut]]:
+    """الأصناف المتاحة للطلب مع مؤشر التوفر — بدون أسعار."""
+    data = await PortalOrderService(db).catalog()
+    return APIResponse(data=data)
+
+
+@router.post(
+    "/portal/orders", response_model=APIResponse[PortalOrderOut], status_code=201
+)
+async def portal_place_order(
+    body: PortalOrderCreateIn,
+    current_customer: Customer = Depends(get_current_customer),
+    db: AsyncSession = Depends(get_db),
+) -> APIResponse[PortalOrderOut]:
+    """إرسال طلب شراء للمراجعة من المكتب."""
+    order = await PortalOrderService(db).place_order(current_customer.id, body)
+    return APIResponse(
+        data=order,
+        message="تم استلام طلبك، وسيراجعه المكتب ويؤكده لك قريباً.",
+    )
+
+
+@router.get("/portal/orders", response_model=APIResponse[list[PortalOrderOut]])
+async def portal_orders(
+    current_customer: Customer = Depends(get_current_customer),
+    db: AsyncSession = Depends(get_db),
+) -> APIResponse[list[PortalOrderOut]]:
+    """طلبات العميل وحالة كل منها."""
+    data = await PortalOrderService(db).list_orders(current_customer.id)
+    return APIResponse(data=data)
+
+
+@router.get("/portal/orders/{order_id}", response_model=APIResponse[PortalOrderOut])
+async def portal_order(
+    order_id: int,
+    current_customer: Customer = Depends(get_current_customer),
+    db: AsyncSession = Depends(get_db),
+) -> APIResponse[PortalOrderOut]:
+    """تفاصيل طلب واحد يخص العميل الحالي."""
+    data = await PortalOrderService(db).get_order(current_customer.id, order_id)
+    return APIResponse(data=data)
+
+
+@router.post(
+    "/portal/orders/{order_id}/cancel", response_model=APIResponse[PortalOrderOut]
+)
+async def portal_cancel_order(
+    order_id: int,
+    body: PortalOrderCancelIn,
+    current_customer: Customer = Depends(get_current_customer),
+    db: AsyncSession = Depends(get_db),
+) -> APIResponse[PortalOrderOut]:
+    """إلغاء طلب ما زال قيد المراجعة."""
+    data = await PortalOrderService(db).cancel_order(
+        current_customer.id, order_id, body.reason
+    )
+    return APIResponse(data=data, message="تم إلغاء الطلب.")
 
 
 # --- The office managing who can get in ---

@@ -637,3 +637,83 @@ class CustomerLogin(Base):
     )
 
     customer: Mapped["Customer"] = relationship(lazy="selectin")
+
+
+class CustomerOrderStatus(str, enum.Enum):
+    """Where a customer's request has got to.
+
+    An order is a request, not a sale. Nothing leaves the warehouse and no ledger
+    entry exists until the office turns it into an invoice, which is why `PENDING` is
+    the only state a customer can create and `INVOICED` the only one that means money
+    has moved.
+    """
+
+    PENDING = "pending"  # وصل الطلب وينتظر مراجعة المكتب
+    CONFIRMED = "confirmed"  # وافق المكتب، يُجهَّز
+    INVOICED = "invoiced"  # صدرت الفاتورة وخرجت البضاعة
+    CANCELLED = "cancelled"  # ألغاه العميل أو رفضه المكتب
+
+
+class CustomerOrder(Base):
+    """An order a customer placed through the portal.
+
+    Deliberately not a draft invoice. It carries quantities and no money at all —
+    no unit price, no total — because the portal never shows a customer a price
+    before the office has priced the order. Putting an amount here would create a
+    second place where a sale's value is decided, and the two would disagree the
+    first time a tier or a tax changed between ordering and invoicing.
+    """
+
+    __tablename__ = "customer_orders"
+
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    customer_id: Mapped[int] = mapped_column(
+        ForeignKey("customers.id"), nullable=False, index=True
+    )
+    order_date: Mapped[date] = mapped_column(Date, nullable=False)
+    status: Mapped[CustomerOrderStatus] = mapped_column(
+        Enum(CustomerOrderStatus, values_callable=lambda e: [m.value for m in e]),
+        nullable=False,
+        default=CustomerOrderStatus.PENDING,
+    )
+    fulfillment: Mapped[FulfillmentType] = mapped_column(
+        Enum(FulfillmentType, values_callable=lambda e: [m.value for m in e]),
+        nullable=False,
+        default=FulfillmentType.DELIVERY,
+    )
+    notes: Mapped[str | None] = mapped_column(String(300))
+    # Filled in by the office when the order becomes an invoice, so the customer's
+    # request and the sale that answered it can always be traced to each other.
+    invoice_id: Mapped[int | None] = mapped_column(
+        ForeignKey("sales_invoices.id"), index=True
+    )
+    reviewed_by: Mapped[int | None] = mapped_column(ForeignKey("users.id"))
+    reviewed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    # Why it was refused or withdrawn — shown to the customer, so it is written for
+    # them rather than for the office.
+    decision_note: Mapped[str | None] = mapped_column(String(300))
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+
+    customer: Mapped["Customer"] = relationship()
+    lines: Mapped[list["CustomerOrderLine"]] = relationship(
+        back_populates="order", cascade="all, delete-orphan", lazy="selectin"
+    )
+
+
+class CustomerOrderLine(Base):
+    """One product and how much of it was asked for. No price — see `CustomerOrder`."""
+
+    __tablename__ = "customer_order_lines"
+
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    order_id: Mapped[int] = mapped_column(
+        ForeignKey("customer_orders.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    product_id: Mapped[int] = mapped_column(
+        ForeignKey("products.id"), nullable=False
+    )
+    quantity: Mapped[Decimal] = mapped_column(Numeric(14, 3), nullable=False)
+
+    order: Mapped[CustomerOrder] = relationship(back_populates="lines")

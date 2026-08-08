@@ -18,6 +18,7 @@ from app.api.schemas.inventory import (
     TransferLineOut,
 )
 from app.core.exceptions import AppException
+from app.services.inventory.stock_query import sellable
 from app.domain.models.inventory import (
     AdjustmentStatus,
     Product,
@@ -300,8 +301,9 @@ class StockService:
             .where(
                 ProductBatch.product_id == product_id,
                 ProductBatch.warehouse_id == warehouse_id,
-                ProductBatch.quantity > 0,
-                ProductBatch.expiry_date > date.today(),
+                # The same predicate the portal catalogue reads, so what a customer
+                # is shown as available is what this allocator will actually give.
+                sellable(),
             )
             .order_by(ProductBatch.expiry_date, ProductBatch.id)
             .with_for_update()

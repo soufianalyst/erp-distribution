@@ -1,5 +1,6 @@
 """Sales business logic: customers, FEFO invoices, credit control, returns, receipts."""
 
+from dataclasses import dataclass
 from datetime import date, datetime, timezone
 from decimal import ROUND_HALF_UP, Decimal
 
@@ -72,6 +73,26 @@ from app.services.accounting.accounting_service import (
 from app.services.inventory.stock_service import StockService
 
 TWO_PLACES = Decimal("0.01")
+
+
+@dataclass(frozen=True)
+class StatementData:
+    """A customer statement before anyone decides who is reading it.
+
+    Domain objects and totals, no Pydantic. The staff API projects this into
+    `CustomerStatementOut` and the customer portal into its own schemas, which show
+    the same movements without the credit limit and price tier that belong to the
+    office. Both read one set of numbers.
+    """
+
+    customer: Customer
+    invoices: list[SalesInvoice]
+    returns: list[SalesReturn]
+    payments: list[CustomerPayment]
+    total_invoices: Decimal
+    total_returns: Decimal
+    total_paid: Decimal
+    balance: Decimal
 
 
 class SalesService:
@@ -931,10 +952,15 @@ class SalesService:
         await self._attach_return_totals([invoice])
         return invoice
 
-    async def list_invoices(
-        self, user: User, customer_id: int | None = None
+    async def _invoices_for(
+        self, customer_id: int | None, only_salesman_id: int | None
     ) -> list[SalesInvoice]:
-        """Invoices visible to this user, newest first, optionally per customer."""
+        """Invoices newest first, optionally narrowed to one customer or salesman.
+
+        The scoping is expressed as a salesman id rather than a user so callers with
+        no staff user — the customer portal — can reach the same query instead of
+        writing a near-identical one that forgets `_attach_return_totals`.
+        """
         stmt = (
             select(SalesInvoice)
             .options(
@@ -942,14 +968,25 @@ class SalesService:
             )
             .order_by(SalesInvoice.id.desc())
         )
-        if not has_permission(user, "sales.all_customers"):
-            stmt = stmt.where(SalesInvoice.salesman_id == user.id)
+        if only_salesman_id is not None:
+            stmt = stmt.where(SalesInvoice.salesman_id == only_salesman_id)
         if customer_id is not None:
             stmt = stmt.where(SalesInvoice.customer_id == customer_id)
         result = await self.session.execute(stmt)
         invoices = list(result.scalars().all())
         await self._attach_return_totals(invoices)
         return invoices
+
+    async def list_invoices(
+        self, user: User, customer_id: int | None = None
+    ) -> list[SalesInvoice]:
+        """Invoices visible to this user, newest first, optionally per customer."""
+        return await self._invoices_for(
+            customer_id,
+            only_salesman_id=(
+                None if has_permission(user, "sales.all_customers") else user.id
+            ),
+        )
 
     # --- Returns ---
     async def _returned_discount_share(
@@ -1439,22 +1476,28 @@ class SalesService:
         await self.session.refresh(payment)
         return payment
 
-    async def customer_statement(
-        self, customer_id: int, user: User
-    ) -> CustomerStatementOut:
-        """Everything owed and paid for one customer: invoices, returns, receipts
-        and the resulting balance — the document handed over when settling up."""
-        from app.api.schemas.sales import (
-            CustomerOut,
-            CustomerPaymentOut,
-            SalesInvoiceOut,
-            SalesReturnOut,
-        )
+    async def statement_data(
+        self, customer_id: int, user: User | None = None
+    ) -> "StatementData":
+        """The movements and totals behind a customer statement, unprojected.
 
+        Split out from `customer_statement` so the customer portal can serve the same
+        statement without borrowing the staff schemas, which carry the credit limit
+        and price tier. A second gathering of the same rows would be a second
+        definition of what a customer owes, and the two would drift — this method
+        already carries a scar from exactly that.
+
+        `user` is optional because the portal has no staff user to check against;
+        there the caller is the customer themselves and scoping comes from the token.
+        """
         customer = await self.get_customer(customer_id)
-        self.ensure_customer_access(user, customer)
+        if user is not None:
+            self.ensure_customer_access(user, customer)
 
-        invoices = await self.list_invoices(user, customer_id)
+        if user is None:
+            invoices = await self._invoices_for(customer_id, only_salesman_id=None)
+        else:
+            invoices = await self.list_invoices(user, customer_id)
         returns_result = await self.session.execute(
             select(SalesReturn)
             .options(selectinload(SalesReturn.lines))
@@ -1472,25 +1515,45 @@ class SalesService:
         )
         payments = list(payments_result.scalars().all())
 
-        total_invoices = sum((i.total for i in invoices), Decimal("0"))
-        total_returns = sum((r.total for r in returns), Decimal("0"))
-        total_paid = sum((i.paid_amount for i in invoices), Decimal("0")) + sum(
-            (p.amount for p in payments), Decimal("0")
-        )
-        return CustomerStatementOut(
-            customer=CustomerOut.model_validate(customer),
-            opening_balance=customer.opening_balance,
-            total_invoices=total_invoices,
-            total_returns=total_returns,
-            total_paid=total_paid,
-            # Delegated rather than recomputed. This method used to carry its own
-            # copy of the formula, so adding refunds to `customer_balance` fixed the
-            # number in one place and left the statement — the document actually
-            # handed to the customer — still wrong. One balance, one definition.
+        return StatementData(
+            customer=customer,
+            invoices=invoices,
+            returns=returns,
+            payments=payments,
+            total_invoices=sum((i.total for i in invoices), Decimal("0")),
+            total_returns=sum((r.total for r in returns), Decimal("0")),
+            total_paid=sum((i.paid_amount for i in invoices), Decimal("0"))
+            + sum((p.amount for p in payments), Decimal("0")),
+            # Delegated rather than recomputed. This used to carry its own copy of
+            # the formula, so adding refunds to `customer_balance` fixed the number
+            # in one place and left the statement — the document actually handed to
+            # the customer — still wrong. One balance, one definition.
             balance=await self.customer_balance(customer_id),
-            invoices=[SalesInvoiceOut.model_validate(i) for i in invoices],
-            returns=[SalesReturnOut.model_validate(r) for r in returns],
-            payments=[CustomerPaymentOut.model_validate(p) for p in payments],
+        )
+
+    async def customer_statement(
+        self, customer_id: int, user: User
+    ) -> CustomerStatementOut:
+        """Everything owed and paid for one customer: invoices, returns, receipts
+        and the resulting balance — the document handed over when settling up."""
+        from app.api.schemas.sales import (
+            CustomerOut,
+            CustomerPaymentOut,
+            SalesInvoiceOut,
+            SalesReturnOut,
+        )
+
+        data = await self.statement_data(customer_id, user)
+        return CustomerStatementOut(
+            customer=CustomerOut.model_validate(data.customer),
+            opening_balance=data.customer.opening_balance,
+            total_invoices=data.total_invoices,
+            total_returns=data.total_returns,
+            total_paid=data.total_paid,
+            balance=data.balance,
+            invoices=[SalesInvoiceOut.model_validate(i) for i in data.invoices],
+            returns=[SalesReturnOut.model_validate(r) for r in data.returns],
+            payments=[CustomerPaymentOut.model_validate(p) for p in data.payments],
         )
 
     async def commission_report(
