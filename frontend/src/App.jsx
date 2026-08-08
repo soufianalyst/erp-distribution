@@ -2,6 +2,7 @@ import { BrowserRouter, Navigate, Route, Routes } from "react-router-dom";
 import Layout from "./components/Layout";
 import { Loading } from "./components/Ui";
 import { AuthProvider, useAuth } from "./context/AuthContext";
+import { PortalAuthProvider } from "./context/PortalAuthContext";
 import { ThemeProvider } from "./context/ThemeContext";
 import AccountingPage from "./pages/AccountingPage";
 import AnalyticsPage from "./pages/AnalyticsPage";
@@ -24,6 +25,12 @@ import PrintStocktakePage from "./pages/PrintStocktakePage";
 import ProductsPage from "./pages/ProductsPage";
 import PurchasesPage from "./pages/PurchasesPage";
 import PortalOrdersPage from "./pages/PortalOrdersPage";
+import PortalCatalog from "./portal/PortalCatalog";
+import PortalHome from "./portal/PortalHome";
+import { PortalInvoices, PortalStatement } from "./portal/PortalInvoices";
+import { PortalChangePassword, PortalLogin } from "./portal/PortalLogin";
+import PortalMyOrders from "./portal/PortalMyOrders";
+import PortalShell from "./portal/PortalShell";
 import RoundsPage from "./pages/RoundsPage";
 import SalesPage from "./pages/SalesPage";
 import SettingsPage from "./pages/SettingsPage";
@@ -47,6 +54,37 @@ export default function App() {
   return (
     <BrowserRouter>
       <ThemeProvider>
+        <Routes>
+          {/* The customer portal: its own auth, its own tokens, its own shell.
+              Mounted outside AuthProvider so the two never share a session. */}
+          <Route
+            path="/portal/*"
+            element={
+              <PortalAuthProvider>
+                <Routes>
+                  <Route path="login" element={<PortalLogin />} />
+                  <Route path="password" element={<PortalChangePassword />} />
+                  <Route element={<PortalShell />}>
+                    <Route index element={<PortalHome />} />
+                    <Route path="catalog" element={<PortalCatalog />} />
+                    <Route path="orders" element={<PortalMyOrders />} />
+                    <Route path="invoices" element={<PortalInvoices />} />
+                    <Route path="statement" element={<PortalStatement />} />
+                  </Route>
+                  <Route path="*" element={<Navigate to="/portal" replace />} />
+                </Routes>
+              </PortalAuthProvider>
+            }
+          />
+          <Route path="/*" element={<StaffApp />} />
+        </Routes>
+      </ThemeProvider>
+    </BrowserRouter>
+  );
+}
+
+function StaffApp() {
+  return (
         <AuthProvider>
           <Routes>
             <Route path="/login" element={<LoginPage />} />
@@ -214,7 +252,5 @@ export default function App() {
             <Route path="*" element={<Navigate to="/" replace />} />
           </Routes>
         </AuthProvider>
-      </ThemeProvider>
-    </BrowserRouter>
   );
 }
