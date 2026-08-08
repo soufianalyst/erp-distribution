@@ -17,7 +17,7 @@ services:
       - key: CORS_ORIGINS
         value: ""
       - key: FIRST_ADMIN_PASSWORD
-        value: Admin@1234
+        value: Str0ng-Admin!2026
       - key: FIRST_ADMIN_USERNAME
         value: admin
       - key: FIRST_ADMIN_FULL_NAME
