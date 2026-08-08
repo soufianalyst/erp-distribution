@@ -40,6 +40,10 @@ PERMISSION_GROUPS: list[dict] = [
                 "code": "customers.portal_access",
                 "label": "فتح وإيقاف حسابات العملاء على البوابة",
             },
+            {
+                "code": "sales.orders_review",
+                "label": "مراجعة طلبات العملاء من البوابة واعتمادها",
+            },
             {"code": "sales.view", "label": "عرض فواتير المبيعات"},
             {"code": "sales.create", "label": "إصدار فواتير مبيعات"},
             {"code": "sales.edit", "label": "تعديل فواتير المبيعات"},
@@ -201,6 +205,10 @@ ROLE_DEFAULT_PERMISSIONS: dict[str, frozenset[str]] = {
             "customers.view",
             "sales.view",
             "sales.create",
+            # A rep already raises invoices; turning a portal order into one is the
+            # same job. The queue and every action on it are scoped to his own
+            # customers, so this grants reach over his shops and no others.
+            "sales.orders_review",
             "sales.returns",
             "sales.quotations",
             "sales.field_sync",
@@ -236,6 +244,7 @@ ROLE_DEFAULT_PERMISSIONS: dict[str, frozenset[str]] = {
             "customers.view",
             "customers.manage",
             "customers.portal_access",
+            "sales.orders_review",
             "sales.view",
             "sales.payments",
             "sales.all_customers",

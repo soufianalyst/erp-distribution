@@ -23,15 +23,24 @@ from app.api.schemas.portal import (
     PortalOrderCreateIn,
     PortalOrderLineOut,
     PortalOrderOut,
+    StaffOrderInvoiceIn,
+    StaffOrderOut,
 )
+from app.api.schemas.sales import SalesInvoiceCreate, SalesLineIn
 from app.core.exceptions import AppException
+from app.core.permissions import has_permission
 from app.domain.models.inventory import Product, ProductBatch, Warehouse
 from app.domain.models.sales import (
+    Customer,
     CustomerOrder,
     CustomerOrderLine,
     CustomerOrderStatus,
+    SalesInvoice,
+    SalesPaymentMethod,
 )
+from app.domain.models.user import User
 from app.services.inventory.stock_query import sellable
+from app.services.sales.sales_service import SalesService
 
 # A customer may have this many requests waiting on the office at once. Not a
 # business rule so much as a brake: an ordering form is the one place a stranger with
@@ -282,3 +291,168 @@ class PortalOrderService:
         await self.session.commit()
         await self.session.refresh(order)
         return (await self._to_out([order]))[0]
+
+
+class OrderReviewService:
+    """The office side of the same orders.
+
+    Kept apart from `PortalOrderService` for the reason the two auth services are
+    apart: these methods take a staff `User` and may act on any customer's order,
+    and one class holding both would eventually grow a method that forgets which
+    kind of caller it has.
+    """
+
+    def __init__(self, session: AsyncSession) -> None:
+        self.session = session
+        self.portal = PortalOrderService(session)
+
+    async def _staff_out(self, orders: list[CustomerOrder]) -> list[StaffOrderOut]:
+        base = await self.portal._to_out(orders)
+        customers = {
+            c.id: c.name
+            for c in (
+                await self.session.execute(
+                    select(Customer).where(
+                        Customer.id.in_({o.customer_id for o in orders} or {0})
+                    )
+                )
+            )
+            .scalars()
+            .all()
+        }
+        return [
+            StaffOrderOut(
+                **out.model_dump(),
+                customer_id=order.customer_id,
+                customer_name=customers.get(order.customer_id, "—"),
+            )
+            for order, out in zip(orders, base)
+        ]
+
+    async def list_orders(
+        self, user: User, status: CustomerOrderStatus | None = None
+    ) -> list[StaffOrderOut]:
+        """The review queue, oldest first.
+
+        Oldest first is deliberate: a queue worked newest-first leaves the shop who
+        ordered on Sunday still waiting on Thursday.
+
+        Scoped the same way invoices are — a salesman without `sales.all_customers`
+        sees only the shops that are his. `create_invoice` would refuse him another
+        rep's customer anyway, but a queue that lists orders he cannot act on is
+        both noise and a disclosure of who else we sell to.
+        """
+        query = (
+            select(CustomerOrder)
+            .options(selectinload(CustomerOrder.lines))
+            .order_by(CustomerOrder.id)
+        )
+        if status is not None:
+            query = query.where(CustomerOrder.status == status)
+        if not has_permission(user, "sales.all_customers"):
+            query = query.where(
+                CustomerOrder.customer_id.in_(
+                    select(Customer.id).where(Customer.salesman_id == user.id)
+                )
+            )
+        orders = list((await self.session.execute(query)).scalars().all())
+        return await self._staff_out(orders)
+
+    async def _get(self, order_id: int, user: User) -> CustomerOrder:
+        """Fetch an order this user is allowed to act on.
+
+        The reach check is part of the lookup, so approve/reject/invoice cannot each
+        forget it separately — and an order belonging to another rep's customer
+        answers 404 rather than 403, for the same reason it does on the portal side.
+        """
+        query = (
+            select(CustomerOrder)
+            .options(selectinload(CustomerOrder.lines))
+            .where(CustomerOrder.id == order_id)
+        )
+        if not has_permission(user, "sales.all_customers"):
+            query = query.where(
+                CustomerOrder.customer_id.in_(
+                    select(Customer.id).where(Customer.salesman_id == user.id)
+                )
+            )
+        order = (await self.session.execute(query)).scalar_one_or_none()
+        if order is None:
+            raise AppException(404, "الطلب غير موجود.")
+        return order
+
+    async def approve(self, order_id: int, user: User) -> StaffOrderOut:
+        """Accept a request so the warehouse can start picking.
+
+        Separate from invoicing on purpose: the customer gets an answer now, and the
+        invoice is raised when the goods are actually gathered and priced.
+        """
+        order = await self._get(order_id, user)
+        if order.status != CustomerOrderStatus.PENDING:
+            raise AppException(400, "لا يمكن اعتماد طلب سبق البتّ فيه.")
+        order.status = CustomerOrderStatus.CONFIRMED
+        order.reviewed_by = user.id
+        order.reviewed_at = datetime.now(timezone.utc)
+        await self.session.commit()
+        await self.session.refresh(order)
+        return (await self._staff_out([order]))[0]
+
+    async def reject(self, order_id: int, reason: str, user: User) -> StaffOrderOut:
+        """Refuse a request, with a reason the customer will read."""
+        order = await self._get(order_id, user)
+        if order.status in (
+            CustomerOrderStatus.INVOICED,
+            CustomerOrderStatus.CANCELLED,
+        ):
+            raise AppException(400, "لا يمكن رفض طلب سبق البتّ فيه.")
+        order.status = CustomerOrderStatus.CANCELLED
+        order.decision_note = reason
+        order.reviewed_by = user.id
+        order.reviewed_at = datetime.now(timezone.utc)
+        await self.session.commit()
+        await self.session.refresh(order)
+        return (await self._staff_out([order]))[0]
+
+    async def to_invoice(
+        self, order_id: int, data: StaffOrderInvoiceIn, user: User
+    ) -> SalesInvoice:
+        """Turn an order into a real sale, through the ordinary sales pipeline.
+
+        Nothing about invoicing is reimplemented here — FEFO allocation, the credit
+        limit, the tax breakdown and the journal entry all belong to
+        `SalesService.create_invoice`, and a second path to any of them is how the
+        two drift. This method's whole job is to hand the order's lines over and
+        record which invoice answered which request.
+
+        Not idempotent by accident: an order already invoiced is refused, so a
+        double-click cannot bill a shop twice for one request.
+        """
+        order = await self._get(order_id, user)
+        if order.status == CustomerOrderStatus.INVOICED:
+            raise AppException(409, "سبق أن صدرت فاتورة لهذا الطلب.")
+        if order.status == CustomerOrderStatus.CANCELLED:
+            raise AppException(400, "الطلب ملغى، لا يمكن إصدار فاتورة له.")
+
+        invoice = await SalesService(self.session).create_invoice(
+            SalesInvoiceCreate(
+                customer_id=order.customer_id,
+                payment_method=SalesPaymentMethod(data.payment_method),
+                fulfillment=order.fulfillment,
+                tax_rate_ids=data.tax_rate_ids,
+                notes=data.notes or order.notes,
+                credit_override=data.credit_override,
+                lines=[
+                    SalesLineIn(product_id=line.product_id, quantity=line.quantity)
+                    for line in order.lines
+                ],
+            ),
+            user,
+            source_warehouse_id=data.warehouse_id,
+        )
+
+        order.status = CustomerOrderStatus.INVOICED
+        order.invoice_id = invoice.id
+        order.reviewed_by = user.id
+        order.reviewed_at = datetime.now(timezone.utc)
+        await self.session.commit()
+        return invoice

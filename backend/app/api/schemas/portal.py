@@ -199,6 +199,34 @@ class PortalOrderCancelIn(BaseModel):
     reason: str | None = Field(default=None, max_length=300)
 
 
+# --- Office side: reviewing what customers have asked for ---
+class StaffOrderOut(PortalOrderOut):
+    """The same order, plus who sent it. Still no money: it has none until invoiced."""
+
+    customer_id: int
+    customer_name: str
+
+
+class StaffOrderRejectIn(BaseModel):
+    # Shown to the customer in their portal, so it is written for them.
+    reason: str = Field(min_length=1, max_length=300)
+
+
+class StaffOrderInvoiceIn(BaseModel):
+    """What the office decides that the customer could not.
+
+    Everything commercial about the sale is settled here rather than at order time:
+    which taxes apply, how it is being paid, and — through `credit_override` — whether
+    a customer over their limit is allowed through this once.
+    """
+
+    payment_method: Literal["cash", "card", "credit"]
+    tax_rate_ids: list[int] = Field(default_factory=list)
+    warehouse_id: int | None = None
+    credit_override: bool = False
+    notes: str | None = Field(default=None, max_length=300)
+
+
 # --- Office side: managing who can get in ---
 class CustomerLoginCreateIn(BaseModel):
     customer_id: int

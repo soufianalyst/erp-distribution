@@ -19,6 +19,8 @@ reserved, and no price is shown or stored. The office prices it and issues the
 invoice through the ordinary sales pipeline.
 """
 
+from typing import Literal
+
 from fastapi import APIRouter, Depends
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -46,13 +48,20 @@ from app.api.schemas.portal import (
     PortalRefreshIn,
     PortalStatementOut,
     PortalTokenPair,
+    StaffOrderInvoiceIn,
+    StaffOrderOut,
+    StaffOrderRejectIn,
 )
+from app.api.schemas.sales import SalesInvoiceOut
 from app.db.session import get_db
-from app.domain.models.sales import Customer, CustomerLogin
+from app.domain.models.sales import Customer, CustomerLogin, CustomerOrderStatus
 from app.domain.models.user import User
 from app.services.portal.portal_auth_service import PortalAuthService
 from app.services.portal.portal_data_service import PortalDataService
-from app.services.portal.portal_order_service import PortalOrderService
+from app.services.portal.portal_order_service import (
+    OrderReviewService,
+    PortalOrderService,
+)
 
 router = APIRouter(tags=["portal"])
 
@@ -253,6 +262,69 @@ async def portal_cancel_order(
         current_customer.id, order_id, body.reason
     )
     return APIResponse(data=data, message="تم إلغاء الطلب.")
+
+
+# --- The office reviewing what customers asked for ---
+review_orders = Depends(require_permissions("sales.orders_review"))
+
+
+@router.get("/customer-orders", response_model=APIResponse[list[StaffOrderOut]])
+async def list_customer_orders(
+    status: Literal["pending", "confirmed", "invoiced", "cancelled"] | None = None,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(require_permissions("sales.orders_review")),
+) -> APIResponse[list[StaffOrderOut]]:
+    """طلبات العملاء من البوابة — الأقدم أولاً، ويمكن التصفية بالحالة."""
+    data = await OrderReviewService(db).list_orders(
+        current_user, CustomerOrderStatus(status) if status else None
+    )
+    return APIResponse(data=data)
+
+
+@router.post(
+    "/customer-orders/{order_id}/approve", response_model=APIResponse[StaffOrderOut]
+)
+async def approve_customer_order(
+    order_id: int,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(require_permissions("sales.orders_review")),
+) -> APIResponse[StaffOrderOut]:
+    """اعتماد الطلب ليبدأ التجهيز — دون إصدار فاتورة بعد."""
+    data = await OrderReviewService(db).approve(order_id, current_user)
+    return APIResponse(data=data, message="تم اعتماد الطلب.")
+
+
+@router.post(
+    "/customer-orders/{order_id}/reject", response_model=APIResponse[StaffOrderOut]
+)
+async def reject_customer_order(
+    order_id: int,
+    body: StaffOrderRejectIn,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(require_permissions("sales.orders_review")),
+) -> APIResponse[StaffOrderOut]:
+    """رفض الطلب مع ذكر السبب — يظهر للعميل في بوابته."""
+    data = await OrderReviewService(db).reject(order_id, body.reason, current_user)
+    return APIResponse(data=data, message="تم رفض الطلب وإبلاغ العميل بالسبب.")
+
+
+@router.post(
+    "/customer-orders/{order_id}/invoice",
+    response_model=APIResponse[SalesInvoiceOut],
+    status_code=201,
+)
+async def invoice_customer_order(
+    order_id: int,
+    body: StaffOrderInvoiceIn,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(require_permissions("sales.orders_review")),
+) -> APIResponse[SalesInvoiceOut]:
+    """تحويل الطلب إلى فاتورة مبيعات عبر المسار المعتاد (خصم FEFO والقيود)."""
+    invoice = await OrderReviewService(db).to_invoice(order_id, body, current_user)
+    return APIResponse(
+        data=SalesInvoiceOut.model_validate(invoice),
+        message="تم إصدار الفاتورة وربطها بالطلب.",
+    )
 
 
 # --- The office managing who can get in ---
