@@ -17,11 +17,13 @@ services:
       - key: CORS_ORIGINS
         value: ""
       - key: FIRST_ADMIN_PASSWORD
-        generateValue: true
+        value: Admin@1234
       - key: FIRST_ADMIN_USERNAME
         value: admin
       - key: FIRST_ADMIN_FULL_NAME
         value: مدير النظام
+      - key: SEED_DEMO
+        value: "true"
     healthCheckPath: /
     autoDeploy: true
 
