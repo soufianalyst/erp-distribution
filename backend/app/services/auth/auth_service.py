@@ -28,8 +28,8 @@ class AuthService:
 
     def _issue_tokens(self, user: User) -> TokenPair:
         return TokenPair(
-            access_token=create_access_token(str(user.id), user.role.value),
-            refresh_token=create_refresh_token(str(user.id), user.role.value),
+            access_token=create_access_token(str(user.id), user.role.value, realm="staff"),
+            refresh_token=create_refresh_token(str(user.id), user.role.value, realm="staff"),
             user=UserOut.model_validate(user),
         )
 
@@ -53,7 +53,7 @@ class AuthService:
 
     async def refresh_tokens(self, refresh_token: str) -> TokenPair:
         """Exchange a valid refresh token for a fresh pair, re-checking the account."""
-        payload = decode_token(refresh_token, expected_type="refresh")
+        payload = decode_token(refresh_token, expected_type="refresh", expected_realm="staff")
         user = await self.session.get(User, int(payload["sub"]))
         if user is None or not user.is_active:
             raise AppException(401, "الحساب غير موجود أو معطل.")

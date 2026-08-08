@@ -87,13 +87,27 @@ app.add_middleware(
 async def populate_audit_user_context(request: Request, call_next):
     """Best-effort: decode the bearer token so the audit-log listeners can
     attribute changes to a user. Never blocks the request — actual auth
-    enforcement stays with the route-level permission dependencies."""
+    enforcement stays with the route-level permission dependencies.
+
+    Staff realm only, and deliberately so. `current_user_id` is a `users.id`, while a
+    customer token's subject numbers a row in `customer_logins`; setting one from the
+    other would file a shop owner's action against whichever employee happens to share
+    that id. A customer request simply leaves the context empty.
+    """
     auth_header = request.headers.get("Authorization", "")
     if auth_header.startswith("Bearer "):
         try:
-            payload = decode_token(auth_header[7:], expected_type="access")
+            payload = decode_token(
+                auth_header[7:], expected_type="access", expected_realm="staff"
+            )
             current_user_id.set(int(payload["sub"]))
-        except Exception:
+        except (AppException, KeyError, ValueError):
+            # Every way an attacker-supplied token can be unusable — malformed,
+            # expired, wrong signature, wrong realm — arrives as one of these, so
+            # swallowing them is the intended best-effort behaviour. A broader catch
+            # also swallowed *our* mistakes: when `decode_token` grew a required
+            # `expected_realm`, this call started raising TypeError and every audit
+            # row silently lost its user until a test caught it.
             pass
     return await call_next(request)
 

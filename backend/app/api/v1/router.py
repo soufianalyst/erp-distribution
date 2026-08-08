@@ -12,6 +12,7 @@ from app.api.v1 import (
     delivery,
     expenses,
     inventory,
+    portal,
     purchases,
     sales,
     settings,
@@ -30,3 +31,4 @@ api_router.include_router(analytics.router)
 api_router.include_router(alerts.router)
 api_router.include_router(settings.router)
 api_router.include_router(audit.router)
+api_router.include_router(portal.router)

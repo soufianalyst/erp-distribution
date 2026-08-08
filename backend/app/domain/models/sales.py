@@ -10,6 +10,7 @@ from sqlalchemy import (
     DateTime,
     Enum,
     ForeignKey,
+    Integer,
     Numeric,
     String,
     func,
@@ -588,3 +589,51 @@ class CustomerPayment(Base):
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=func.now()
     )
+
+
+class CustomerLogin(Base):
+    """A customer's own way into the portal — deliberately not a `User`.
+
+    Staff and customers are different kinds of principal and must not share a table.
+    Sharing one would mean a single `role` column separating a shop owner from an
+    accountant, and one wrong default anywhere in the permission catalogue would hand
+    a customer the run of the business. Two tables cannot be confused by a default.
+
+    One login per customer for now. A shop with several people ordering shares it;
+    if that becomes a problem the fix is more rows here, not a second concept.
+    """
+
+    __tablename__ = "customer_logins"
+
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    customer_id: Mapped[int] = mapped_column(
+        ForeignKey("customers.id"), nullable=False, unique=True, index=True
+    )
+    # Phone or email — whichever the office gives them. Kept as one opaque
+    # identifier because a grocery is reached by phone and an office by email, and
+    # the system has no business insisting on either.
+    login_id: Mapped[str] = mapped_column(String(120), nullable=False, unique=True)
+    hashed_password: Mapped[str] = mapped_column(String(255), nullable=False)
+    # The office issues a temporary password; the portal refuses to do anything else
+    # until it is changed. There is no mail or SMS gateway configured, so an emailed
+    # invite link would be a feature that silently never arrives.
+    must_change_password: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=True, server_default="true"
+    )
+    is_active: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=True, server_default="true"
+    )
+    # Lockout state. Counting failures in the row rather than in memory means a
+    # restart does not reset an attack, and several workers cannot each grant a
+    # fresh allowance of guesses.
+    failed_attempts: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=0, server_default="0"
+    )
+    locked_until: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    last_login_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    created_by: Mapped[int | None] = mapped_column(ForeignKey("users.id"))
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+
+    customer: Mapped["Customer"] = relationship(lazy="selectin")

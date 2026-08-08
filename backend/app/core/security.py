@@ -11,6 +11,16 @@ from app.core.exceptions import AppException
 
 TokenType = Literal["access", "refresh"]
 
+# Which world a token belongs to. Staff are rows in `users`; customers are rows in
+# `customer_logins` pointing at `customers` — two separate tables whose ids collide
+# freely. Without this claim a token is just `{"sub": 7}`, and the dependency that
+# reads it decides what 7 means: customer 7's token would resolve to *user* 7 and
+# hand a shop owner whatever role that staff member holds.
+#
+# Required, never defaulted, on both minting and decoding: a default is exactly how
+# a customer token would quietly acquire staff meaning.
+TokenRealm = Literal["staff", "customer"]
+
 
 def hash_password(plain_password: str) -> str:
     """Hash a password with bcrypt and a fresh per-password salt."""
@@ -45,13 +55,18 @@ def verify_password_or_dummy(plain_password: str, hashed_password: str | None) -
 
 
 def _create_token(
-    subject: str, role: str, token_type: TokenType, expires_delta: timedelta
+    subject: str,
+    role: str,
+    token_type: TokenType,
+    expires_delta: timedelta,
+    realm: TokenRealm,
 ) -> str:
     settings = get_settings()
     now = datetime.now(timezone.utc)
     payload: dict[str, Any] = {
         "sub": subject,
         "role": role,
+        "realm": realm,
         "type": token_type,
         "iat": now,
         "exp": now + expires_delta,
@@ -59,24 +74,39 @@ def _create_token(
     return jwt.encode(payload, settings.SECRET_KEY, algorithm=settings.JWT_ALGORITHM)
 
 
-def create_access_token(subject: str, role: str) -> str:
-    """Mint a short-lived access token carrying the user id and role."""
+def create_access_token(subject: str, role: str, *, realm: TokenRealm) -> str:
+    """Mint a short-lived access token carrying the subject id, role and realm."""
     settings = get_settings()
     return _create_token(
-        subject, role, "access", timedelta(minutes=settings.ACCESS_TOKEN_EXPIRE_MINUTES)
+        subject,
+        role,
+        "access",
+        timedelta(minutes=settings.ACCESS_TOKEN_EXPIRE_MINUTES),
+        realm,
     )
 
 
-def create_refresh_token(subject: str, role: str) -> str:
+def create_refresh_token(subject: str, role: str, *, realm: TokenRealm) -> str:
     """Mint a longer-lived refresh token used to obtain new access tokens."""
     settings = get_settings()
     return _create_token(
-        subject, role, "refresh", timedelta(days=settings.REFRESH_TOKEN_EXPIRE_DAYS)
+        subject,
+        role,
+        "refresh",
+        timedelta(days=settings.REFRESH_TOKEN_EXPIRE_DAYS),
+        realm,
     )
 
 
-def decode_token(token: str, expected_type: TokenType) -> dict[str, Any]:
-    """Decode and validate a JWT, enforcing the expected token type (access vs refresh)."""
+def decode_token(
+    token: str, expected_type: TokenType, *, expected_realm: TokenRealm
+) -> dict[str, Any]:
+    """Decode a JWT, enforcing both the token type and the realm it was minted for.
+
+    Tokens issued before the realm claim existed carry none and are rejected, which
+    logs everyone out once. That is the correct trade: accepting a claimless token as
+    staff would leave the very hole this exists to close.
+    """
     settings = get_settings()
     try:
         payload: dict[str, Any] = jwt.decode(
@@ -90,5 +120,9 @@ def decode_token(token: str, expected_type: TokenType) -> dict[str, Any]:
         raise AppException(401, "رمز الدخول غير صالح.") from exc
 
     if payload.get("type") != expected_type:
+        raise AppException(401, "رمز الدخول غير صالح.")
+    if payload.get("realm") != expected_realm:
+        # Deliberately the same message as any other bad token: which realm a token
+        # belongs to is not something an attacker should learn by probing.
         raise AppException(401, "رمز الدخول غير صالح.")
     return payload
