@@ -23,6 +23,7 @@ import PrintPickupPrepPage from "./pages/PrintPickupPrepPage";
 import PrintStocktakePage from "./pages/PrintStocktakePage";
 import ProductsPage from "./pages/ProductsPage";
 import PurchasesPage from "./pages/PurchasesPage";
+import PortalOrdersPage from "./pages/PortalOrdersPage";
 import RoundsPage from "./pages/RoundsPage";
 import SalesPage from "./pages/SalesPage";
 import SettingsPage from "./pages/SettingsPage";
@@ -139,6 +140,14 @@ export default function App() {
                 element={
                   <RequirePerm perm="sales.round_settle">
                     <RoundsPage />
+                  </RequirePerm>
+                }
+              />
+              <Route
+                path="/portal-orders"
+                element={
+                  <RequirePerm perm="sales.orders_review">
+                    <PortalOrdersPage />
                   </RequirePerm>
                 }
               />
