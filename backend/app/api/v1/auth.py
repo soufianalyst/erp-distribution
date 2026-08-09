@@ -1,6 +1,6 @@
 """Authentication endpoints: login, token refresh, current user, and user management."""
 
-from fastapi import APIRouter, Depends, status
+from fastapi import APIRouter, Depends, Request, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.deps import get_current_user, require_permissions
@@ -14,6 +14,7 @@ from app.api.schemas.auth import (
     UserUpdate,
 )
 from app.api.schemas.common import APIResponse
+from app.core import rate_limit
 from app.db.session import get_db
 from app.core.permissions import PERMISSION_GROUPS
 from app.domain.models.user import User
@@ -24,9 +25,12 @@ router = APIRouter(prefix="/auth", tags=["Authentication"])
 
 @router.post("/login", response_model=APIResponse[TokenPair])
 async def login(
-    body: LoginRequest, db: AsyncSession = Depends(get_db)
+    body: LoginRequest, request: Request, db: AsyncSession = Depends(get_db)
 ) -> APIResponse[TokenPair]:
     """تسجيل الدخول باسم المستخدم وكلمة المرور، ويعيد رمز وصول ورمز تحديث."""
+    # Staff accounts have no lockout of their own, so this is the only brake on
+    # guessing them — and the app is served on the same public host as the portal.
+    rate_limit.enforce(request, "staff-login")
     tokens = await AuthService(db).authenticate(body.username, body.password)
     return APIResponse(data=tokens, message="تم تسجيل الدخول بنجاح.")
 
@@ -86,6 +90,24 @@ async def update_user(
     return APIResponse(
         data=UserOut.model_validate(user), message="تم تحديث بيانات المستخدم بنجاح."
     )
+
+
+@router.delete(
+    "/users/{user_id}",
+    response_model=APIResponse[None],
+    dependencies=[Depends(require_permissions("users.delete"))],
+)
+async def delete_user(
+    user_id: int,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+) -> APIResponse[None]:
+    """حذف حساب مستخدم لم يُسجَّل عليه أي عملية (مدير النظام فقط).
+
+    الحساب الذي له سجل عمليات يُعطَّل ولا يُحذف، حفاظاً على تتبّع الفواتير والقيود.
+    """
+    await AuthService(db).delete_user(user_id, current_user)
+    return APIResponse(data=None, message="تم حذف الحساب.")
 
 
 @router.get(

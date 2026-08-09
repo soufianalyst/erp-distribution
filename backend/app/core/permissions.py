@@ -150,6 +150,12 @@ PERMISSION_GROUPS: list[dict] = [
         "group": "النظام",
         "permissions": [
             {"code": "users.manage", "label": "إدارة المستخدمين والصلاحيات"},
+            {
+                # Held apart from users.manage: disabling an account is routine,
+                # erasing one is not, and only accounts with no history can go.
+                "code": "users.delete",
+                "label": "حذف حسابات المستخدمين (بلا سجل عمليات)",
+            },
             {"code": "audit.view", "label": "عرض سجل تتبع العمليات (Audit Trail)"},
         ],
     },

@@ -21,7 +21,7 @@ invoice through the ordinary sales pipeline.
 
 from typing import Literal
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, Query, Request
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -31,6 +31,7 @@ from app.api.deps import (
     require_permissions,
 )
 from app.api.schemas.common import APIResponse
+from app.core import rate_limit
 from app.api.schemas.portal import (
     CustomerLoginCreateIn,
     CustomerLoginOut,
@@ -87,9 +88,13 @@ def _login_out(login: CustomerLogin) -> CustomerLoginOut:
 # --- The customer's own session ---
 @router.post("/portal/auth/login", response_model=APIResponse[PortalTokenPair])
 async def portal_login(
-    body: PortalLoginIn, db: AsyncSession = Depends(get_db)
+    body: PortalLoginIn, request: Request, db: AsyncSession = Depends(get_db)
 ) -> APIResponse[PortalTokenPair]:
     """دخول العميل إلى بوابته."""
+    # Before the password is even hashed: the per-account lockout cannot see an
+    # attacker spreading one password across many shops, and each bcrypt check is
+    # real work this box has to do while the warehouse is also using it.
+    rate_limit.enforce(request, "portal-login")
     tokens = await PortalAuthService(db).authenticate(body.login_id, body.password)
     return APIResponse(data=tokens, message="أهلاً بك.")
 
@@ -203,11 +208,13 @@ async def portal_update_profile(
 # --- Ordering ---
 @router.get("/portal/catalog", response_model=APIResponse[list[CatalogItemOut]])
 async def portal_catalog(
+    search: str | None = None,
+    limit: int = Query(default=60, ge=1, le=200),
     current_customer: Customer = Depends(get_current_customer),
     db: AsyncSession = Depends(get_db),
 ) -> APIResponse[list[CatalogItemOut]]:
     """الأصناف المتاحة للطلب مع مؤشر التوفر — بدون أسعار."""
-    data = await PortalOrderService(db).catalog()
+    data = await PortalOrderService(db).catalog(search=search, limit=limit)
     return APIResponse(data=data)
 
 
@@ -357,6 +364,19 @@ async def create_customer_login(
         data=_login_out(login),
         message="تم فتح الحساب. سلّم العميل كلمة المرور المؤقتة؛ سيُطلب منه تغييرها.",
     )
+
+
+@router.delete(
+    "/customer-logins/{login_id}",
+    response_model=APIResponse[None],
+    dependencies=[manage_portal_access],
+)
+async def delete_customer_login(
+    login_id: int, db: AsyncSession = Depends(get_db)
+) -> APIResponse[None]:
+    """حذف حساب بوابة نهائياً — لا يمسّ العميل ولا فواتيره، فقط طريقة دخوله."""
+    await PortalAuthService(db).delete_login(login_id)
+    return APIResponse(data=None, message="تم حذف حساب البوابة.")
 
 
 @router.put(

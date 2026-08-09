@@ -1,6 +1,6 @@
 """Authentication and user management business logic."""
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.schemas.auth import TokenPair, UserCreate, UserOut, UserUpdate
@@ -13,7 +13,7 @@ from app.core.security import (
     hash_password,
     verify_password_or_dummy,
 )
-from app.domain.models.user import User
+from app.domain.models.user import User, UserRole
 
 
 class AuthService:
@@ -108,3 +108,83 @@ class AuthService:
         """All user accounts, in creation order."""
         result = await self.session.execute(select(User).order_by(User.id))
         return list(result.scalars().all())
+
+    async def _references_to(self, user_id: int) -> dict[str, int]:
+        """Every row in the system that points at this user, counted per table.
+
+        Discovered from the mapper metadata rather than a hand-written list. Thirty-odd
+        tables carry a `created_by`, a `salesman_id` or similar, and a list maintained
+        by hand would be one migration behind the day someone adds the thirty-fifth —
+        which is precisely the day a delete would either fail on a foreign key or, if
+        somebody had "helpfully" added ON DELETE SET NULL, quietly strip a name off
+        historical records.
+        """
+        from app.db.base import Base
+
+        counts: dict[str, int] = {}
+        for table in Base.metadata.sorted_tables:
+            for column in table.columns:
+                if not any(
+                    fk.column.table.name == "users" and fk.column.name == "id"
+                    for fk in column.foreign_keys
+                ):
+                    continue
+                found = await self.session.scalar(
+                    select(func.count())
+                    .select_from(table)
+                    .where(column == user_id)
+                )
+                if found:
+                    counts[f"{table.name}.{column.name}"] = found
+        return counts
+
+    async def delete_user(self, user_id: int, current_user: User) -> None:
+        """Remove an account that was created in error.
+
+        Deliberately narrow. A user who has traded is woven through invoices, journal
+        entries and the audit log, and deleting them would either break those
+        references or leave records nobody can attribute. Deactivating keeps the
+        history readable while closing the door, which is what "removing" an employee
+        who has worked here actually means.
+
+        So this is for the duplicate, the typo, the account opened for someone who
+        never started — and it says as much when it refuses.
+        """
+        user = await self.session.get(User, user_id)
+        if user is None:
+            raise AppException(404, "المستخدم غير موجود.")
+
+        # Deleting the account you are signed in with would revoke your own session
+        # mid-request and leave you unable to undo it.
+        if user.id == current_user.id:
+            raise AppException(400, "لا يمكنك حذف حسابك الذي تعمل به الآن.")
+
+        if user.role == UserRole.ADMIN:
+            remaining = await self.session.scalar(
+                select(func.count())
+                .select_from(User)
+                .where(
+                    User.role == UserRole.ADMIN,
+                    User.is_active.is_(True),
+                    User.id != user.id,
+                )
+            )
+            # Losing the last administrator locks everyone out of the permission
+            # screen permanently, with no way back through the interface.
+            if not remaining:
+                raise AppException(
+                    400, "لا يمكن حذف آخر مدير نظام فعّال في النظام."
+                )
+
+        references = await self._references_to(user_id)
+        if references:
+            total = sum(references.values())
+            raise AppException(
+                409,
+                f"لا يمكن حذف هذا المستخدم لارتباطه بـ {total} سجلاً في النظام "
+                "(فواتير أو قيود أو حركات). عطّل الحساب بدلاً من حذفه للحفاظ على "
+                "سجلات العمليات.",
+            )
+
+        await self.session.delete(user)
+        await self.session.commit()

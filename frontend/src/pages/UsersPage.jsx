@@ -19,7 +19,7 @@ import {
   Select,
   Table,
 } from "../components/Ui";
-import { ROLE_LABELS } from "../context/AuthContext";
+import { ROLE_LABELS, useAuth } from "../context/AuthContext";
 import useFetch from "../hooks/useFetch";
 import api, { apiMessage } from "../services/api";
 
@@ -193,11 +193,75 @@ function PermissionsEditor({ user, catalog, onSaved, onClose }) {
   );
 }
 
+
+function PasswordDialog({ user, onClose, onDone }) {
+  const [password, setPassword] = useState("");
+  const [confirm, setConfirm] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState(null);
+
+  const submit = async (event) => {
+    event.preventDefault();
+    if (password !== confirm) {
+      setError("كلمتا المرور غير متطابقتين.");
+      return;
+    }
+    setBusy(true);
+    setError(null);
+    try {
+      await api.patch(`/auth/users/${user.id}`, { password });
+      onDone(`تم تغيير كلمة مرور ${user.full_name}.`);
+    } catch (err) {
+      setError(apiMessage(err));
+      setBusy(false);
+    }
+  };
+
+  return (
+    <Modal open title={`كلمة مرور جديدة — ${user.full_name}`} onClose={onClose}>
+      <form onSubmit={submit} className="space-y-4">
+        <Input
+          label="كلمة المرور الجديدة (8 أحرف على الأقل)"
+          type="password"
+          value={password}
+          onChange={(e) => setPassword(e.target.value)}
+          required
+          minLength={8}
+          autoFocus
+        />
+        <Input
+          label="تأكيد كلمة المرور"
+          type="password"
+          value={confirm}
+          onChange={(e) => setConfirm(e.target.value)}
+          required
+          minLength={8}
+        />
+        <p className="text-sm text-slate-500 dark:text-slate-400">
+          سلّم الموظف كلمة المرور بنفسك؛ لن تظهر في أي شاشة بعد الحفظ.
+        </p>
+        <Alert>{error}</Alert>
+        <div className="flex justify-end gap-2">
+          <CancelButton onClose={onClose} />
+          <Button type="submit" disabled={busy}>
+            {busy ? "جارٍ الحفظ…" : "حفظ"}
+          </Button>
+        </div>
+      </form>
+    </Modal>
+  );
+}
+
 export default function UsersPage() {
+  const { can } = useAuth();
   const { data, loading, error, reload } = useFetch(() => api.get("/auth/users"));
   const catalog = useFetch(() => api.get("/auth/permissions"));
   const [open, setOpen] = useState(false);
   const [permUser, setPermUser] = useState(null);
+  const [passwordUser, setPasswordUser] = useState(null);
+  // Separate from useFetch's `error`, which reports the list failing to load.
+  const [actionError, setActionError] = useState(null);
+  const [notice, setNotice] = useState(null);
   const [form, setForm] = useState(EMPTY_FORM);
   const [formError, setFormError] = useState(null);
   const set = (key) => (e) => setForm({ ...form, [key]: e.target.value });
@@ -220,7 +284,27 @@ export default function UsersPage() {
       await api.patch(`/auth/users/${user.id}`, { is_active: !user.is_active });
       reload();
     } catch (err) {
-      alert(apiMessage(err));
+      setActionError(apiMessage(err));
+    }
+  };
+
+  const removeUser = async (user) => {
+    // Only accounts with no history can go, and the server decides that — this
+    // confirmation says what will happen, not what the caller hopes will.
+    if (
+      !window.confirm(
+        `حذف حساب «${user.full_name}» نهائياً؟\n\n` +
+          "الحذف متاح فقط لحساب لم تُسجَّل عليه أي عملية. " +
+          "إن كان له سجل، عطّله بدل حذفه."
+      )
+    )
+      return;
+    try {
+      await api.delete(`/auth/users/${user.id}`);
+      setNotice("تم حذف الحساب.");
+      reload();
+    } catch (err) {
+      setActionError(apiMessage(err));
     }
   };
 
@@ -231,7 +315,8 @@ export default function UsersPage() {
         <Button onClick={() => setOpen(true)}>+ مستخدم جديد</Button>
       </div>
       <Card>
-        <Alert>{error}</Alert>
+        <Alert>{error ?? actionError}</Alert>
+        <Alert tone="success">{notice}</Alert>
         {loading ? (
           <Loading />
         ) : (
@@ -277,12 +362,20 @@ export default function UsersPage() {
                     <Button variant="secondary" onClick={() => setPermUser(r)}>
                       🔐 الصلاحيات
                     </Button>
+                    <Button variant="secondary" onClick={() => setPasswordUser(r)}>
+                      🔑 كلمة المرور
+                    </Button>
                     <Button
                       variant={r.is_active ? "danger" : "secondary"}
                       onClick={() => toggleActive(r)}
                     >
                       {r.is_active ? "تعطيل" : "تفعيل"}
                     </Button>
+                    {can("users.delete") ? (
+                      <Button variant="danger" onClick={() => removeUser(r)}>
+                        حذف
+                      </Button>
+                    ) : null}
                   </div>
                 ),
               },
@@ -291,6 +384,17 @@ export default function UsersPage() {
           />
         )}
       </Card>
+
+      {passwordUser ? (
+        <PasswordDialog
+          user={passwordUser}
+          onClose={() => setPasswordUser(null)}
+          onDone={(message) => {
+            setPasswordUser(null);
+            setNotice(message);
+          }}
+        />
+      ) : null}
 
       <Modal open={open} title="إضافة مستخدم جديد" onClose={() => setOpen(false)}>
         <form onSubmit={submit} className="space-y-4">

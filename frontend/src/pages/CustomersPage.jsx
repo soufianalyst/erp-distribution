@@ -180,6 +180,27 @@ function PortalAccounts({ onNotice }) {
     }
   };
 
+  const remove = async (account) => {
+    // Says plainly what survives, because "delete the account" reads to most
+    // people as "delete the customer" — and it is not that.
+    if (
+      !window.confirm(
+        `حذف حساب دخول «${account.customer_name}» نهائياً؟\n\n` +
+          "العميل وفواتيره وطلباته تبقى كما هي — يُحذف فقط دخوله إلى البوابة. " +
+          "إن كنت تنوي إيقافه مؤقتاً فاستخدم «إيقاف»."
+      )
+    )
+      return;
+    setError(null);
+    try {
+      const { data } = await api.delete(`/customer-logins/${account.id}`);
+      onNotice(data.message);
+      accounts.reload();
+    } catch (err) {
+      setError(apiMessage(err));
+    }
+  };
+
   const columns = [
     { key: "customer_name", label: "العميل" },
     { key: "login_id", label: "معرّف الدخول" },
@@ -219,6 +240,9 @@ function PortalAccounts({ onNotice }) {
             onClick={() => toggle(row)}
           >
             {row.is_active ? "إيقاف" : "إعادة تفعيل"}
+          </Button>
+          <Button variant="danger" onClick={() => remove(row)}>
+            حذف
           </Button>
         </div>
       ),

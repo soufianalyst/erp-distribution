@@ -218,6 +218,23 @@ class PortalAuthService:
         await self.session.refresh(login)
         return login
 
+    async def delete_login(self, login_id: int) -> None:
+        """Remove a portal account entirely.
+
+        Safe to delete outright, unlike a staff user: nothing in the system points at
+        a `customer_logins` row. The customer, their orders and their invoices belong
+        to the *customer* record and are untouched — this only closes the way in.
+
+        Suspending is still the better move for a shop that may come back, since it
+        keeps the login id reserved. Deleting is for the account opened by mistake or
+        against the wrong customer.
+        """
+        login = await self.session.get(CustomerLogin, login_id)
+        if login is None:
+            raise AppException(404, "الحساب غير موجود.")
+        await self.session.delete(login)
+        await self.session.commit()
+
     async def list_logins(self) -> list[CustomerLogin]:
         result = await self.session.execute(
             select(CustomerLogin)
