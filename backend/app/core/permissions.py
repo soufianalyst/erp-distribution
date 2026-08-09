@@ -18,6 +18,12 @@ PERMISSION_GROUPS: list[dict] = [
             {"code": "products.view", "label": "عرض الأصناف"},
             {"code": "products.manage", "label": "إدارة الأصناف والأسعار"},
             {"code": "products.delete", "label": "حذف الأصناف"},
+            {
+                # Discounting is a pricing decision, not stock housekeeping: whoever
+                # counts the shelf should not be able to mark it down.
+                "code": "products.offers",
+                "label": "إنشاء عروض تخفيض مؤقتة على الأصناف",
+            },
             {"code": "warehouses.view", "label": "عرض المستودعات"},
             {"code": "warehouses.manage", "label": "إدارة المستودعات"},
             {"code": "stock.view", "label": "عرض الأرصدة وتقارير الصلاحية"},
@@ -250,6 +256,7 @@ ROLE_DEFAULT_PERMISSIONS: dict[str, frozenset[str]] = {
             "customers.view",
             "customers.manage",
             "customers.portal_access",
+            "products.offers",
             "sales.view",
             "sales.payments",
             "sales.all_customers",

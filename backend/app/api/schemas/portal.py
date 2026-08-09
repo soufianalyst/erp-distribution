@@ -147,18 +147,31 @@ class Availability(str, Enum):
 
 
 class CatalogItemOut(BaseModel):
-    """A line in the customer's catalogue. Note what is absent: every price.
+    """A line in the customer's catalogue.
 
-    The product carries three of them — wholesale, half-wholesale, retail — and which
-    one applies to this shop is a commercial decision the office makes when it prices
-    the order. Showing any of them here would either be wrong or would disclose the
-    tier.
+    Ordinary lines carry no price. The product has three — wholesale, half-wholesale,
+    retail — and which applies is settled when the office prices the order.
+
+    An item **on offer** is the deliberate exception, and the reason is that a
+    markdown with no number is not an offer: a shop will not take extra stock to save
+    an amount it cannot see. Both prices shown are *this* customer's, derived from
+    their own tier, so nothing is disclosed that their invoices do not already show
+    and the tier ladder is preserved rather than flattened.
+
+    Showing it also makes it binding — `SalesService.create_invoice` reads the same
+    offers, so the price quoted here is the price charged.
     """
 
     product_id: int
     name: str
     unit: str
     availability: Availability
+    # Present only while an offer is live; both None otherwise.
+    price_before: Decimal | None = None
+    price_now: Decimal | None = None
+    discount_percent: Decimal | None = None
+    offer_note: str | None = None
+    offer_ends_on: date | None = None
 
 
 class PortalOrderLineIn(BaseModel):

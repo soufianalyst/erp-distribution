@@ -19,6 +19,7 @@ from app.domain.models.expenses import Expense, ExpenseCategory, ExpensePaymentM
 from app.domain.models.inventory import (
     Product,
     ProductBatch,
+    ProductOffer,
     ProductUnit,
     AdjustmentStatus,
     StockAdjustment,
@@ -95,6 +96,7 @@ __all__ = [
     "PriceTier",
     "Product",
     "ProductBatch",
+    "ProductOffer",
     "ProductUnit",
     "AdjustmentStatus",
     "StockAdjustment",

@@ -40,6 +40,7 @@ from app.domain.models.sales import (
 )
 from app.domain.models.user import User
 from app.services.inventory.stock_query import sellable
+from app.services.sales.offer_pricing import active_offers, apply_offer
 from app.services.sales.sales_service import SalesService
 
 # A customer may have this many requests waiting on the office at once. Not a
@@ -92,7 +93,7 @@ class PortalOrderService:
         }
 
     async def catalog(
-        self, search: str | None = None, limit: int = 60
+        self, customer: Customer, search: str | None = None, limit: int = 60
     ) -> list[CatalogItemOut]:
         """Active products, searched and capped, with a band instead of a number.
 
@@ -110,17 +111,37 @@ class PortalOrderService:
             .all()
         )
         on_hand = await self._on_hand([p.id for p in products])
-        return [
-            CatalogItemOut(
-                product_id=product.id,
-                name=product.name,
-                unit=product.base_unit_name,
-                availability=_band(
-                    on_hand.get(product.id, Decimal("0")), product.min_stock_level
-                ),
+        # Only offered lines carry a price, and both numbers are this customer's own:
+        # their tier price, and that price discounted. A flat offer price would hand a
+        # retail shop the wholesale figure and collapse the ladder.
+        offers = await active_offers(self.session, [p.id for p in products])
+
+        items = []
+        for product in products:
+            offer = offers.get(product.id)
+            before = (
+                SalesService.tier_price(product, customer.price_tier)
+                if offer
+                else None
             )
-            for product in products
-        ]
+            items.append(
+                CatalogItemOut(
+                    product_id=product.id,
+                    name=product.name,
+                    unit=product.base_unit_name,
+                    availability=_band(
+                        on_hand.get(product.id, Decimal("0")), product.min_stock_level
+                    ),
+                    price_before=before,
+                    price_now=apply_offer(before, offer) if offer else None,
+                    discount_percent=offer.discount_percent if offer else None,
+                    offer_note=offer.note if offer else None,
+                    offer_ends_on=offer.ends_on if offer else None,
+                )
+            )
+        # Offers first: they are the reason a shop opens the catalogue twice.
+        items.sort(key=lambda i: (i.discount_percent is None, i.name))
+        return items
 
     async def _to_out(self, orders: list[CustomerOrder]) -> list[PortalOrderOut]:
         """Project orders, re-reading availability rather than trusting the request."""

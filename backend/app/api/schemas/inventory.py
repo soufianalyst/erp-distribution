@@ -279,3 +279,33 @@ class StocktakeOut(BaseModel):
     cancel_reason: str | None
     created_at: datetime
     lines: list[StocktakeLineOut]
+
+
+class ProductOfferCreate(BaseModel):
+    product_id: int
+    discount_percent: Decimal = Field(gt=0, lt=100)
+    starts_on: date
+    ends_on: date
+    note: str | None = Field(default=None, max_length=200)
+
+
+class ProductOfferOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: int
+    product_id: int
+    product_name: str | None = None
+    discount_percent: Decimal
+    starts_on: date
+    ends_on: date
+    note: str | None
+    is_active: bool
+    # Whether it applies today — a window can be set for next week, or be over.
+    is_live: bool = False
+    # What the discount does to the wholesale margin, so the office is never
+    # discounting below cost by accident. Selling under cost can still beat a
+    # write-off; it should just be a decision rather than a surprise.
+    wholesale_price: Decimal | None = None
+    offer_price: Decimal | None = None
+    unit_cost: Decimal | None = None
+    below_cost: bool = False

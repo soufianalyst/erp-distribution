@@ -5,7 +5,7 @@
 // plainly instead of leaving a shop to wonder what it will be charged.
 import { useEffect, useState } from "react";
 import { useNavigate } from "react-router-dom";
-import { Alert, Badge, Button, Input, Loading, qty } from "../components/Ui";
+import { Alert, Badge, Button, Input, Loading, money, qty } from "../components/Ui";
 import useFetch from "../hooks/useFetch";
 import portalApi, { portalMessage } from "../services/portalApi";
 
@@ -86,7 +86,8 @@ export default function PortalCatalog() {
         placeholder="اسم الصنف…"
       />
       <p className="text-xs text-slate-500 dark:text-slate-400">
-        الأسعار تُحتسب عند تأكيد الطلب وإصدار الفاتورة من المكتب.
+        الأسعار تُحتسب عند تأكيد الطلب وإصدار الفاتورة من المكتب — ما عدا الأصناف
+        المعروضة بخصم، فسعرها المعروض هو المحتسب.
       </p>
 
       <Alert>{catalog.error ?? error}</Alert>
@@ -103,12 +104,39 @@ export default function PortalCatalog() {
                 <p className="truncate text-sm font-bold text-slate-800 dark:text-slate-100">
                   {item.name}
                 </p>
-                <p className="mt-1 flex items-center gap-2 text-xs text-slate-500 dark:text-slate-400">
+                <p className="mt-1 flex flex-wrap items-center gap-2 text-xs text-slate-500 dark:text-slate-400">
                   <Badge tone={AVAILABILITY[item.availability].tone}>
                     {AVAILABILITY[item.availability].label}
                   </Badge>
                   {item.unit}
+                  {item.discount_percent ? (
+                    <Badge tone="red">خصم {qty(item.discount_percent)}%</Badge>
+                  ) : null}
                 </p>
+                {/* Only discounted lines carry a price, and it is this customer's own
+                    — their tier price, and that price marked down. It is also what
+                    the invoice will charge, so it is written as a fact rather than a
+                    guide. */}
+                {item.price_now ? (
+                  <p className="mt-1 flex items-baseline gap-2 text-sm">
+                    <span className="text-slate-400 line-through dark:text-slate-500">
+                      {money(item.price_before)}
+                    </span>
+                    <span className="font-bold text-emerald-700 dark:text-emerald-400">
+                      {money(item.price_now)}
+                    </span>
+                    {item.offer_ends_on ? (
+                      <span className="text-[11px] text-slate-500 dark:text-slate-400">
+                        حتى {item.offer_ends_on}
+                      </span>
+                    ) : null}
+                  </p>
+                ) : null}
+                {item.offer_note ? (
+                  <p className="text-[11px] text-slate-500 dark:text-slate-400">
+                    {item.offer_note}
+                  </p>
+                ) : null}
               </div>
               <input
                 type="number"

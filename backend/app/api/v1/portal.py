@@ -214,7 +214,9 @@ async def portal_catalog(
     db: AsyncSession = Depends(get_db),
 ) -> APIResponse[list[CatalogItemOut]]:
     """الأصناف المتاحة للطلب مع مؤشر التوفر — بدون أسعار."""
-    data = await PortalOrderService(db).catalog(search=search, limit=limit)
+    data = await PortalOrderService(db).catalog(
+        current_customer, search=search, limit=limit
+    )
     return APIResponse(data=data)
 
 

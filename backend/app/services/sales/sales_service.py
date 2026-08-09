@@ -72,6 +72,7 @@ from app.services.accounting.accounting_service import (
     cash_or_bank,
 )
 from app.services.inventory.stock_service import StockService
+from app.services.sales.offer_pricing import active_offers, apply_offer
 
 TWO_PLACES = Decimal("0.01")
 
@@ -273,6 +274,11 @@ class SalesService:
         # sharing two products deadlock against each other. See
         # StockService.lock_batches_in_order.
         to_lock: set[tuple[int, int]] = set()
+        # One query for the whole invoice rather than one per line.
+        offers = await active_offers(
+            self.session, [line.product_id for line in data.lines]
+        )
+
         for line in data.lines:
             product = await self.stock.get_active_product(line.product_id)
             if product.warehouse_id is not None or source_warehouse_id is not None:
@@ -295,11 +301,16 @@ class SalesService:
             base_quantity = self.stock.to_base_quantity(
                 product, line.quantity, line.unit_id
             )
-            unit_price = (
-                price_overrides[product.id]
-                if price_overrides and product.id in price_overrides
-                else self.tier_price(product, customer.price_tier)
-            )
+            # Precedence: an explicit override beats an offer, because a person
+            # decided it; an offer beats the tier price, because the customer has
+            # already been shown it.
+            if price_overrides and product.id in price_overrides:
+                unit_price = price_overrides[product.id]
+            else:
+                unit_price = apply_offer(
+                    self.tier_price(product, customer.price_tier),
+                    offers.get(product.id),
+                )
 
             allocations = await self.stock.fefo_allocate(
                 product.id, source_warehouse_id or product.warehouse_id, base_quantity

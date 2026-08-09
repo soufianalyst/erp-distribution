@@ -192,6 +192,19 @@ class TestPortalResponsesCarryNoCommercialTerms:
         from pydantic import BaseModel
 
         forbidden = ("price", "cost", "credit_limit", "price_tier", "margin")
+
+        # Two exemptions, both deliberate and both narrow.
+        #
+        # `Invoice*` carries what the customer was charged, which is theirs.
+        #
+        # `CatalogItemOut` carries a before/after pair, but *only* on a line that is
+        # actively discounted, and both numbers are that customer's own tier price —
+        # nothing their invoices do not already show. A markdown with no number is not
+        # an offer, so the alternative was a feature that could not work. The fields
+        # are listed one by one rather than the class being waved through, so a third
+        # price appearing here still fails.
+        catalogue_allowed = {"price_before", "price_now"}
+
         offenders = []
         for name, klass in vars(portal_schemas).items():
             if not (isinstance(klass, type) and issubclass(klass, BaseModel)):
@@ -199,6 +212,8 @@ class TestPortalResponsesCarryNoCommercialTerms:
             if klass is BaseModel or name.startswith("Invoice"):
                 continue
             for field in klass.model_fields:
+                if name == "CatalogItemOut" and field in catalogue_allowed:
+                    continue
                 if any(word in field.lower() for word in forbidden):
                     offenders.append(f"{name}.{field}")
         assert not offenders, f"commercial terms exposed to customers: {offenders}"

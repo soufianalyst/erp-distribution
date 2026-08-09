@@ -6,6 +6,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.api.deps import require_permissions
 from app.api.schemas.common import APIResponse
 from app.api.schemas.inventory import (
+    ProductOfferCreate,
+    ProductOfferOut,
     BatchOut,
     NearExpiryOut,
     ProductCreate,
@@ -28,6 +30,7 @@ from app.api.schemas.inventory import (
 )
 from app.api.schemas.purchases import ReorderSuggestionOut
 from app.db.session import get_db
+from app.services.inventory.offer_service import OfferService
 from app.domain.models.inventory import StocktakeStatus
 from app.domain.models.user import User
 from app.services.inventory.product_service import ProductService
@@ -428,3 +431,45 @@ async def cancel_stocktake(
     return APIResponse(
         data=StocktakeOut.model_validate(stocktake), message="تم إلغاء عملية الجرد."
     )
+
+
+# --- Temporary markdowns ---
+# Separated from products.manage: discounting is a pricing decision, and whoever
+# counts the shelf should not be able to mark it down.
+@router.get(
+    "/offers",
+    response_model=APIResponse[list[ProductOfferOut]],
+    dependencies=[Depends(require_permissions("products.view"))],
+)
+async def list_offers(
+    include_ended: bool = False, db: AsyncSession = Depends(get_db)
+) -> APIResponse[list[ProductOfferOut]]:
+    """عروض التخفيض الحالية، مع أثرها على الهامش."""
+    return APIResponse(data=await OfferService(db).list_offers(include_ended))
+
+
+@router.post(
+    "/offers",
+    response_model=APIResponse[ProductOfferOut],
+    status_code=201,
+)
+async def create_offer(
+    body: ProductOfferCreate,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(require_permissions("products.offers")),
+) -> APIResponse[ProductOfferOut]:
+    """إنشاء عرض تخفيض مؤقت — يظهر للعميل في البوابة ويُطبَّق على الفاتورة."""
+    offer = await OfferService(db).create(body, current_user.id)
+    return APIResponse(data=offer, message="تم إنشاء العرض.")
+
+
+@router.post(
+    "/offers/{offer_id}/end",
+    response_model=APIResponse[ProductOfferOut],
+    dependencies=[Depends(require_permissions("products.offers"))],
+)
+async def end_offer(
+    offer_id: int, db: AsyncSession = Depends(get_db)
+) -> APIResponse[ProductOfferOut]:
+    """إيقاف العرض من الآن — لا يُحذف، حفاظاً على تفسير الفواتير السابقة."""
+    return APIResponse(data=await OfferService(db).end(offer_id), message="تم إيقاف العرض.")

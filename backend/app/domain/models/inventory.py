@@ -418,3 +418,44 @@ class StocktakeLine(Base):
     def base_unit_name(self) -> str:
         """The unit the stored quantity is expressed in."""
         return self.product.base_unit_name
+
+
+class ProductOffer(Base):
+    """A temporary markdown on one product, shown to customers and binding at sale.
+
+    Stored as a *percentage*, not a price, and that is the important choice. Customers
+    buy at three tiers, so a flat offer price would hand a retail shop the same number
+    as a wholesale one — flattening the tier structure and, at a deep enough discount,
+    selling to a retail customer below the wholesale price. A percentage comes off
+    whatever that customer already pays, so the ladder survives the sale.
+
+    The reason this exists at all is expiry: goods that will not clear before their
+    date are worth more sold cheaply than written off. Which is also why an offer may
+    legitimately go below cost — that is a decision the office makes with the margin
+    in front of them, not an accident.
+
+    Once a customer has seen the discounted price it is a promise, so the price
+    resolution used when invoicing reads these too. An offer that only affected the
+    display would be a way to quote one number and bill another.
+    """
+
+    __tablename__ = "product_offers"
+
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    product_id: Mapped[int] = mapped_column(
+        ForeignKey("products.id"), nullable=False, index=True
+    )
+    discount_percent: Mapped[Decimal] = mapped_column(Numeric(5, 2), nullable=False)
+    # Inclusive on both ends: an offer "until the 20th" runs through the 20th, which
+    # is how anyone reading the date would expect it to behave.
+    starts_on: Mapped[date] = mapped_column(Date, nullable=False)
+    ends_on: Mapped[date] = mapped_column(Date, nullable=False)
+    # Shown to the customer — "قرب انتهاء الصلاحية" is more honest than silence.
+    note: Mapped[str | None] = mapped_column(String(200))
+    is_active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    created_by: Mapped[int | None] = mapped_column(ForeignKey("users.id"))
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+
+    product: Mapped["Product"] = relationship()

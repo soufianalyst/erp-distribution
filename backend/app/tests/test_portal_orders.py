@@ -31,10 +31,15 @@ async def stock_level(client: AsyncClient, admin: dict, product_id: int) -> Deci
 
 
 class TestTheCatalogueShowsNoPrices:
-    async def test_not_one_of_the_three_prices_appears(
+    async def test_an_ordinary_line_still_carries_no_price(
         self, client: AsyncClient
     ) -> None:
-        """A product carries wholesale, half-wholesale and retail. None may leak."""
+        """A product carries wholesale, half-wholesale and retail. None may leak.
+
+        Discounted lines are the one exception and are covered separately; a line with
+        no live offer must show nothing, because which of the three applies is still
+        the office's decision at invoicing time.
+        """
         admin = await login(client, "admin", TEST_ADMIN_PASSWORD)
         _, product = await setup_stocked_catalog(client, admin)
         _, customer = await ready_portal_customer(
@@ -42,7 +47,7 @@ class TestTheCatalogueShowsNoPrices:
 
         response = await client.get("/api/v1/portal/catalog", headers=customer)
         assert response.status_code == 200, response.text
-        for forbidden in ("price", "cost", "wholesale", "retail", "tier"):
+        for forbidden in ("cost", "wholesale", "retail", "tier"):
             assert forbidden not in response.text.lower(), (
                 f"the catalogue leaked {forbidden}"
             )
@@ -50,7 +55,9 @@ class TestTheCatalogueShowsNoPrices:
         item = next(
             i for i in response.json()["data"] if i["product_id"] == product["id"]
         )
-        assert set(item) == {"product_id", "name", "unit", "availability"}
+        assert item["price_before"] is None
+        assert item["price_now"] is None
+        assert item["discount_percent"] is None
 
     async def test_the_band_tracks_the_products_own_reorder_threshold(
         self, client: AsyncClient
