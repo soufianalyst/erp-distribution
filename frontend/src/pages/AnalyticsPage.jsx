@@ -119,6 +119,7 @@ const TABS = [
   { id: "products", label: "📦 تحليل الأصناف (RFM)" },
   { id: "inventory", label: "🗑️ المخزون والهدر" },
   { id: "discounts", label: "🏷️ الخصومات" },
+  { id: "lapsing", label: "📞 عملاء توقفوا عن الشراء" },
   { id: "credit", label: "💳 الذمم والمخاطر الائتمانية" },
   { id: "delivery", label: "🚛 التوزيع والاستلام" },
   { id: "reps", label: "🏅 أداء المناديب" },
@@ -156,6 +157,7 @@ export default function AnalyticsPage() {
   const customers = useFetch(() => api.get("/sales/customers"));
   const expiryRisk = useFetch(() => api.get("/analytics/inventory/expiry-risk"));
   const turnover = useFetch(() => api.get("/analytics/inventory/turnover"));
+  const lapsing = useFetch(() => api.get("/analytics/customers/lapsing"));
   const arAging = useFetch(() => api.get("/analytics/credit/aging"));
   const creditRisk = useFetch(() => api.get("/analytics/credit/at-risk"));
   const fulfillment = useFetch(() => api.get("/analytics/delivery/fulfillment"));
@@ -224,6 +226,10 @@ export default function AnalyticsPage() {
       )}
 
       {tab === "discounts" && <DiscountReportCard />}
+
+      {tab === "lapsing" && (
+        <LapsingTab report={lapsing.data} loading={lapsing.loading} />
+      )}
 
       {tab === "credit" && (
         <CreditTab
@@ -1011,6 +1017,82 @@ function InventoryTab({ expiryRisk, turnover, loading }) {
             </BarChart>
           </ResponsiveContainer>
         </div>
+      </Card>
+    </div>
+  );
+}
+
+// A call list, not a report. Every row is one phone call, and the columns exist to
+// let a rep argue with the flag before dialling: "silent 21 days, usually orders every
+// 6" is a fact they can check against what they know about the shop. A screen that
+// only said "at risk" would be ignored by the second week.
+function LapsingTab({ report, loading }) {
+  if (loading) return <Loading />;
+  if (!report) return <Loading />;
+
+  const rows = report.items || [];
+
+  return (
+    <div className="space-y-6">
+      <div className="grid grid-cols-1 gap-4 md:grid-cols-3">
+        <Kpi label="عملاء توقفوا عن الشراء" value={qty(report.total_customers)} tone="rose" />
+        <Kpi
+          label="قيمة سنوية معرضة للفقدان"
+          value={money(report.annual_value_at_risk)}
+          tone="amber"
+          hint="مبيعات هؤلاء العملاء سنوياً إن استمروا على وتيرتهم السابقة"
+        />
+        <Kpi
+          label="حد التنبيه"
+          // Spelled out rather than "3×": the multiplication sign reorders around the
+          // digit under RTL and came out as "×3".
+          value={`${report.overdue_multiple} أضعاف`}
+          tone="slate"
+          hint="يُرصد العميل عند تجاوز صمته ثلاثة أضعاف الفترة المعتادة بين طلباته"
+        />
+      </div>
+
+      <Card title="قائمة الاتصال — مرتبة حسب حجم ما قد نخسره">
+        <p className="mb-4 text-sm text-slate-500 dark:text-slate-400">
+          يُقاس كل عميل بوتيرته هو، لا بمدة ثابتة للجميع. فالبقالة التي تطلب كل ثلاثة
+          أيام وصمتت أسبوعين حالة عاجلة، والفندق الذي يطلب كل شهرين ليس كذلك.
+        </p>
+        <Table
+          columns={[
+            { key: "customer_name", label: "العميل" },
+            { key: "phone", label: "الهاتف", render: (r) => r.phone || "—" },
+            { key: "salesman_name", label: "المندوب", render: (r) => r.salesman_name || "—" },
+            {
+              key: "silent_days",
+              label: "مدة الانقطاع",
+              render: (r) => `${r.silent_days} يوم`,
+            },
+            {
+              key: "usual_gap_days",
+              label: "المعتاد بين الطلبات",
+              render: (r) => `${r.usual_gap_days} يوم`,
+            },
+            {
+              key: "overdue_multiple",
+              label: "التأخر عن المعتاد",
+              render: (r) => (
+                <Badge tone={Number(r.overdue_multiple) >= 6 ? "red" : "amber"}>
+                  {r.overdue_multiple} ضعف
+                </Badge>
+              ),
+            },
+            { key: "orders_count", label: "عدد الطلبات", render: (r) => qty(r.orders_count) },
+            {
+              key: "annual_value",
+              label: "قيمته السنوية",
+              render: (r) => money(r.annual_value),
+            },
+            { key: "last_order", label: "آخر طلب" },
+          ]}
+          rows={rows}
+          keyField="customer_id"
+          empty="لا يوجد عملاء متوقفون — كل العملاء يشترون بوتيرتهم المعتادة."
+        />
       </Card>
     </div>
   );

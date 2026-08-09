@@ -17,6 +17,7 @@ from app.api.schemas.analytics import (
     ExpiryRiskOut,
     ExpiryWorklistOut,
     FulfillmentSummaryOut,
+    LapsingReportOut,
     PriceTierRevenueOut,
     ProductRFMOut,
     RepPerformanceOut,
@@ -29,6 +30,7 @@ from app.api.schemas.common import APIResponse
 from app.db.session import get_db
 from app.services.analytics.analytics_service import AnalyticsService
 from app.services.analytics.expiry_worklist_service import ExpiryWorklistService
+from app.services.analytics.lapsing_service import LapsingService
 
 router = APIRouter(
     prefix="/analytics",
@@ -109,6 +111,18 @@ async def returns_trend(
 ) -> APIResponse[list[ReturnsTrendPointOut]]:
     """اتجاه نسبة المرتجعات الشهرية مصنفة حسب صالح لإعادة البيع أو تالف."""
     return APIResponse(data=await AnalyticsService(db).returns_trend())
+
+
+@router.get("/customers/lapsing", response_model=APIResponse[LapsingReportOut])
+async def lapsing_customers(
+    db: AsyncSession = Depends(get_db),
+) -> APIResponse[LapsingReportOut]:
+    """عملاء توقفوا عن الطلب بمقياس وتيرتهم هم، مرتّبين بما هو على المحك.
+
+    ليست عتبة موحّدة: العميل الذي يطلب مرتين أسبوعياً يُعدّ متأخراً بعد أسبوعين،
+    والذي يطلب كل شهرين لا يُعدّ كذلك إلا بعد ستة.
+    """
+    return APIResponse(data=await LapsingService(db).lapsing())
 
 
 @router.get("/inventory/expiry-risk", response_model=APIResponse[list[ExpiryRiskOut]])

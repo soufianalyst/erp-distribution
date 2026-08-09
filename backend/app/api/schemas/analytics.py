@@ -308,3 +308,29 @@ class AlertsOut(BaseModel):
     warning_count: int
     # Ordered worst first; only groups the caller has permission to act on.
     groups: list[AlertGroupOut]
+
+
+class LapsingCustomerOut(BaseModel):
+    """A shop measured against its own rhythm, not a company-wide threshold."""
+
+    customer_id: int
+    customer_name: str
+    phone: str | None
+    salesman_name: str | None
+    last_order: date
+    silent_days: int
+    # What this customer normally leaves between orders — the yardstick.
+    usual_gap_days: Decimal
+    overdue_multiple: Decimal
+    orders_count: int
+    lifetime_value: Decimal
+    # Spend per day of relationship, annualised, so a large new customer is not
+    # ranked below a small old one.
+    annual_value: Decimal
+
+
+class LapsingReportOut(BaseModel):
+    overdue_multiple: Decimal
+    total_customers: int
+    annual_value_at_risk: Decimal
+    items: list[LapsingCustomerOut]
