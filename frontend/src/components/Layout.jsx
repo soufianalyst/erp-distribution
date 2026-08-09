@@ -13,6 +13,7 @@ const NAV_ITEMS = [
   { to: "/barcode-scan", label: "مسح الباركود", icon: "📷", perm: "products.view" },
   { to: "/warehouses", label: "المستودعات", icon: "🏬", perm: "warehouses.view" },
   { to: "/stock", label: "حركة المخزون", icon: "🔄", perm: "stock.view" },
+  { to: "/expiry-worklist", label: "المهدد بالانتهاء", icon: "⏳", perm: "stock.view" },
   { to: "/customers", label: "العملاء", icon: "🧑‍💼", perm: "customers.view" },
   { to: "/sales", label: "فواتير المبيعات", icon: "🧾", perm: "sales.view" },
   { to: "/field", label: "جولة المندوب", icon: "🚐", perm: "sales.field_sync" },

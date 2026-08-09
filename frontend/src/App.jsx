@@ -13,6 +13,7 @@ import CustomersPage from "./pages/CustomersPage";
 import DashboardPage from "./pages/DashboardPage";
 import DeliveryPage from "./pages/DeliveryPage";
 import ExpensesPage from "./pages/ExpensesPage";
+import ExpiryWorklistPage from "./pages/ExpiryWorklistPage";
 import FieldPage from "./pages/FieldPage";
 import LoginPage from "./pages/LoginPage";
 import PrintInvoicePage from "./pages/PrintInvoicePage";
@@ -178,6 +179,14 @@ function StaffApp() {
                 element={
                   <RequirePerm perm="sales.round_settle">
                     <RoundsPage />
+                  </RequirePerm>
+                }
+              />
+              <Route
+                path="/expiry-worklist"
+                element={
+                  <RequirePerm perm="stock.view">
+                    <ExpiryWorklistPage />
                   </RequirePerm>
                 }
               />

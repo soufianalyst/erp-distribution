@@ -75,6 +75,66 @@ class ExpiryRiskOut(BaseModel):
     value_at_risk: Decimal
 
 
+class SuggestedBuyerOut(BaseModel):
+    """A customer who has actually bought this product before — not a prediction."""
+
+    customer_id: int
+    customer_name: str
+    phone: str | None
+    total_quantity: Decimal
+    last_bought: date
+
+
+class ExpiryWorklistItemOut(BaseModel):
+    """One product worth a phone call, with the reasoning shown.
+
+    Every input to the ranking is exposed rather than just the score: a manager who
+    cannot see why something is at the top will not trust the order, and the rate is
+    an estimate that deserves to be argued with.
+    """
+
+    product_id: int
+    product_name: str
+    unit: str
+    batches: int
+    warehouses: list[str]
+    earliest_expiry: date
+    days_remaining: int
+    quantity_at_risk: Decimal
+    # Units per day over the recent window; zero when nothing has sold.
+    daily_sales_rate: Decimal
+    projected_sales: Decimal
+    # What will still be on the shelf when it expires, at the current rate.
+    surplus_quantity: Decimal
+    surplus_value: Decimal
+    # Surplus value per day of runway — the sort key.
+    urgency: Decimal
+    # False when the rate is a guess of zero rather than a measurement.
+    has_sales_history: bool
+    suggested_buyers: list[SuggestedBuyerOut]
+
+
+class ExpiryWorklistOut(BaseModel):
+    """Two different problems, kept apart.
+
+    `items` is stock that sells but will not clear in time — a phone call, with the
+    buyers to make it to. `dead_stock` has never sold at all, so there is nobody to
+    ring: it is a markdown, a return to the supplier, or a write-off to accept.
+
+    Mixed into one list the dead stock swamps the calls, because "never sold" always
+    scores maximum surplus. A worklist whose top is unactionable is one people stop
+    opening.
+    """
+
+    horizon_days: int
+    velocity_window_days: int
+    total_products: int
+    total_surplus_value: Decimal
+    items: list[ExpiryWorklistItemOut]
+    dead_stock: list[ExpiryWorklistItemOut]
+    dead_stock_value: Decimal
+
+
 class TurnoverOut(BaseModel):
     product_id: int
     product_name: str

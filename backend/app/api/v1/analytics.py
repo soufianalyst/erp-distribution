@@ -15,6 +15,7 @@ from app.api.schemas.analytics import (
     DashboardSummaryOut,
     DriverPerformanceOut,
     ExpiryRiskOut,
+    ExpiryWorklistOut,
     FulfillmentSummaryOut,
     PriceTierRevenueOut,
     ProductRFMOut,
@@ -27,6 +28,7 @@ from app.api.schemas.analytics import (
 from app.api.schemas.common import APIResponse
 from app.db.session import get_db
 from app.services.analytics.analytics_service import AnalyticsService
+from app.services.analytics.expiry_worklist_service import ExpiryWorklistService
 
 router = APIRouter(
     prefix="/analytics",
@@ -165,6 +167,21 @@ async def rep_performance(
 ) -> APIResponse[list[RepPerformanceOut]]:
     """أداء مناديب المبيعات: الإيرادات، متوسط الفاتورة، ونسبة المرتجعات."""
     return APIResponse(data=await AnalyticsService(db).rep_performance())
+
+
+@router.get(
+    "/inventory/expiry-worklist", response_model=APIResponse[ExpiryWorklistOut]
+)
+async def expiry_worklist(
+    horizon_days: int = Query(default=60, ge=7, le=365),
+    db: AsyncSession = Depends(get_db),
+) -> APIResponse[ExpiryWorklistOut]:
+    """ما سينتهي قريباً ولن يُباع بالوتيرة الحالية، ومن يُتصل به لتصريفه.
+
+    ليس تنبيهاً بل قائمة عمل: الترتيب بحسب قيمة الفائض على أيام المهلة المتبقية.
+    """
+    data = await ExpiryWorklistService(db).worklist(horizon_days=horizon_days)
+    return APIResponse(data=data)
 
 
 @router.get("/inventory/damage-report", response_model=APIResponse[DamageReportOut])
