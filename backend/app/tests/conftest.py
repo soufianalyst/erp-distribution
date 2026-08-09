@@ -110,6 +110,22 @@ async def db_session() -> AsyncIterator[AsyncSession]:
     await engine.dispose()
 
 
+@pytest.fixture(autouse=True)
+def _reset_rate_limiter():
+    """Every test starts with an empty sign-in counter.
+
+    The limiter keys on client address, and the whole suite shares one — so without
+    this, tests would poison each other and the failure would land on whichever test
+    happened to run twentieth. Resetting after as well keeps a failing test from
+    leaving the next one throttled.
+    """
+    from app.core import rate_limit
+
+    rate_limit.reset()
+    yield
+    rate_limit.reset()
+
+
 @pytest.fixture
 async def client(db_session: AsyncSession) -> AsyncIterator[AsyncClient]:
     # ASGITransport does not trigger lifespan, so no real Postgres is needed in tests.
