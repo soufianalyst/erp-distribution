@@ -3,7 +3,7 @@
 // There are no prices here, and that is the point rather than an omission: the
 // office prices an order when it turns it into an invoice. The screen says so
 // plainly instead of leaving a shop to wonder what it will be charged.
-import { useMemo, useState } from "react";
+import { useEffect, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { Alert, Badge, Button, Input, Loading, qty } from "../components/Ui";
 import useFetch from "../hooks/useFetch";
@@ -17,8 +17,19 @@ const AVAILABILITY = {
 
 export default function PortalCatalog() {
   const navigate = useNavigate();
-  const catalog = useFetch(() => portalApi.get("/portal/catalog"));
   const [query, setQuery] = useState("");
+  // Debounced, because the search now goes to the server: a request per keystroke
+  // would be worse for a shop on mobile data than the oversized list this replaced.
+  const [term, setTerm] = useState("");
+  useEffect(() => {
+    const timer = setTimeout(() => setTerm(query.trim()), 300);
+    return () => clearTimeout(timer);
+  }, [query]);
+
+  const catalog = useFetch(
+    () => portalApi.get("/portal/catalog", { params: term ? { search: term } : {} }),
+    [term]
+  );
   const [basket, setBasket] = useState({});
   const [fulfillment, setFulfillment] = useState("delivery");
   const [notes, setNotes] = useState("");
@@ -26,28 +37,30 @@ export default function PortalCatalog() {
   const [error, setError] = useState(null);
   const [reviewing, setReviewing] = useState(false);
 
+  // Already searched and capped by the server — see PortalOrderService.catalog.
   const items = catalog.data ?? [];
-  const visible = useMemo(() => {
-    const q = query.trim().toLowerCase();
-    const matching = q ? items.filter((i) => i.name.toLowerCase().includes(q)) : items;
-    // 1,060 items will not render usefully on a phone; the search is the way in,
-    // so an unfiltered list is capped rather than paginated.
-    return matching.slice(0, 60);
-  }, [items, query]);
+  const visible = items;
 
-  const lines = Object.entries(basket).filter(([, n]) => Number(n) > 0);
+  // Keyed by product id, holding the name and unit alongside the quantity. Looking
+  // those up in `items` broke the moment search became server-side: an item added
+  // before a second search is no longer in the current results, and the review panel
+  // would show a blank line for something the customer is about to order.
+  const lines = Object.entries(basket).filter(([, line]) => Number(line.quantity) > 0);
 
-  const setQuantity = (productId, value) =>
-    setBasket((current) => ({ ...current, [productId]: value }));
+  const setQuantity = (item, value) =>
+    setBasket((current) => ({
+      ...current,
+      [item.product_id]: { quantity: value, name: item.name, unit: item.unit },
+    }));
 
   const submit = async () => {
     setBusy(true);
     setError(null);
     try {
       await portalApi.post("/portal/orders", {
-        lines: lines.map(([productId, quantity]) => ({
+        lines: lines.map(([productId, line]) => ({
           product_id: Number(productId),
-          quantity: String(quantity),
+          quantity: String(line.quantity),
         })),
         fulfillment,
         notes: notes.trim() || null,
@@ -103,8 +116,8 @@ export default function PortalCatalog() {
                 step="any"
                 inputMode="decimal"
                 disabled={out}
-                value={basket[item.product_id] ?? ""}
-                onChange={(e) => setQuantity(item.product_id, e.target.value)}
+                value={basket[item.product_id]?.quantity ?? ""}
+                onChange={(e) => setQuantity(item, e.target.value)}
                 placeholder="0"
                 className="w-20 shrink-0 rounded-lg border border-slate-300 px-2 py-2 text-center text-sm disabled:bg-slate-100 disabled:text-slate-400 dark:border-slate-600 dark:bg-slate-900 dark:text-slate-100 dark:disabled:bg-slate-800"
               />
@@ -118,9 +131,9 @@ export default function PortalCatalog() {
         ) : null}
       </ul>
 
-      {items.length > visible.length && !query ? (
+      {!term && items.length >= 60 ? (
         <p className="text-center text-xs text-slate-400">
-          يُعرض {visible.length} من {items.length} صنفاً — استخدم البحث للوصول إلى البقية.
+          هذه أوائل الأصناف — استخدم البحث للوصول إلى بقية القائمة.
         </p>
       ) : null}
 
@@ -134,17 +147,14 @@ export default function PortalCatalog() {
                   مراجعة الطلب ({lines.length})
                 </p>
                 <ul className="max-h-40 space-y-1 overflow-y-auto text-sm text-emerald-50">
-                  {lines.map(([productId, quantity]) => {
-                    const item = items.find((i) => i.product_id === Number(productId));
-                    return (
-                      <li key={productId} className="flex justify-between gap-2">
-                        <span className="truncate">{item?.name}</span>
-                        <span className="shrink-0">
-                          {qty(quantity)} {item?.unit}
-                        </span>
-                      </li>
-                    );
-                  })}
+                  {lines.map(([productId, line]) => (
+                    <li key={productId} className="flex justify-between gap-2">
+                      <span className="truncate">{line.name}</span>
+                      <span className="shrink-0">
+                        {qty(line.quantity)} {line.unit}
+                      </span>
+                    </li>
+                  ))}
                 </ul>
                 <div className="flex gap-2">
                   {["delivery", "pickup"].map((option) => (

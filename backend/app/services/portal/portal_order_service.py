@@ -91,16 +91,21 @@ class PortalOrderService:
             for product_id, quantity in (await self.session.execute(query)).all()
         }
 
-    async def catalog(self) -> list[CatalogItemOut]:
-        """Every active product, with a band instead of a number and no price at all."""
+    async def catalog(
+        self, search: str | None = None, limit: int = 60
+    ) -> list[CatalogItemOut]:
+        """Active products, searched and capped, with a band instead of a number.
+
+        Paged at the database rather than in the browser. A shop opens this on a phone
+        over mobile data, and the full range is a thousand rows — sending all of it so
+        the client can show sixty is the customer paying for our convenience. Search
+        runs here too, so a shop can reach the other nine hundred and forty.
+        """
+        query = select(Product).where(Product.is_active.is_(True))
+        if search:
+            query = query.where(Product.name.ilike(f"%{search.strip()}%"))
         products = list(
-            (
-                await self.session.execute(
-                    select(Product)
-                    .where(Product.is_active.is_(True))
-                    .order_by(Product.name)
-                )
-            )
+            (await self.session.execute(query.order_by(Product.name).limit(limit)))
             .scalars()
             .all()
         )
