@@ -102,20 +102,30 @@ class PortalOrderService:
         the client can show sixty is the customer paying for our convenience. Search
         runs here too, so a shop can reach the other nine hundred and forty.
         """
+        # Offers are resolved *before* the page is cut, and sorted to the front in
+        # SQL. Ordering them first in Python instead let the limit drop them: the
+        # first sixty products alphabetically simply did not include the discounted
+        # one, so a live markdown was invisible to every shop that did not search for
+        # it by name. The offer is the reason the screen is worth opening.
+        offers = await active_offers(self.session)
+        offered_ids = list(offers)
+
         query = select(Product).where(Product.is_active.is_(True))
         if search:
             query = query.where(Product.name.ilike(f"%{search.strip()}%"))
+        if offered_ids:
+            query = query.order_by(
+                Product.id.notin_(offered_ids), Product.name
+            )
+        else:
+            query = query.order_by(Product.name)
         products = list(
-            (await self.session.execute(query.order_by(Product.name).limit(limit)))
-            .scalars()
-            .all()
+            (await self.session.execute(query.limit(limit))).scalars().all()
         )
         on_hand = await self._on_hand([p.id for p in products])
         # Only offered lines carry a price, and both numbers are this customer's own:
         # their tier price, and that price discounted. A flat offer price would hand a
         # retail shop the wholesale figure and collapse the ladder.
-        offers = await active_offers(self.session, [p.id for p in products])
-
         items = []
         for product in products:
             offer = offers.get(product.id)
@@ -139,8 +149,6 @@ class PortalOrderService:
                     offer_ends_on=offer.ends_on if offer else None,
                 )
             )
-        # Offers first: they are the reason a shop opens the catalogue twice.
-        items.sort(key=lambda i: (i.discount_percent is None, i.name))
         return items
 
     async def _to_out(self, orders: list[CustomerOrder]) -> list[PortalOrderOut]:

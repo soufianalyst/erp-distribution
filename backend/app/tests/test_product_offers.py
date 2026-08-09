@@ -197,3 +197,40 @@ class TestWhoMaySetAPrice:
             "ends_on": str(date.today() - timedelta(days=1)),
         })
         assert refused.status_code == 400, refused.text
+
+
+class TestAnOfferIsNeverCutOffByThePage:
+    async def test_a_discounted_line_appears_even_far_down_the_alphabet(
+        self, client: AsyncClient
+    ) -> None:
+        """The bug this was found by: paging hid the offer entirely.
+
+        The catalogue returns sixty rows. The limit was applied in SQL before offers
+        were known, and the ordering that put them first happened afterwards in
+        Python — so a discounted product outside the first sixty alphabetically was
+        invisible to every shop that did not already search for it by name. A markdown
+        nobody sees is a markdown that does not exist.
+        """
+        admin = await login(client, "admin", TEST_ADMIN_PASSWORD)
+        _, portal = await ready_portal_customer(
+            client, admin, "بقالة الترتيب", "0506000002")
+
+        # Enough products that the page fills, with the offered one sorting last.
+        for index in range(65):
+            await stocked(client, admin, f"BULK-{index:03d}")
+        warehouse_id, last = await stocked(client, admin, "ZZZ-LAST")
+        await make_offer(client, admin, last["id"], percent="30")
+
+        catalogue = (await client.get(
+            "/api/v1/portal/catalog", headers=portal)).json()["data"]
+
+        assert len(catalogue) == 60, "the page size changed; this test assumes it"
+        offered = next(
+            (i for i in catalogue if i["product_id"] == last["id"]), None
+        )
+        assert offered is not None, (
+            "the discounted product was cut off by the page and no shop would see it"
+        )
+        # And it is at the front, where the reason to open the screen belongs.
+        assert catalogue[0]["product_id"] == last["id"]
+        assert offered["price_now"] is not None

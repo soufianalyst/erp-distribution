@@ -34,6 +34,7 @@ from app.api.schemas.analytics import (
 from app.domain.models.inventory import Product, ProductBatch, Warehouse
 from app.domain.models.sales import Customer, SalesInvoice, SalesInvoiceLine
 from app.services.inventory.stock_query import sellable
+from app.services.sales.offer_pricing import active_offers
 
 TWO_PLACES = Decimal("0.01")
 
@@ -185,6 +186,7 @@ class ExpiryWorklistService:
         product_ids = list(grouped)
         rates = await self._daily_rate(product_ids)
         buyers = await self._buyers(product_ids)
+        offers = await active_offers(self.session, product_ids)
 
         items: list[ExpiryWorklistItemOut] = []
         for product_id, entry in grouped.items():
@@ -196,6 +198,7 @@ class ExpiryWorklistService:
             unit_value = (
                 entry["value"] / entry["quantity"] if entry["quantity"] else Decimal("0")
             )
+            offer = offers.get(product_id)
             surplus_value = (surplus * unit_value).quantize(TWO_PLACES)
 
             # Cost of doing nothing, per day of runway left. A large sum with a month
@@ -218,6 +221,10 @@ class ExpiryWorklistService:
                     surplus_value=surplus_value,
                     urgency=urgency.quantize(TWO_PLACES),
                     has_sales_history=product_id in rates,
+                    unit_cost=unit_value.quantize(Decimal("0.0001")) if unit_value else None,
+                    wholesale_price=entry["product"].wholesale_price,
+                    active_offer_percent=offer.discount_percent if offer else None,
+                    active_offer_id=offer.id if offer else None,
                     suggested_buyers=buyers.get(product_id, []),
                 )
             )

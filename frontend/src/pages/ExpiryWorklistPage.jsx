@@ -12,16 +12,20 @@ import {
   Alert,
   Badge,
   Button,
+  CancelButton,
   Card,
+  Input,
   Loading,
+  Modal,
   Select,
   Stat,
   Table,
   money,
   qty,
 } from "../components/Ui";
+import { useAuth } from "../context/AuthContext";
 import useFetch from "../hooks/useFetch";
-import api from "../services/api";
+import api, { apiMessage } from "../services/api";
 
 const HORIZONS = [
   { value: 30, label: "خلال ٣٠ يوماً" },
@@ -32,12 +36,27 @@ const HORIZONS = [
 // Days left is the thing the eye should catch first, so it carries the colour.
 const urgencyTone = (days) => (days <= 14 ? "red" : days <= 30 ? "amber" : "slate");
 
-function Buyers({ item }) {
+function Buyers({ item, canOffer, onOffer, onEndOffer }) {
+  const actions = canOffer ? (
+    <div className="flex flex-wrap gap-2 pt-1">
+      {item.active_offer_id ? (
+        <Button variant="danger" onClick={() => onEndOffer(item)}>
+          إيقاف الخصم ({qty(item.active_offer_percent)}%)
+        </Button>
+      ) : (
+        <Button onClick={() => onOffer(item)}>إنشاء عرض خصم</Button>
+      )}
+    </div>
+  ) : null;
+
   if (!item.suggested_buyers.length) {
     return (
-      <p className="text-sm text-slate-500 dark:text-slate-400">
-        لا يوجد عملاء سبق أن اشتروا هذا الصنف — يحتاج تخفيضاً أو إعادة للمورّد.
-      </p>
+      <div className="space-y-2">
+        <p className="text-sm text-slate-500 dark:text-slate-400">
+          لا يوجد عملاء سبق أن اشتروا هذا الصنف — يحتاج تخفيضاً أو إعادة للمورّد.
+        </p>
+        {actions}
+      </div>
     );
   }
   return (
@@ -74,13 +93,146 @@ function Buyers({ item }) {
         {qty(item.projected_sales)} قبل الانتهاء، ويتبقى {qty(item.surplus_quantity)}.
         المستودعات: {item.warehouses.join("، ")}.
       </p>
+      {actions}
     </div>
+  );
+}
+
+
+// Setting the markdown where the decision is made, with the margin in view.
+//
+// The preview is computed here from figures the row already carries rather than
+// fetched: a discount typed with no idea what it does to the margin is exactly how a
+// line ends up sold below cost by accident. Below cost is still allowed — for food
+// near its date, recovering some of the cost beats recovering none — but it says so
+// before you commit, not after.
+function OfferDialog({ item, onClose, onDone }) {
+  const today = new Date().toISOString().slice(0, 10);
+  // Default the window to the day the first batch expires: past that the goods
+  // cannot be sold at all, so a longer offer would be a promise about nothing.
+  const until = new Date(item.earliest_expiry).toISOString().slice(0, 10);
+
+  const [percent, setPercent] = useState("20");
+  const [endsOn, setEndsOn] = useState(until);
+  const [note, setNote] = useState("قرب انتهاء الصلاحية");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState(null);
+
+  const pct = Number(percent) || 0;
+  const before = Number(item.wholesale_price ?? 0);
+  const after = before * (1 - pct / 100);
+  const cost = item.unit_cost === null ? null : Number(item.unit_cost);
+  const belowCost = cost !== null && after < cost;
+  const recovered = after * Number(item.surplus_quantity ?? 0);
+
+  const submit = async (event) => {
+    event.preventDefault();
+    setBusy(true);
+    setError(null);
+    try {
+      await api.post("/inventory/offers", {
+        product_id: item.product_id,
+        discount_percent: percent,
+        starts_on: today,
+        ends_on: endsOn,
+        note: note.trim() || null,
+      });
+      onDone(`تم تفعيل خصم ${pct}% على ${item.product_name}.`);
+    } catch (err) {
+      setError(apiMessage(err));
+      setBusy(false);
+    }
+  };
+
+  return (
+    <Modal open title={`عرض على ${item.product_name}`} onClose={onClose}>
+      <form onSubmit={submit} className="space-y-4">
+        <Input
+          label="نسبة الخصم %"
+          type="number"
+          min="1"
+          max="99"
+          step="any"
+          value={percent}
+          onChange={(e) => setPercent(e.target.value)}
+          required
+          autoFocus
+        />
+        <Input
+          label="ساري حتى"
+          type="date"
+          value={endsOn}
+          min={today}
+          onChange={(e) => setEndsOn(e.target.value)}
+          required
+        />
+        <Input
+          label="سبب العرض — يظهر للعميل"
+          value={note}
+          onChange={(e) => setNote(e.target.value)}
+          maxLength={200}
+        />
+
+        <div className="rounded-lg bg-slate-50 p-3 text-sm dark:bg-slate-800/60">
+          <div className="flex justify-between">
+            <span className="text-slate-500 dark:text-slate-400">سعر الجملة</span>
+            <span className="text-slate-700 dark:text-slate-200">{money(before)}</span>
+          </div>
+          <div className="flex justify-between font-bold">
+            <span className="text-slate-600 dark:text-slate-300">بعد الخصم</span>
+            <span className="text-emerald-700 dark:text-emerald-400">{money(after)}</span>
+          </div>
+          {cost !== null ? (
+            <div className="flex justify-between">
+              <span className="text-slate-500 dark:text-slate-400">التكلفة</span>
+              <span className="text-slate-700 dark:text-slate-200">{money(cost)}</span>
+            </div>
+          ) : null}
+          <div className="mt-1 flex justify-between border-t border-slate-200 pt-1 dark:border-slate-700">
+            <span className="text-slate-500 dark:text-slate-400">
+              المتحصَّل لو بيع الفائض كله
+            </span>
+            <span className="text-slate-700 dark:text-slate-200">{money(recovered)}</span>
+          </div>
+        </div>
+
+        {belowCost ? (
+          // A warning, not a block: below cost can be the right call against a
+          // write-off. It must simply not be a surprise.
+          <Alert tone="error">
+            هذا السعر أقل من التكلفة. قد يكون قراراً صحيحاً مقابل الإتلاف، لكن تأكّد.
+          </Alert>
+        ) : null}
+        <p className="text-xs text-slate-500 dark:text-slate-400">
+          سيظهر السعر قبل وبعد الخصم للعميل في البوابة، وسيُحتسب به في الفاتورة.
+        </p>
+
+        <Alert>{error}</Alert>
+        <div className="flex justify-end gap-2">
+          <CancelButton onClose={onClose} />
+          <Button type="submit" disabled={busy}>
+            {busy ? "جارٍ التفعيل…" : "تفعيل العرض"}
+          </Button>
+        </div>
+      </form>
+    </Modal>
   );
 }
 
 const columns = (showRate) =>
   [
-    { key: "product_name", label: "الصنف" },
+    {
+      key: "product_name",
+      label: "الصنف",
+      render: (r) => (
+        <span className="flex flex-wrap items-center gap-2">
+          {r.product_name}
+          {r.active_offer_percent ? (
+            <Badge tone="green">خصم {qty(r.active_offer_percent)}%</Badge>
+          ) : null}
+        </span>
+      ),
+    },
     {
       key: "days_remaining",
       label: "المتبقي",
@@ -112,8 +264,13 @@ const columns = (showRate) =>
   ].filter(Boolean);
 
 export default function ExpiryWorklistPage() {
+  const { can } = useAuth();
+  const canOffer = can("products.offers");
   const [horizon, setHorizon] = useState(60);
   const [tab, setTab] = useState("calls");
+  const [offering, setOffering] = useState(null);
+  const [notice, setNotice] = useState(null);
+  const [actionError, setActionError] = useState(null);
 
   const worklist = useFetch(
     () =>
@@ -121,6 +278,26 @@ export default function ExpiryWorklistPage() {
         params: { horizon_days: horizon },
       }),
     [horizon]
+  );
+
+  const endOffer = async (item) => {
+    setActionError(null);
+    try {
+      await api.post(`/inventory/offers/${item.active_offer_id}/end`);
+      setNotice(`تم إيقاف الخصم على ${item.product_name}.`);
+      worklist.reload();
+    } catch (err) {
+      setActionError(apiMessage(err));
+    }
+  };
+
+  const detail = (row) => (
+    <Buyers
+      item={row}
+      canOffer={canOffer}
+      onOffer={setOffering}
+      onEndOffer={endOffer}
+    />
   );
 
   if (worklist.loading) return <Loading />;
@@ -141,7 +318,8 @@ export default function ExpiryWorklistPage() {
         </Select>
       </div>
 
-      <Alert>{worklist.error}</Alert>
+      <Alert>{worklist.error ?? actionError}</Alert>
+      <Alert tone="success">{notice}</Alert>
 
       <div className="grid gap-3 sm:grid-cols-2">
         <Stat
@@ -184,7 +362,7 @@ export default function ExpiryWorklistPage() {
             rows={data?.items ?? []}
             keyField="product_id"
             empty="لا يوجد فائض متوقع في هذه المهلة."
-            renderDetail={(row) => <Buyers item={row} />}
+            renderDetail={detail}
           />
         </Card>
       ) : (
@@ -201,10 +379,22 @@ export default function ExpiryWorklistPage() {
             rows={data?.dead_stock ?? []}
             keyField="product_id"
             empty="لا يوجد مخزون راكد في هذه المهلة."
-            renderDetail={(row) => <Buyers item={row} />}
+            renderDetail={detail}
           />
         </Card>
       )}
+
+      {offering ? (
+        <OfferDialog
+          item={offering}
+          onClose={() => setOffering(null)}
+          onDone={(message) => {
+            setOffering(null);
+            setNotice(message);
+            worklist.reload();
+          }}
+        />
+      ) : null}
     </div>
   );
 }

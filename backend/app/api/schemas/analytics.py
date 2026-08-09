@@ -111,6 +111,14 @@ class ExpiryWorklistItemOut(BaseModel):
     urgency: Decimal
     # False when the rate is a guess of zero rather than a measurement.
     has_sales_history: bool
+    # Carried so the markdown can be decided with the margin in view rather than in
+    # a second screen — the whole reason a discount goes wrong is being set blind.
+    unit_cost: Decimal | None
+    wholesale_price: Decimal
+    # Set when a markdown is already running, so the office does not stack a second
+    # one on top without noticing.
+    active_offer_percent: Decimal | None
+    active_offer_id: int | None
     suggested_buyers: list[SuggestedBuyerOut]
 
 
