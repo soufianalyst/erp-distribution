@@ -38,13 +38,12 @@ class AuditService:
         # miss the first hours of that morning and include the previous evening.
         if date_from is not None or date_to is not None:
             company = await SettingsService(self.session).get_company_settings()
-            if date_from is not None:
-                start, _ = business_day.day_bounds(date_from, company.timezone)
+            start, end = business_day.utc_window(date_from, date_to, company.timezone)
+            if start is not None:
                 stmt = stmt.where(AuditLog.created_at >= start)
-            if date_to is not None:
+            if end is not None:
                 # Exclusive upper bound at the next local midnight, so the whole of the
                 # closing day is included without depending on microsecond precision.
-                _, end = business_day.day_bounds(date_to, company.timezone)
                 stmt = stmt.where(AuditLog.created_at < end)
         result = await self.session.execute(stmt)
         return list(result.scalars().all())

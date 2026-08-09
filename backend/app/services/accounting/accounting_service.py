@@ -19,6 +19,7 @@ from app.api.schemas.accounting import (
     TrialBalanceOut,
     TrialBalanceRow,
 )
+from app.core import business_day
 from app.core.exceptions import AppException
 from app.domain.models.accounting import Account, AccountType, JournalEntry, JournalItem
 from app.domain.models.purchases import PurchaseInvoice, PurchaseInvoiceTax
@@ -305,14 +306,18 @@ class AccountingService:
         )
         # Dated by the *return*, not the invoice: a credit note issued in March
         # against a January sale belongs to March's declaration.
-        if date_from is not None:
-            returns_stmt = returns_stmt.where(
-                func.date(SalesReturn.created_at) >= date_from
-            )
-        if date_to is not None:
-            returns_stmt = returns_stmt.where(
-                func.date(SalesReturn.created_at) <= date_to
-            )
+        # Windowed on the company's local day: a credit note raised just after local
+        # midnight on the 1st belongs to this declaration, not the previous one.
+        from app.services.settings.settings_service import SettingsService
+
+        company = await SettingsService(self.session).get_company_settings()
+        returns_from, returns_to = business_day.utc_window(
+            date_from, date_to, company.timezone
+        )
+        if returns_from is not None:
+            returns_stmt = returns_stmt.where(SalesReturn.created_at >= returns_from)
+        if returns_to is not None:
+            returns_stmt = returns_stmt.where(SalesReturn.created_at < returns_to)
         credited: dict[tuple[str, Decimal], Decimal] = {}
         for name, rate, tax_amount, invoice_vat, return_vat in (
             await self.session.execute(returns_stmt)

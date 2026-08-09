@@ -36,6 +36,7 @@ from app.api.schemas.analytics import (
     TurnoverOut,
     WarehouseRevenueOut,
 )
+from app.core import business_day
 from app.domain.models.delivery import DeliveryStop, DeliveryTrip
 from app.domain.models.inventory import (
     AdjustmentStatus,
@@ -1002,10 +1003,16 @@ class AnalyticsService:
             .join(Product, Product.id == StockAdjustmentLine.product_id)
             .where(StockAdjustment.status != AdjustmentStatus.CANCELLED)
         )
-        if date_from is not None:
-            stmt = stmt.where(func.date(StockAdjustment.created_at) >= date_from)
-        if date_to is not None:
-            stmt = stmt.where(func.date(StockAdjustment.created_at) <= date_to)
+        from app.services.settings.settings_service import SettingsService
+
+        company = await SettingsService(self.session).get_company_settings()
+        window_from, window_to = business_day.utc_window(
+            date_from, date_to, company.timezone
+        )
+        if window_from is not None:
+            stmt = stmt.where(StockAdjustment.created_at >= window_from)
+        if window_to is not None:
+            stmt = stmt.where(StockAdjustment.created_at < window_to)
         rows = (await self.session.execute(stmt)).all()
 
         adjustment_ids: set[int] = set()

@@ -68,3 +68,23 @@ def day_bounds(day: date, timezone_name: str | None) -> tuple[datetime, datetime
     start = datetime.combine(day, time.min, tzinfo=tz)
     end = datetime.combine(day + timedelta(days=1), time.min, tzinfo=tz)
     return start.astimezone(timezone.utc), end.astimezone(timezone.utc)
+
+
+def utc_window(
+    date_from: date | None, date_to: date | None, timezone_name: str | None
+) -> tuple[datetime | None, datetime | None]:
+    """The half-open UTC window `[start, end)` for a local date range.
+
+    Either end may be omitted, giving an open-ended range. This exists because the
+    same eight lines were being written at every report that takes a date range, and
+    the ones that had not been written yet were all wrong in the same way: comparing
+    `func.date(created_at)` — which truncates in UTC — against a date the user typed
+    on a local calendar.
+
+    That is not a cosmetic difference. In UTC+03 it moves every movement recorded
+    between local midnight and 03:00 into the previous day, so a credit note raised
+    at 01:00 on the first of the month lands in the previous month's tax return.
+    """
+    start = day_bounds(date_from, timezone_name)[0] if date_from else None
+    end = day_bounds(date_to, timezone_name)[1] if date_to else None
+    return start, end

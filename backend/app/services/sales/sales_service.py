@@ -21,6 +21,7 @@ from app.api.schemas.sales import (
     SalesQuotationCreate,
     SalesReturnCreate,
 )
+from app.core import business_day
 from app.core.exceptions import AppException
 from app.core.permissions import has_permission
 from app.domain.models.accounting import JournalEntry
@@ -1556,6 +1557,13 @@ class SalesService:
             payments=[CustomerPaymentOut.model_validate(p) for p in data.payments],
         )
 
+    async def _company_timezone(self) -> str | None:
+        """The company's configured timezone, for turning report dates into windows."""
+        from app.services.settings.settings_service import SettingsService
+
+        company = await SettingsService(self.session).get_company_settings()
+        return company.timezone
+
     async def commission_report(
         self,
         date_from: date | None = None,
@@ -1591,14 +1599,15 @@ class SalesService:
             .where(SalesInvoice.salesman_id.is_not(None), posted())
             .group_by(SalesInvoice.salesman_id)
         )
-        if date_from is not None:
-            returns_query = returns_query.where(
-                func.date(SalesReturn.created_at) >= date_from
-            )
-        if date_to is not None:
-            returns_query = returns_query.where(
-                func.date(SalesReturn.created_at) <= date_to
-            )
+        # The company's day, not UTC's. `func.date()` truncates in UTC, so a credit
+        # note raised at 01:00 local was landing in the previous day's commission.
+        returns_from, returns_to = business_day.utc_window(
+            date_from, date_to, (await self._company_timezone())
+        )
+        if returns_from is not None:
+            returns_query = returns_query.where(SalesReturn.created_at >= returns_from)
+        if returns_to is not None:
+            returns_query = returns_query.where(SalesReturn.created_at < returns_to)
         if salesman_id is not None:
             returns_query = returns_query.where(
                 SalesInvoice.salesman_id == salesman_id
