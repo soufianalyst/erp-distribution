@@ -105,6 +105,16 @@ class SalesInvoice(Base):
     client_uuid: Mapped[str | None] = mapped_column(
         String(36), unique=True, nullable=True, index=True
     )
+    # The number this invoice carried in the system it was migrated from. NULL for
+    # anything this system raised itself.
+    #
+    # Unique, so re-uploading the same import file is refused rather than doubling
+    # the books. It is also how the cashier and delivery screens tell history from
+    # work: a settled, delivered invoice from three years ago is not money to
+    # collect this morning, and both queries exclude rows where this is set.
+    legacy_ref: Mapped[str | None] = mapped_column(
+        String(60), unique=True, nullable=True, index=True
+    )
     customer_id: Mapped[int] = mapped_column(
         ForeignKey("customers.id"), nullable=False, index=True
     )
@@ -584,6 +594,11 @@ class CustomerPayment(Base):
     payment_date: Mapped[date] = mapped_column(Date, nullable=False)
     method: Mapped[str] = mapped_column(String(20), nullable=False)
     reference: Mapped[str | None] = mapped_column(String(50))
+    # Receipt number from the system this was migrated from; unique so a repeated
+    # import is refused instead of crediting the customer twice. See SalesInvoice.
+    legacy_ref: Mapped[str | None] = mapped_column(
+        String(60), unique=True, nullable=True, index=True
+    )
     notes: Mapped[str | None] = mapped_column(String(300))
     created_by: Mapped[int | None] = mapped_column(ForeignKey("users.id"))
     created_at: Mapped[datetime] = mapped_column(

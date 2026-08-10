@@ -179,6 +179,15 @@ PERMISSION_GROUPS: list[dict] = [
                 "code": "settings.manage",
                 "label": "إدارة الضرائب وبيانات الشركة (لوحة التحكم)",
             },
+            {
+                # Not split into view/run. An import rewrites the opening position of
+                # the whole business — the stock on the shelf, what every customer
+                # owes, and the ledger behind both — so there is no half of it that
+                # is safe to delegate. `ROLE_DEFAULT_PERMISSIONS` gives it to admin
+                # only, and only because admin holds ALL_PERMISSIONS.
+                "code": "data.import",
+                "label": "استيراد بيانات النظام القديم (المدير فقط)",
+            },
         ],
     },
 ]

@@ -7,6 +7,7 @@ import { ThemeProvider } from "./context/ThemeContext";
 import AccountingPage from "./pages/AccountingPage";
 import AnalyticsPage from "./pages/AnalyticsPage";
 import AuditLogPage from "./pages/AuditLogPage";
+import DataImportPage from "./pages/DataImportPage";
 import BarcodeScanPage from "./pages/BarcodeScanPage";
 import CashierPage from "./pages/CashierPage";
 import CustomersPage from "./pages/CustomersPage";
@@ -254,6 +255,14 @@ function StaffApp() {
                 element={
                   <RequirePerm perm="audit.view">
                     <AuditLogPage />
+                  </RequirePerm>
+                }
+              />
+              <Route
+                path="/data-import"
+                element={
+                  <RequirePerm perm="data.import">
+                    <DataImportPage />
                   </RequirePerm>
                 }
               />

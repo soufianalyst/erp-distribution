@@ -108,6 +108,11 @@ class CashierService:
                     [SalesPaymentMethod.CASH, SalesPaymentMethod.CARD]
                 ),
                 SalesInvoice.payment_confirmed_at.is_(None),
+                # Migrated history is not this morning's takings. An imported cash
+                # invoice from two years ago was settled in the old system; without
+                # this the cashier opens to thousands of them and cannot find the
+                # handful that are real.
+                SalesInvoice.legacy_ref.is_(None),
             )
             .order_by(SalesInvoice.id)
         )

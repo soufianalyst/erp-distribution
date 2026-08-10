@@ -29,6 +29,7 @@ const NAV_ITEMS = [
   { to: "/settings", label: "الإعدادات", icon: "⚙️", perm: "settings.view" },
   { to: "/users", label: "المستخدمون", icon: "👥", perm: "users.manage" },
   { to: "/audit", label: "سجل التتبع", icon: "🕵️", perm: "audit.view" },
+  { to: "/data-import", label: "استيراد البيانات", icon: "📥", perm: "data.import" },
 ];
 
 const COLLAPSED_KEY = "erp-sidebar-collapsed";

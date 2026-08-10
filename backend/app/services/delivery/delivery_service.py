@@ -57,7 +57,10 @@ class DeliveryService:
                 or_(
                     SalesInvoice.payment_method == SalesPaymentMethod.CREDIT,
                     SalesInvoice.payment_confirmed_at.isnot(None),
-                )
+                ),
+                # Goods delivered years ago are not goods to load today. Imported
+                # history would otherwise fill this screen and hide the real work.
+                SalesInvoice.legacy_ref.is_(None),
             )
             .order_by(SalesInvoice.id.desc())
         )
