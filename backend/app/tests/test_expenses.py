@@ -9,6 +9,7 @@ from app.tests.conftest import (
     TEST_ADMIN_PASSWORD,
     TEST_SALES_PASSWORD,
     TEST_STORE_PASSWORD,
+    entries_for,
     login,
 )
 from app.tests.test_inventory import as_decimal
@@ -118,13 +119,7 @@ class TestExpenses:
         assert as_decimal(expense["paid_amount"]) == Decimal("0")
         assert expense["payment_confirmed_at"] is None
 
-        entries = (
-            await client.get(
-                "/api/v1/accounting/journal-entries",
-                headers=admin,
-                params={"reference_type": "expense", "reference_id": expense["id"]},
-            )
-        ).json()["data"]
+        entries = await entries_for(client, admin, "expense", expense["id"])
         assert len(entries) == 1
         items = items_by_code(entries[0])
         assert items["5020"] == (Decimal("300.00"), Decimal("0"))

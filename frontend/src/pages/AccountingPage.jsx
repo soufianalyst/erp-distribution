@@ -8,8 +8,13 @@
 // against the bank.
 import { useState } from "react";
 import { Alert, Badge, Button, Card, Input, Loading, Modal, Select, Stat, Table, money } from "../components/Ui";
+import useDebouncedValue from "../hooks/useDebouncedValue";
 import useFetch from "../hooks/useFetch";
 import api, { apiMessage } from "../services/api";
+
+// Matches the shared Table's own page size, so the pager and the server agree on
+// what "a page" means.
+const JOURNAL_PAGE_SIZE = 15;
 
 const TYPE_LABELS = {
   asset: "أصول",
@@ -393,7 +398,35 @@ function ManualEntryForm({ accounts, onCreated }) {
 export default function AccountingPage() {
   const [tab, setTab] = useState("journal");
   const accounts = useFetch(() => api.get("/accounting/accounts"));
-  const entries = useFetch(() => api.get("/accounting/journal-entries"));
+  // The journal is fetched one page at a time. It is the fastest-growing table in
+  // the system — every invoice, payment, return and expense posts an entry — and it
+  // was 2 MB and 3,408 rows after a single year, to fill a screen showing fifteen.
+  const [journalPage, setJournalPage] = useState(1);
+  const [journalQuery, setJournalQuery] = useState("");
+  const journalSearch = useDebouncedValue(journalQuery);
+  const entries = useFetch(
+    () =>
+      api.get("/accounting/journal-entries", {
+        params: {
+          limit: JOURNAL_PAGE_SIZE,
+          offset: (journalPage - 1) * JOURNAL_PAGE_SIZE,
+          ...(journalSearch.trim() ? { search: journalSearch.trim() } : {}),
+        },
+      }),
+    [journalPage, journalSearch]
+  );
+  // A new search must start from page one, or a query matching three entries while
+  // sitting on page 40 asks for rows 585-600 of three and the screen reads as
+  // "nothing found".
+  //
+  // Done here, synchronously with the keystroke, rather than in an effect watching
+  // the debounced value: an effect runs *after* useFetch's own effect in the same
+  // commit, so the first request still went out carrying the old page. Batching both
+  // setStates means the page is already 1 by the time the debounced search fires.
+  const searchJournal = (value) => {
+    setJournalQuery(value);
+    setJournalPage(1);
+  };
   const trialBalance = useFetch(() => api.get("/accounting/reports/trial-balance"));
   const [dateFrom, setDateFrom] = useState("");
   const [dateTo, setDateTo] = useState("");
@@ -456,7 +489,9 @@ export default function AccountingPage() {
       {tab === "journal" && (
         <Card title="قيود اليومية — تتولد تلقائياً من الفواتير والسندات">
           <Alert>{entries.error}</Alert>
-          {entries.loading ? (
+          {/* Only blank the table on the first load. Replacing it on every page
+              change would make the pager jump out from under the pointer. */}
+          {entries.loading && !entries.data ? (
             <Loading />
           ) : (
             // One row per entry, its double-entry lines behind the detail toggle.
@@ -483,9 +518,15 @@ export default function AccountingPage() {
                   sortValue: (r) => Number(entryTotal(r)),
                 },
               ]}
-              rows={entries.data || []}
+              rows={entries.data?.items || []}
+              serverPaged={{
+                total: entries.data?.total || 0,
+                page: journalPage,
+                onPageChange: setJournalPage,
+                onSearchChange: searchJournal,
+              }}
               empty="لا توجد قيود بعد."
-              searchPlaceholder="بحث بالبيان أو نوع المستند أو التاريخ..."
+              searchPlaceholder="بحث بالبيان أو التاريخ..."
               renderDetail={(entry) => (
                 <Table
                   columns={[

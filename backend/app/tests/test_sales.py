@@ -9,6 +9,7 @@ from app.tests.conftest import (
     TEST_ADMIN_PASSWORD,
     TEST_SALES_PASSWORD,
     TEST_STORE_PASSWORD,
+    entries_for,
     login,
 )
 from app.tests.test_inventory import (
@@ -617,14 +618,9 @@ class TestInvoiceDiscount:
         response, _ = await self._sell_with_collectable(client, admin, "120.00")
         invoice_id = response.json()["data"]["id"]
 
-        entries = await client.get(
-            "/api/v1/accounting/journal-entries",
-            headers=admin,
-            params={"reference_type": "sales_invoice", "reference_id": invoice_id},
-        )
-        assert entries.status_code == 200, entries.text
+        entries = await entries_for(client, admin, "sales_invoice", invoice_id)
         by_code: dict[str, tuple[Decimal, Decimal]] = {}
-        for entry in entries.json()["data"]:
+        for entry in entries:
             for item in entry["items"]:
                 code = item["account"]["code"]
                 debit, credit = as_decimal(item["debit"]), as_decimal(item["credit"])
@@ -834,13 +830,7 @@ class TestReturnsOnDiscountedInvoice:
         ret = await self._do_return(client, admin, invoice["id"], product["id"], "30")
         return_id = ret.json()["data"]["id"]
 
-        entries = (
-            await client.get(
-                "/api/v1/accounting/journal-entries",
-                headers=admin,
-                params={"reference_type": "sales_return", "reference_id": return_id},
-            )
-        ).json()["data"]
+        entries = await entries_for(client, admin, "sales_return", return_id)
 
         by_code: dict[str, tuple[Decimal, Decimal]] = {}
         total_debit = total_credit = Decimal("0")

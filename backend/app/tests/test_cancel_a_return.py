@@ -192,7 +192,9 @@ class TestCancellingPutsEverythingBack:
             params={"reference_type": "sales_return_cancel"},
         )
         assert entries.status_code == 200, entries.text
-        assert entries.json()["data"], "the reversal left no journal entry behind"
+        # `["items"]`, not `["data"]`: the paged envelope is a dict and therefore
+        # always truthy, so asserting on it would pass even with nothing posted.
+        assert entries.json()["data"]["items"], "the reversal left no journal entry behind"
 
     async def test_the_invoice_can_be_edited_again(self, client: AsyncClient) -> None:
         """A return blocks editing its invoice. A cancelled one must stop blocking."""

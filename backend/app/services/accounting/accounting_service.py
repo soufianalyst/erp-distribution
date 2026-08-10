@@ -3,7 +3,7 @@
 from datetime import date
 from decimal import ROUND_HALF_UP, Decimal
 
-from sqlalchemy import func, select
+from sqlalchemy import String, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
@@ -19,6 +19,7 @@ from app.api.schemas.accounting import (
     TrialBalanceOut,
     TrialBalanceRow,
 )
+from app.api.schemas.pagination import PageParams, paginate
 from app.core import business_day
 from app.core.exceptions import AppException
 from app.domain.models.accounting import Account, AccountType, JournalEntry, JournalItem
@@ -185,8 +186,19 @@ class AccountingService:
         self,
         reference_type: str | None = None,
         reference_id: int | None = None,
-    ) -> list[JournalEntry]:
-        """Journal entries, newest first, optionally filtered by what produced them."""
+        page: PageParams | None = None,
+        search: str | None = None,
+    ) -> tuple[list[JournalEntry], int]:
+        """Journal entries, newest first, optionally filtered by what produced them.
+
+        Returns the page and the total. The ledger is the fastest-growing table in the
+        system — every invoice, payment, return and expense posts one — so this is the
+        one list that must never be fetched whole.
+
+        `search` has to run in SQL for the same reason. Filtering in the browser once
+        meant searching every entry, which was correct; filtering the browser's copy
+        of one page would search fifteen rows out of thousands and look identical.
+        """
         stmt = (
             select(JournalEntry)
             .options(selectinload(JournalEntry.items).selectinload(JournalItem.account))
@@ -196,8 +208,22 @@ class AccountingService:
             stmt = stmt.where(JournalEntry.reference_type == reference_type)
         if reference_id is not None:
             stmt = stmt.where(JournalEntry.reference_id == reference_id)
-        result = await self.session.execute(stmt)
-        return list(result.scalars().all())
+        if search and search.strip():
+            # Description and date only. `reference_type` is deliberately excluded:
+            # it holds English snake_case the screen never shows — an accountant sees
+            # "فاتورة شراء", not "purchase_invoice" — and the descriptions already
+            # carry the document type in Arabic ("فاتورة شراء رقم 66 من المورد"). So
+            # searching what is displayed finds what is displayed.
+            #
+            # `ilike` rather than `like` because Arabic has no case to fold but the
+            # descriptions mix in Latin supplier codes, and someone typing "sc"
+            # should still find "(SC شركة التوريد الوطنية)".
+            term = f"%{search.strip()}%"
+            stmt = stmt.where(
+                JournalEntry.description.ilike(term)
+                | func.cast(JournalEntry.entry_date, String).ilike(term)
+            )
+        return await paginate(self.session, stmt, page or PageParams())
 
     # --- Reports ---
     async def trial_balance(self) -> TrialBalanceOut:

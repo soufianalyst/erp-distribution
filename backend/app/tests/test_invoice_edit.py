@@ -8,6 +8,7 @@ from app.tests.conftest import (
     DEFAULT_TAX_RATE_ID,
     TEST_ADMIN_PASSWORD,
     TEST_SALES_PASSWORD,
+    entries_for,
     login,
 )
 from app.tests.test_inventory import as_decimal
@@ -92,13 +93,7 @@ class TestInvoiceEdit:
             },
         )
 
-        entries = (
-            await client.get(
-                "/api/v1/accounting/journal-entries",
-                headers=admin,
-                params={"reference_type": "sales_invoice", "reference_id": invoice_id},
-            )
-        ).json()["data"]
+        entries = await entries_for(client, admin, "sales_invoice", invoice_id)
         # Exactly one revenue entry remains (no cost entry: direct receiving has no unit cost).
         revenue_entries = [e for e in entries if "فاتورة مبيعات" in e["description"]]
         assert len(revenue_entries) == 1

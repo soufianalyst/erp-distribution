@@ -142,3 +142,24 @@ async def login(client: AsyncClient, username: str, password: str) -> dict[str, 
     assert response.status_code == 200, response.text
     token = response.json()["data"]["access_token"]
     return {"Authorization": f"Bearer {token}"}
+
+
+async def entries_for(
+    client: AsyncClient, headers: dict[str, str], reference_type: str, reference_id: int
+) -> list[dict]:
+    """The journal entries a given document produced.
+
+    Lives here because eleven test files ask this question, and three of them had
+    grown a byte-identical copy of it. When the endpoint moved to a paged response
+    those copies all broke at once — which is the argument for there being one.
+
+    Returns the items rather than the page: no caller wants a document to have more
+    than a handful of entries, and one that did would be a bug worth failing on.
+    """
+    response = await client.get(
+        "/api/v1/accounting/journal-entries",
+        headers=headers,
+        params={"reference_type": reference_type, "reference_id": reference_id},
+    )
+    assert response.status_code == 200, response.text
+    return response.json()["data"]["items"]

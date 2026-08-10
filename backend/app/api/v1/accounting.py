@@ -22,6 +22,7 @@ from app.api.schemas.accounting import (
     UnmatchedJournalItemOut,
 )
 from app.api.schemas.common import APIResponse
+from app.api.schemas.pagination import Page, PageParams
 from app.db.session import get_db
 from app.domain.models.user import User
 from app.services.accounting.accounting_service import AccountingService
@@ -68,17 +69,28 @@ async def create_account(
 
 @router.get(
     "/journal-entries",
-    response_model=APIResponse[list[JournalEntryOut]],
+    response_model=APIResponse[Page[JournalEntryOut]],
     dependencies=[accounting_view],
 )
 async def list_journal_entries(
     reference_type: str | None = Query(default=None, description="نوع المستند المصدر"),
     reference_id: int | None = Query(default=None, description="رقم المستند المصدر"),
+    search: str | None = Query(default=None, description="بحث في البيان أو التاريخ"),
+    page: PageParams = Depends(),
     db: AsyncSession = Depends(get_db),
-) -> APIResponse[list[JournalEntryOut]]:
-    """عرض قيود اليومية، مع إمكانية التصفية حسب المستند المصدر."""
-    entries = await AccountingService(db).list_entries(reference_type, reference_id)
-    return APIResponse(data=[JournalEntryOut.model_validate(e) for e in entries])
+) -> APIResponse[Page[JournalEntryOut]]:
+    """عرض قيود اليومية صفحةً صفحة، مع إمكانية التصفية حسب المستند المصدر أو البحث."""
+    entries, total = await AccountingService(db).list_entries(
+        reference_type, reference_id, page, search
+    )
+    return APIResponse(
+        data=Page(
+            items=[JournalEntryOut.model_validate(e) for e in entries],
+            total=total,
+            limit=page.limit,
+            offset=page.offset,
+        )
+    )
 
 
 @router.get(

@@ -224,6 +224,17 @@ export function Table({
   // thousand entries arrived on one page. A row that can expand keeps the
   // double-entry detail an accountant needs while the list stays 15 to a page.
   renderDetail,
+  // Server-driven paging: { total, page, onPageChange }. When present, `rows` is
+  // already one page and the server owns the slicing.
+  //
+  // The reason this is a mode rather than a default is the search box. Filtering
+  // client-side searches whatever happens to be loaded, which for a full array is
+  // everything and therefore correct — but against one server page it would quietly
+  // search fifteen rows of three thousand while looking exactly the same. So in
+  // server mode the box is hidden unless the caller supplies `onSearchChange` to
+  // pass the query to the API, and column sorting is switched off for the same
+  // reason: sorting a single page reorders it without changing which rows are on it.
+  serverPaged,
 }) {
   const [page, setPage] = useState(1);
   const [query, setQuery] = useState("");
@@ -233,13 +244,21 @@ export function Table({
     setPage(1);
   }, [rows?.length, query]);
 
-  if (!rows?.length) {
+  const isServer = !!serverPaged;
+  const serverSearch = serverPaged?.onSearchChange;
+  const showSearch = isServer ? !!serverSearch : searchable;
+  const allowSort = !isServer;
+
+  // In server mode an empty page is not necessarily an empty table — it can be a
+  // page past the end after the data shrank — so the pager has to stay reachable.
+  const nothingAtAll = isServer ? !serverPaged.total : !rows?.length;
+  if (nothingAtAll) {
     return (
       <div className="py-10 text-center text-sm text-slate-400 dark:text-slate-500">{empty}</div>
     );
   }
 
-  const q = query.trim().toLowerCase();
+  const q = isServer ? "" : query.trim().toLowerCase();
   const filtered = q
     ? rows.filter((row) =>
         columns.some((col) => {
@@ -281,18 +300,28 @@ export function Table({
       return { key: null, dir: "asc" };
     });
 
-  const totalPages = Math.max(1, Math.ceil(sorted.length / pageSize));
-  const currentPage = Math.min(page, totalPages);
-  const pageRows = sorted.slice((currentPage - 1) * pageSize, currentPage * pageSize);
+  const totalCount = isServer ? serverPaged.total : sorted.length;
+  const totalPages = Math.max(1, Math.ceil(totalCount / pageSize));
+  const currentPage = isServer
+    ? serverPaged.page
+    : Math.min(page, totalPages);
+  const pageRows = isServer
+    ? rows
+    : sorted.slice((currentPage - 1) * pageSize, currentPage * pageSize);
+  const goToPage = (next) =>
+    isServer ? serverPaged.onPageChange(next) : setPage(next);
 
   return (
     <div>
-      {searchable && (
+      {showSearch && (
         <div className="mb-3">
           <input
             type="text"
             value={query}
-            onChange={(e) => setQuery(e.target.value)}
+            onChange={(e) => {
+              setQuery(e.target.value);
+              if (serverSearch) serverSearch(e.target.value);
+            }}
             placeholder={searchPlaceholder}
             className={`${CONTROL} sm:w-64`}
           />
@@ -306,7 +335,7 @@ export function Table({
           <thead>
             <tr className="border-b border-slate-200 text-xs font-bold text-slate-500 dark:border-slate-700 dark:text-slate-400">
               {columns.map((col) => {
-                const isSortable = !!col.label && col.sortable !== false;
+                const isSortable = allowSort && !!col.label && col.sortable !== false;
                 return (
                   <th
                     key={col.key}
@@ -384,12 +413,12 @@ export function Table({
       </div>
       {totalPages > 1 && (
         <div className="mt-3 flex flex-col items-center justify-between gap-2 text-xs font-bold text-slate-500 sm:flex-row dark:text-slate-400">
-          <span>إجمالي {sorted.length} عنصر</span>
+          <span>إجمالي {totalCount} عنصر</span>
           <div className="flex items-center gap-2">
             <Button
               variant="secondary"
-              disabled={currentPage === 1}
-              onClick={() => setPage(currentPage - 1)}
+              disabled={currentPage <= 1}
+              onClick={() => goToPage(currentPage - 1)}
             >
               السابق
             </Button>
@@ -398,8 +427,8 @@ export function Table({
             </span>
             <Button
               variant="secondary"
-              disabled={currentPage === totalPages}
-              onClick={() => setPage(currentPage + 1)}
+              disabled={currentPage >= totalPages}
+              onClick={() => goToPage(currentPage + 1)}
             >
               التالي
             </Button>

@@ -14,6 +14,7 @@ from app.tests.conftest import (
     TEST_CASHIER_PASSWORD,
     TEST_SALES_PASSWORD,
     TEST_STORE_PASSWORD,
+    entries_for,
     login,
 )
 from app.tests.test_delivery import create_trip
@@ -113,16 +114,7 @@ class TestCashierGate:
         assert any(s["id"] == invoice["id"] for s in summaries)
 
         # Journal: Dr cash (1010), Cr receivable (1020) for the invoice total.
-        entries = (
-            await client.get(
-                "/api/v1/accounting/journal-entries",
-                headers=admin,
-                params={
-                    "reference_type": "sales_invoice_payment",
-                    "reference_id": invoice["id"],
-                },
-            )
-        ).json()["data"]
+        entries = await entries_for(client, admin, "sales_invoice_payment", invoice["id"])
         assert len(entries) == 1
         items = items_by_code(entries[0])
         assert items["1010"] == (as_decimal(data["total"]), Decimal("0"))
@@ -179,16 +171,7 @@ class TestCashierGate:
         assert any(s["id"] == invoice["id"] for s in summaries_after)
 
         # Two separate journal entries, one per collection event.
-        entries = (
-            await client.get(
-                "/api/v1/accounting/journal-entries",
-                headers=admin,
-                params={
-                    "reference_type": "sales_invoice_payment",
-                    "reference_id": invoice["id"],
-                },
-            )
-        ).json()["data"]
+        entries = await entries_for(client, admin, "sales_invoice_payment", invoice["id"])
         assert len(entries) == 2
         amounts = sorted(
             as_decimal(items_by_code(e)["1010"][0]) for e in entries
@@ -248,16 +231,7 @@ class TestCashierGate:
         confirmed = await collect(client, admin, invoice["id"], invoice["total"])
         assert confirmed.status_code == 200, confirmed.text
 
-        entries = (
-            await client.get(
-                "/api/v1/accounting/journal-entries",
-                headers=admin,
-                params={
-                    "reference_type": "sales_invoice_payment",
-                    "reference_id": invoice["id"],
-                },
-            )
-        ).json()["data"]
+        entries = await entries_for(client, admin, "sales_invoice_payment", invoice["id"])
         items = items_by_code(entries[0])
         # Card settles to the bank account (1015), not the cash drawer (1010).
         assert "1010" not in items
@@ -663,16 +637,7 @@ class TestCashierPayables:
         )
 
         # Journal: Dr payable (2010), Cr cash (1010) for the invoice total.
-        entries = (
-            await client.get(
-                "/api/v1/accounting/journal-entries",
-                headers=admin,
-                params={
-                    "reference_type": "purchase_invoice_payment",
-                    "reference_id": invoice["id"],
-                },
-            )
-        ).json()["data"]
+        entries = await entries_for(client, admin, "purchase_invoice_payment", invoice["id"])
         items = items_by_code(entries[0])
         assert items["2010"] == (as_decimal(invoice["total"]), Decimal("0"))
         assert items["1010"] == (Decimal("0"), as_decimal(invoice["total"]))
@@ -738,16 +703,7 @@ class TestCashierPayables:
         assert paid.status_code == 200, paid.text
         assert paid.json()["data"]["payment_confirmed_at"] is not None
 
-        entries = (
-            await client.get(
-                "/api/v1/accounting/journal-entries",
-                headers=admin,
-                params={
-                    "reference_type": "expense_payment",
-                    "reference_id": expense["id"],
-                },
-            )
-        ).json()["data"]
+        entries = await entries_for(client, admin, "expense_payment", expense["id"])
         items = items_by_code(entries[0])
         assert items["2010"] == (Decimal("200.00"), Decimal("0"))
         assert items["1010"] == (Decimal("0"), Decimal("200.00"))

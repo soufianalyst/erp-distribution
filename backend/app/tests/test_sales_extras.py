@@ -4,7 +4,12 @@ from decimal import Decimal
 
 from httpx import AsyncClient
 
-from app.tests.conftest import TEST_ADMIN_PASSWORD, TEST_STORE_PASSWORD, login
+from app.tests.conftest import (
+    TEST_ADMIN_PASSWORD,
+    TEST_STORE_PASSWORD,
+    entries_for,
+    login,
+)
 from app.tests.test_delivery import create_trip
 from app.tests.test_inventory import as_decimal
 from app.tests.test_sales import create_customer, post_invoice, setup_stocked_catalog
@@ -36,13 +41,7 @@ class TestInvoiceDeletion:
         assert (
             await client.get(f"/api/v1/sales/invoices/{invoice_id}", headers=admin)
         ).status_code == 404
-        entries = (
-            await client.get(
-                "/api/v1/accounting/journal-entries",
-                headers=admin,
-                params={"reference_type": "sales_invoice", "reference_id": invoice_id},
-            )
-        ).json()["data"]
+        entries = await entries_for(client, admin, "sales_invoice", invoice_id)
         assert entries == []
 
     async def test_delete_blocked_by_returns_and_trips(

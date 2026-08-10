@@ -15,6 +15,7 @@ from app.tests.conftest import (
     TEST_ACCOUNTANT_PASSWORD,
     TEST_ADMIN_PASSWORD,
     TEST_SALES_PASSWORD,
+    entries_for,
     login,
 )
 from app.tests.test_inventory import (
@@ -31,18 +32,6 @@ def items_by_code(entry: dict) -> dict[str, tuple[Decimal, Decimal]]:
         item["account"]["code"]: (as_decimal(item["debit"]), as_decimal(item["credit"]))
         for item in entry["items"]
     }
-
-
-async def entries_for(
-    client: AsyncClient, headers: dict[str, str], reference_type: str, reference_id: int
-) -> list[dict]:
-    response = await client.get(
-        "/api/v1/accounting/journal-entries",
-        headers=headers,
-        params={"reference_type": reference_type, "reference_id": reference_id},
-    )
-    assert response.status_code == 200, response.text
-    return response.json()["data"]
 
 
 async def full_trade_cycle(
