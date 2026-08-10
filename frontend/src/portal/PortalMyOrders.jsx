@@ -4,11 +4,15 @@ import { Link } from "react-router-dom";
 import { Alert, Badge, Button, Loading, qty } from "../components/Ui";
 import useFetch from "../hooks/useFetch";
 import portalApi, { portalMessage } from "../services/portalApi";
+import OrderTracker from "./OrderTracker";
 import { ORDER_STATUS } from "./PortalHome";
 
 export default function PortalMyOrders() {
   const orders = useFetch(() => portalApi.get("/portal/orders"));
   const [busyId, setBusyId] = useState(null);
+  // Which order's tracker is open. One at a time, and only on request: a shop
+  // with ten orders should not fire ten tracking requests to look at one.
+  const [tracking, setTracking] = useState(null);
   const [error, setError] = useState(null);
 
   const cancel = async (order) => {
@@ -89,7 +93,19 @@ export default function PortalMyOrders() {
             </p>
           ) : null}
 
+          {tracking === order.id ? (
+            <div className="mt-3">
+              <OrderTracker orderId={order.id} />
+            </div>
+          ) : null}
+
           <footer className="mt-3 flex flex-wrap gap-2">
+            <Button
+              variant="secondary"
+              onClick={() => setTracking(tracking === order.id ? null : order.id)}
+            >
+              {tracking === order.id ? "إخفاء التتبّع" : "📍 تتبّع الطلب"}
+            </Button>
             {order.status === "pending" ? (
               <Button
                 variant="danger"

@@ -208,6 +208,37 @@ class PortalOrderOut(BaseModel):
     lines: list[PortalOrderLineOut]
 
 
+class PortalOrderStepOut(BaseModel):
+    """One stage of the shop's order, in the shop's own terms.
+
+    Spelled out here rather than reusing the staff `InvoiceStepOut`, for the same
+    reason every other portal schema is: reuse is how a field leaks. The staff
+    version carries trip numbers and till instructions, and would start appearing
+    in a customer's browser the day someone added one more to it.
+    """
+
+    model_config = ConfigDict(from_attributes=True)
+
+    key: str
+    label: str
+    state: Literal["done", "current", "pending", "failed"]
+    at: datetime | None
+    detail: str | None
+
+
+class PortalOrderTimelineOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    order_id: int
+    # The step it is sitting on, for the heading.
+    status_label: str
+    fulfillment: Literal["pickup", "delivery"]
+    # Delivery date once a round is planned; nothing to promise before that, and
+    # nothing at all for goods the shop collects itself.
+    expected: date | None
+    steps: list[PortalOrderStepOut]
+
+
 class PortalOrderCancelIn(BaseModel):
     reason: str | None = Field(default=None, max_length=300)
 

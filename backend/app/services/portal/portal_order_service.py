@@ -306,6 +306,15 @@ class PortalOrderService:
         order = await self._own_order(customer_id, order_id)
         return (await self._to_out([order]))[0]
 
+    async def own_order(self, customer_id: int, order_id: int):
+        """The order row itself, after the ownership check.
+
+        The tracker needs the model, not the output schema — but it must go through
+        the same gate, so one customer cannot follow another's order by guessing a
+        number.
+        """
+        return await self._own_order(customer_id, order_id)
+
     async def cancel_order(
         self, customer_id: int, order_id: int, reason: str | None
     ) -> PortalOrderOut:

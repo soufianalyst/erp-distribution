@@ -42,6 +42,7 @@ from app.api.schemas.portal import (
     PortalCustomerOut,
     PortalLoginIn,
     PortalOrderCancelIn,
+    PortalOrderTimelineOut,
     PortalOrderCreateIn,
     PortalOrderOut,
     PortalPasswordChangeIn,
@@ -57,6 +58,7 @@ from app.api.schemas.sales import SalesInvoiceOut
 from app.db.session import get_db
 from app.domain.models.sales import Customer, CustomerLogin, CustomerOrderStatus
 from app.domain.models.user import User
+from app.services.portal.order_timeline import PortalOrderTimelineService
 from app.services.portal.portal_auth_service import PortalAuthService
 from app.services.portal.portal_data_service import PortalDataService
 from app.services.portal.portal_order_service import (
@@ -255,6 +257,21 @@ async def portal_order(
     """تفاصيل طلب واحد يخص العميل الحالي."""
     data = await PortalOrderService(db).get_order(current_customer.id, order_id)
     return APIResponse(data=data)
+
+
+@router.get(
+    "/portal/orders/{order_id}/timeline",
+    response_model=APIResponse[PortalOrderTimelineOut],
+)
+async def portal_order_timeline(
+    order_id: int,
+    current_customer: Customer = Depends(get_current_customer),
+    db: AsyncSession = Depends(get_db),
+) -> APIResponse[PortalOrderTimelineOut]:
+    """تتبّع الطلب: أين وصل من لحظة إرساله حتى استلامه."""
+    order = await PortalOrderService(db).own_order(current_customer.id, order_id)
+    timeline = await PortalOrderTimelineService(db).timeline(order)
+    return APIResponse(data=PortalOrderTimelineOut.model_validate(timeline))
 
 
 @router.post(
