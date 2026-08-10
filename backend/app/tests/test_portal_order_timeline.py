@@ -43,7 +43,15 @@ def states(data: dict) -> dict[str, str]:
 
 
 def current(data: dict) -> str | None:
-    return next((s["key"] for s in data["steps"] if s["state"] == "current"), None)
+    """The one live step.
+
+    Asserts there is at most one, because the first version of this helper
+    returned the first of several and happily hid a card whose stepper glowed in
+    two places at once.
+    """
+    live = [s["key"] for s in data["steps"] if s["state"] == "current"]
+    assert len(live) <= 1, f"أكثر من مرحلة نشطة في الوقت نفسه: {live}"
+    return live[0] if live else None
 
 
 class TestTheJourneyTheShopSees:

@@ -151,7 +151,7 @@ class PortalOrderTimelineService:
             return [
                 PortalStep(
                     key="ready",
-                    label="جاهز للاستلام" if not handed else "كان جاهزاً للاستلام",
+                    label="جاهز للاستلام",
                     state="done",
                     detail="يمكنك استلام البضاعة من المستودع",
                 ),
@@ -211,7 +211,14 @@ class PortalOrderTimelineService:
 
     @staticmethod
     def _mark_current(steps: list[PortalStep]) -> None:
-        if any(step.state == "failed" for step in steps):
+        """Promote the first unfinished step — unless one is already live.
+
+        The review step marks itself current while the office is still looking at
+        the order, and this used to promote the next pending step on top of it, so
+        two circles glowed at once and the card pointed in two directions. Nothing
+        is promoted after a failure either: the order is stopped, not advancing.
+        """
+        if any(step.state in ("failed", "current") for step in steps):
             return
         for step in steps:
             if step.state == "pending":
