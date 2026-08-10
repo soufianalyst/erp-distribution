@@ -20,7 +20,7 @@ async def logs_for(
         params={"table_name": table_name, "record_id": record_id},
     )
     assert response.status_code == 200, response.text
-    return response.json()["data"]
+    return response.json()["data"]["items"]
 
 
 class TestAuditTrail:
@@ -139,7 +139,7 @@ class TestAuditTrail:
             "/api/v1/audit/logs", headers=admin, params={"table_name": "audit_logs"}
         )
         assert response.status_code == 200
-        assert response.json()["data"] == []
+        assert response.json()["data"]["items"] == []
 
     async def test_list_tables(self, client: AsyncClient) -> None:
         admin = await login(client, "admin", TEST_ADMIN_PASSWORD)

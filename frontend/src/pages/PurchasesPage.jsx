@@ -23,6 +23,9 @@ import { useAuth } from "../context/AuthContext";
 import useFetch from "../hooks/useFetch";
 import api, { apiMessage } from "../services/api";
 
+// Matches the shared Table's page size, so the pager and the server agree.
+const PAGE_SIZE = 15;
+
 const EMPTY_LINE = { product_id: "", batch_number: "", expiry_date: "", quantity: "", unit_id: "", unit_cost: "" };
 const EMPTY_ORDER_LINE = { product_id: "", quantity: "", unit_id: "", unit_cost: "" };
 
@@ -890,7 +893,33 @@ export default function PurchasesPage() {
   const [receivingOrder, setReceivingOrder] = useState(null);
   const [viewingOrder, setViewingOrder] = useState(null);
 
-  const invoices = useFetch(() => api.get("/purchases/invoices"));
+  // Paged: 858 KB and a thousand rows on one seeded year, to show fifteen.
+  const [invoicePage, setInvoicePage] = useState(1);
+  const invoices = useFetch(
+    () =>
+      api.get("/purchases/invoices", {
+        params: {
+          limit: PAGE_SIZE,
+          offset: (invoicePage - 1) * PAGE_SIZE,
+        },
+      }),
+    [invoicePage]
+  );
+
+  /** Open one invoice from a purchase order, whichever page it happens to live on. */
+  const openInvoiceById = async (invoiceId) => {
+    try {
+      const response = await api.get(`/purchases/invoices/${invoiceId}`);
+      setViewingOrder(null);
+      setViewing(response.data.data);
+      setTab("list");
+    } catch {
+      // Deliberately quiet: the order screen is not the place to raise an error
+      // banner, and the invoice being unreachable is not something the user can act
+      // on from here.
+    }
+  };
+
   const orders = useFetch(() => api.get("/purchases/orders"));
   const returns = useFetch(() => api.get("/purchases/returns"));
   const suppliers = useFetch(() => api.get("/purchases/suppliers"));
@@ -1131,7 +1160,12 @@ export default function PurchasesPage() {
                   ),
                 },
               ]}
-              rows={invoices.data}
+              rows={invoices.data?.items || []}
+              serverPaged={{
+                total: invoices.data?.total || 0,
+                page: invoicePage,
+                onPageChange: setInvoicePage,
+              }}
               empty="لا توجد فواتير مشتريات بعد."
             />
           )}
@@ -1422,24 +1456,20 @@ export default function PurchasesPage() {
                   التوريدات المستلمة على هذا الطلب ({viewingOrder.received_invoice_ids.length})
                 </div>
                 <div className="flex flex-wrap gap-2">
-                  {viewingOrder.received_invoice_ids.map((invoiceId) => {
-                    const invoice = (invoices.data || []).find((i) => i.id === invoiceId);
-                    return (
-                      <Button
-                        key={invoiceId}
-                        variant="secondary"
-                        onClick={() => {
-                          if (!invoice) return;
-                          setViewingOrder(null);
-                          setViewing(invoice);
-                          setTab("list");
-                        }}
-                      >
-                        فاتورة شراء #{invoiceId}
-                        {invoice ? ` — ${money(invoice.total)}` : ""}
-                      </Button>
-                    );
-                  })}
+                  {/* Fetched by id on click rather than looked up in the loaded list.
+                      The list is one page now, so a receipt older than the current
+                      page would not be found — the button would render without its
+                      amount and do nothing when pressed, which looks like a dead
+                      control rather than a missing row. */}
+                  {viewingOrder.received_invoice_ids.map((invoiceId) => (
+                    <Button
+                      key={invoiceId}
+                      variant="secondary"
+                      onClick={() => openInvoiceById(invoiceId)}
+                    >
+                      فاتورة شراء #{invoiceId}
+                    </Button>
+                  ))}
                 </div>
               </div>
             )}

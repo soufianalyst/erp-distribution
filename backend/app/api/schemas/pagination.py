@@ -13,7 +13,7 @@ as though they were the whole ledger, which for an accounts screen is the more
 dangerous of the two failures.
 """
 
-from typing import Generic, TypeVar
+from typing import Annotated, Generic, TypeVar
 
 from fastapi import Query
 from pydantic import BaseModel
@@ -48,14 +48,23 @@ class PageParams:
     A dependency rather than two loose Query arguments so that the bounds are stated
     in a single place: repeating `ge=1, le=200` at each endpoint is how one of them
     eventually gets a different ceiling.
+
+    The bounds are attached with `Annotated` rather than as default values, so that
+    the defaults stay real integers. Written the other way — `limit: int = Query(50)`
+    — a `PageParams()` built directly in a service would carry `Query` objects rather
+    than numbers, and `stmt.limit(...)` would raise deep inside SQLAlchemy. FastAPI
+    reads the metadata either way; only direct construction tells the difference, and
+    `page or PageParams()` does exactly that.
     """
 
     def __init__(
         self,
-        limit: int = Query(
-            default=DEFAULT_LIMIT, ge=1, le=MAX_LIMIT, description="عدد السجلات في الصفحة"
-        ),
-        offset: int = Query(default=0, ge=0, description="عدد السجلات المتخطاة"),
+        limit: Annotated[
+            int, Query(ge=1, le=MAX_LIMIT, description="عدد السجلات في الصفحة")
+        ] = DEFAULT_LIMIT,
+        offset: Annotated[
+            int, Query(ge=0, description="عدد السجلات المتخطاة")
+        ] = 0,
     ) -> None:
         self.limit = limit
         self.offset = offset

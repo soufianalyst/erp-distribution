@@ -83,7 +83,7 @@ async def a_van_with_one_cash_sale(
     )
     invoices = (
         await client.get("/api/v1/sales/invoices", headers=admin)
-    ).json()["data"]
+    ).json()["data"]["items"]
     return van_id, product["id"], invoices[0]
 
 

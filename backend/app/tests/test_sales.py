@@ -183,7 +183,7 @@ class TestSalesInvoices:
         assert as_decimal(levels[0]["total_quantity"]) == Decimal("50")
         invoices = (await client.get("/api/v1/sales/invoices", headers=admin)).json()[
             "data"
-        ]
+        ]["items"]
         assert invoices == []
 
 

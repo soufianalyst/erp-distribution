@@ -7,6 +7,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.deps import require_permissions
 from app.api.schemas.common import APIResponse
+from app.api.schemas.pagination import Page, PageParams
 from app.api.schemas.sales import (
     ReturnCancelIn,
     CustomerCreditOut,
@@ -173,15 +174,25 @@ async def delete_invoice(
     return APIResponse(data=None, message="تم حذف الفاتورة وإعادة المخزون بنجاح.")
 
 
-@router.get("/invoices", response_model=APIResponse[list[SalesInvoiceOut]])
+@router.get("/invoices", response_model=APIResponse[Page[SalesInvoiceOut]])
 async def list_invoices(
     customer_id: int | None = Query(default=None),
+    page: PageParams = Depends(),
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(sales_view),
-) -> APIResponse[list[SalesInvoiceOut]]:
-    """عرض فواتير المبيعات؛ يرى المندوب فواتيره فقط."""
-    invoices = await SalesService(db).list_invoices(current_user, customer_id)
-    return APIResponse(data=[SalesInvoiceOut.model_validate(i) for i in invoices])
+) -> APIResponse[Page[SalesInvoiceOut]]:
+    """عرض فواتير المبيعات صفحةً صفحة؛ يرى المندوب فواتيره فقط."""
+    invoices, total = await SalesService(db).list_invoices(
+        current_user, customer_id, page
+    )
+    return APIResponse(
+        data=Page(
+            items=[SalesInvoiceOut.model_validate(i) for i in invoices],
+            total=total,
+            limit=page.limit,
+            offset=page.offset,
+        )
+    )
 
 
 @router.get("/invoices/{invoice_id}", response_model=APIResponse[SalesInvoiceOut])

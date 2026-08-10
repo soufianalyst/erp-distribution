@@ -9,6 +9,9 @@ import { Alert, Badge, Button, Card, Input, Loading, Modal, Select, Table } from
 import useFetch from "../hooks/useFetch";
 import api from "../services/api";
 
+// Matches the shared Table's page size, so the pager and the server agree.
+const PAGE_SIZE = 15;
+
 const ACTION_LABELS = { insert: "إنشاء", update: "تعديل", delete: "حذف" };
 const ACTION_TONE = { insert: "green", update: "amber", delete: "red" };
 
@@ -95,6 +98,19 @@ export default function AuditLogPage() {
   const [dateTo, setDateTo] = useState("");
   const [viewing, setViewing] = useState(null);
 
+  // Paged, because this table gains a row for every insert, update and delete the
+  // system performs — it outgrows even the journal.
+  const [page, setPage] = useState(1);
+
+  // Every filter resets to page one, and does it in the same batch as the filter
+  // itself rather than in an effect. An effect would run after useFetch's, so the
+  // first request would still carry the previous page — a filter matching three rows
+  // applied while on page 40 would come back empty and read as "nothing found".
+  const filtered = (setter) => (value) => {
+    setter(value);
+    setPage(1);
+  };
+
   const tables = useFetch(() => api.get("/audit/tables"));
   const users = useFetch(() => api.get("/auth/users"));
   const logs = useFetch(
@@ -106,9 +122,11 @@ export default function AuditLogPage() {
           record_id: recordId || undefined,
           date_from: dateFrom || undefined,
           date_to: dateTo || undefined,
+          limit: PAGE_SIZE,
+          offset: (page - 1) * PAGE_SIZE,
         },
       }),
-    [tableName, action, recordId, dateFrom, dateTo]
+    [tableName, action, recordId, dateFrom, dateTo, page]
   );
 
   const userName = (id) => {
@@ -125,7 +143,7 @@ export default function AuditLogPage() {
 
       <Card title="تصفية السجل">
         <div className="grid grid-cols-1 gap-4 sm:grid-cols-3 lg:grid-cols-5">
-          <Select label="الجدول" value={tableName} onChange={(e) => setTableName(e.target.value)}>
+          <Select label="الجدول" value={tableName} onChange={(e) => filtered(setTableName)(e.target.value)}>
             <option value="">الكل</option>
             {(tables.data || []).map((t) => (
               <option key={t} value={t}>
@@ -133,7 +151,7 @@ export default function AuditLogPage() {
               </option>
             ))}
           </Select>
-          <Select label="نوع العملية" value={action} onChange={(e) => setAction(e.target.value)}>
+          <Select label="نوع العملية" value={action} onChange={(e) => filtered(setAction)(e.target.value)}>
             <option value="">الكل</option>
             <option value="insert">إنشاء</option>
             <option value="update">تعديل</option>
@@ -143,16 +161,16 @@ export default function AuditLogPage() {
             label="رقم السجل (اختياري)"
             type="number"
             value={recordId}
-            onChange={(e) => setRecordId(e.target.value)}
+            onChange={(e) => filtered(setRecordId)(e.target.value)}
           />
-          <Input label="من تاريخ" type="date" value={dateFrom} onChange={(e) => setDateFrom(e.target.value)} />
-          <Input label="إلى تاريخ" type="date" value={dateTo} onChange={(e) => setDateTo(e.target.value)} />
+          <Input label="من تاريخ" type="date" value={dateFrom} onChange={(e) => filtered(setDateFrom)(e.target.value)} />
+          <Input label="إلى تاريخ" type="date" value={dateTo} onChange={(e) => filtered(setDateTo)(e.target.value)} />
         </div>
       </Card>
 
       <Card>
         <Alert>{logs.error}</Alert>
-        {logs.loading || tables.loading ? (
+        {(logs.loading && !logs.data) || tables.loading ? (
           <Loading />
         ) : (
           <Table
@@ -181,7 +199,12 @@ export default function AuditLogPage() {
                 ),
               },
             ]}
-            rows={logs.data}
+            rows={logs.data?.items || []}
+            serverPaged={{
+              total: logs.data?.total || 0,
+              page,
+              onPageChange: setPage,
+            }}
             empty="لا توجد حركات مطابقة."
           />
         )}

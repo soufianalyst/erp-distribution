@@ -5,6 +5,7 @@ from datetime import date
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.api.schemas.pagination import PageParams, paginate
 from app.core import business_day
 from app.domain.models.audit import AuditAction, AuditLog
 from app.services.settings.settings_service import SettingsService
@@ -22,8 +23,14 @@ class AuditService:
         user_id: int | None = None,
         date_from: date | None = None,
         date_to: date | None = None,
-    ) -> list[AuditLog]:
-        """Audit entries, newest first, filtered by table, record, user or action."""
+        page: PageParams | None = None,
+    ) -> tuple[list[AuditLog], int]:
+        """Audit entries, newest first, filtered by table, record, user or action.
+
+        Paged because this table grows faster than any other: it gains a row for
+        every insert, update and delete the system performs, so it outpaces even the
+        journal. Nothing sums audit rows, so there is no unpaged caller.
+        """
         stmt = select(AuditLog).order_by(AuditLog.id.desc())
         if table_name is not None:
             stmt = stmt.where(AuditLog.table_name == table_name)
@@ -45,8 +52,7 @@ class AuditService:
                 # Exclusive upper bound at the next local midnight, so the whole of the
                 # closing day is included without depending on microsecond precision.
                 stmt = stmt.where(AuditLog.created_at < end)
-        result = await self.session.execute(stmt)
-        return list(result.scalars().all())
+        return await paginate(self.session, stmt, page or PageParams())
 
     async def list_tables(self) -> list[str]:
         """Distinct table names seen so far, for the frontend's filter dropdown."""

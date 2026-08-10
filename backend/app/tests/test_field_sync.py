@@ -354,7 +354,7 @@ class TestReplaySafety:
         for uuid in ("uuid-cust-1-0000000000", "uuid-sale-1-0000000000", "uuid-order-1-0000000000"):
             assert result_for(second, uuid)["server_id"] == result_for(first, uuid)["server_id"]
 
-        invoices = (await client.get("/api/v1/sales/invoices", headers=admin)).json()["data"]
+        invoices = (await client.get("/api/v1/sales/invoices", headers=admin)).json()["data"]["items"]
         assert len(invoices) == 1
         customers = (await client.get("/api/v1/sales/customers", headers=admin)).json()["data"]
         assert len([c for c in customers if c["name"] == "بقالة الإعادة"]) == 1

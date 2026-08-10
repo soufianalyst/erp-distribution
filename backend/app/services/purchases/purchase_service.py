@@ -20,6 +20,7 @@ from app.api.schemas.purchases import (
     SupplierStatementOut,
     SupplierUpdate,
 )
+from app.api.schemas.pagination import PageParams, paginate
 from app.core.exceptions import AppException
 from app.domain.models.accounting import JournalEntry
 from app.domain.models.inventory import Product, ProductBatch
@@ -467,9 +468,14 @@ class PurchaseService:
         return invoice
 
     async def list_invoices(
-        self, supplier_id: int | None = None
-    ) -> list[PurchaseInvoice]:
-        """Purchase invoices, newest first, optionally for one supplier."""
+        self, supplier_id: int | None = None, page: PageParams | None = None
+    ) -> tuple[list[PurchaseInvoice], int]:
+        """Purchase invoices, newest first, optionally for one supplier.
+
+        `page=None` returns every match, which the supplier statement needs: it adds
+        these into what we owe, and a balance from the first fifty is a wrong number
+        wearing a right one's clothes. Screens pass a page; arithmetic does not.
+        """
         stmt = (
             select(PurchaseInvoice)
             .options(
@@ -479,8 +485,11 @@ class PurchaseService:
         )
         if supplier_id is not None:
             stmt = stmt.where(PurchaseInvoice.supplier_id == supplier_id)
-        result = await self.session.execute(stmt)
-        return list(result.scalars().all())
+        if page is None:
+            result = await self.session.execute(stmt)
+            invoices = list(result.scalars().unique().all())
+            return invoices, len(invoices)
+        return await paginate(self.session, stmt, page)
 
     # --- Purchase orders ---
     async def _build_order_lines(
@@ -953,7 +962,8 @@ class PurchaseService:
         )
 
         supplier = await self.get_supplier(supplier_id)
-        invoices = await self.list_invoices(supplier_id)
+        # Unpaged on purpose: the balance below is a sum over all of them.
+        invoices, _ = await self.list_invoices(supplier_id)
         returns_result = await self.session.execute(
             select(PurchaseReturn)
             .options(selectinload(PurchaseReturn.lines))

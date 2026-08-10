@@ -296,7 +296,7 @@ class TestPurchaseInvoices:
         # And no invoice exists.
         invoices = (
             await client.get("/api/v1/purchases/invoices", headers=admin)
-        ).json()["data"]
+        ).json()["data"]["items"]
         assert invoices == []
 
     async def test_unknown_product_rejected(self, client: AsyncClient) -> None:
@@ -490,7 +490,7 @@ class TestPurchaseInvoices:
 
         invoices = (
             await client.get("/api/v1/purchases/invoices", headers=admin)
-        ).json()["data"]
+        ).json()["data"]["items"]
         assert all(i["id"] != invoice_id for i in invoices)
 
         # Quantity was fully reversed, so the batch no longer has any stock on hand.

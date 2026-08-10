@@ -11,9 +11,13 @@ which in a ledger is the whole ballgame. Second the contract itself, so that an
 endpoint cannot quietly go back to returning everything.
 """
 
+from decimal import Decimal
+
 from httpx import AsyncClient
 
+from app.api.schemas.pagination import DEFAULT_LIMIT
 from app.tests.conftest import TEST_ACCOUNTANT_PASSWORD, TEST_ADMIN_PASSWORD, login
+from app.tests.test_inventory import create_product, create_warehouse, receive
 
 ENTRIES = "/api/v1/accounting/journal-entries"
 
@@ -101,6 +105,95 @@ class TestAPageIsAPage:
         assert filtered["items"] == []
 
 
+class TestPageParamsWorksOutsideFastAPI:
+    """`page or PageParams()` appears in two services, so the fallback must be real.
+
+    Written as `limit: int = Query(50)`, the default value is a `Query` object rather
+    than the number 50 — fine under FastAPI, which replaces it, and broken for any
+    service that constructs one itself. The failure surfaces as a TypeError from
+    inside SQLAlchemy, nowhere near the cause.
+    """
+
+    def test_the_defaults_are_numbers(self) -> None:
+        from app.api.schemas.pagination import DEFAULT_LIMIT, PageParams
+
+        params = PageParams()
+        assert isinstance(params.limit, int)
+        assert isinstance(params.offset, int)
+        assert (params.limit, params.offset) == (DEFAULT_LIMIT, 0)
+
+    async def test_a_service_can_page_without_a_request(
+        self, client: AsyncClient, db_session
+    ) -> None:
+        """The path that actually uses it: a service calling its own paged method."""
+        from app.services.accounting.accounting_service import AccountingService
+
+        accountant = await login(client, "accountant", TEST_ACCOUNTANT_PASSWORD)
+        await make_entries(client, accountant, 3)
+
+        entries, total = await AccountingService(db_session).list_entries()
+        assert total >= 3
+        assert len(entries) <= DEFAULT_LIMIT
+
+
+class TestBalancesAreNotPaged:
+    """The exception, and why it is one.
+
+    A statement adds invoices up into what a customer owes. Paged, that sum would be
+    over a screenful — a wrong number indistinguishable from a right one, on the
+    document a customer is most likely to argue with. So `_invoices_for(page=None)`
+    exists, and this test is what stops someone tidying it away.
+    """
+
+    async def test_a_statement_totals_every_invoice_not_the_first_page(
+        self, client: AsyncClient
+    ) -> None:
+        from app.tests.test_sales import (
+            create_customer,
+            post_invoice,
+            setup_stocked_catalog,
+        )
+
+        admin = await login(client, "admin", TEST_ADMIN_PASSWORD)
+        warehouse_id = await create_warehouse(client, admin, "مخزن الكشف")
+        product = await create_product(
+            client, admin, sku="STMT-001", warehouse_id=warehouse_id
+        )
+        await receive(client, admin, product["id"], warehouse_id, "B-STMT", 200, "500")
+        customer_id = await create_customer(
+            client, admin, name="بقالة كثيرة الفواتير", credit_limit="900000"
+        )
+
+        # More invoices than the default page holds, each for a known amount.
+        count = 7
+        for _ in range(count):
+            response = await post_invoice(
+                client, admin, customer_id, warehouse_id, product["id"], "1",
+                payment_method="credit", credit_override=True, tax_rate_ids=[],
+            )
+            assert response.status_code == 201, response.text
+
+        statement = (await client.get(
+            f"/api/v1/sales/customers/{customer_id}/statement", headers=admin
+        )).json()["data"]
+
+        assert len(statement["invoices"]) == count, (
+            "the statement lost invoices to paging"
+        )
+        # 10.50 wholesale, one unit each, no tax.
+        assert Decimal(str(statement["total_invoices"])) == Decimal("10.50") * count
+
+    async def test_the_invoice_list_is_paged_even_though_the_statement_is_not(
+        self, client: AsyncClient
+    ) -> None:
+        """Both behaviours live in one method, so this pins that they stayed apart."""
+        admin = await login(client, "admin", TEST_ADMIN_PASSWORD)
+        listed = (await client.get(
+            "/api/v1/sales/invoices", headers=admin, params={"limit": 2})).json()["data"]
+        assert set(listed) == {"items", "total", "limit", "offset"}
+        assert len(listed["items"]) <= 2
+
+
 class TestSearchRunsInTheDatabase:
     """Paging removed the client-side search, so the server has to carry it.
 
@@ -166,6 +259,9 @@ class TestTheContractIsDeclared:
     # and paging them would only make them harder to read.
     MUST_BE_PAGED = [
         "/api/v1/accounting/journal-entries",
+        "/api/v1/sales/invoices",
+        "/api/v1/purchases/invoices",
+        "/api/v1/audit/logs",
     ]
 
     async def test_paged_endpoints_take_limit_and_offset(

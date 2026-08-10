@@ -25,6 +25,9 @@ import { useAuth } from "../context/AuthContext";
 import useFetch from "../hooks/useFetch";
 import api, { apiMessage } from "../services/api";
 
+// Matches the shared Table's page size, so the pager and the server agree.
+const PAGE_SIZE = 15;
+
 const EMPTY_LINE = { product_id: "", product_label: "", quantity: "", unit_id: "" };
 
 const productLabel = (p) => `${p.sku} — ${p.name}`;
@@ -1103,7 +1106,15 @@ export default function SalesPage() {
     setTab(next);
   };
 
-  const invoices = useFetch(() => api.get("/sales/invoices"));
+  // Paged: 858 KB and a thousand rows on one seeded year, to display fifteen.
+  const [invoicePage, setInvoicePage] = useState(1);
+  const invoices = useFetch(
+    () =>
+      api.get("/sales/invoices", {
+        params: { limit: PAGE_SIZE, offset: (invoicePage - 1) * PAGE_SIZE },
+      }),
+    [invoicePage]
+  );
   const returns = useFetch(() => api.get("/sales/returns"));
 
   // Cancelling a credit note moves stock and money back, so the invoice list and the
@@ -1232,7 +1243,7 @@ export default function SalesPage() {
       {tab === "list" && (
         <Card>
           <Alert>{invoices.error}</Alert>
-          {invoices.loading ? (
+          {invoices.loading && !invoices.data ? (
             <Loading />
           ) : (
             <Table
@@ -1316,7 +1327,12 @@ export default function SalesPage() {
                   ),
                 },
               ]}
-              rows={invoices.data}
+              rows={invoices.data?.items || []}
+              serverPaged={{
+                total: invoices.data?.total || 0,
+                page: invoicePage,
+                onPageChange: setInvoicePage,
+              }}
               empty="لا توجد فواتير مبيعات بعد."
             />
           )}

@@ -8,6 +8,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.api.deps import require_permissions
 from app.api.schemas.audit import AuditLogOut
 from app.api.schemas.common import APIResponse
+from app.api.schemas.pagination import Page, PageParams
 from app.db.session import get_db
 from app.domain.models.audit import AuditAction
 from app.services.audit.audit_service import AuditService
@@ -19,7 +20,7 @@ audit_view = Depends(require_permissions("audit.view"))
 
 @router.get(
     "/logs",
-    response_model=APIResponse[list[AuditLogOut]],
+    response_model=APIResponse[Page[AuditLogOut]],
     dependencies=[audit_view],
 )
 async def list_logs(
@@ -29,13 +30,21 @@ async def list_logs(
     user_id: int | None = Query(default=None, description="المستخدم"),
     date_from: date | None = Query(default=None, description="بداية الفترة"),
     date_to: date | None = Query(default=None, description="نهاية الفترة"),
+    page: PageParams = Depends(),
     db: AsyncSession = Depends(get_db),
-) -> APIResponse[list[AuditLogOut]]:
-    """عرض سجل تتبع العمليات (من أنشأ/عدّل/حذف ماذا ومتى)."""
-    logs = await AuditService(db).list_logs(
-        table_name, record_id, action, user_id, date_from, date_to
+) -> APIResponse[Page[AuditLogOut]]:
+    """عرض سجل تتبع العمليات صفحةً صفحة (من أنشأ/عدّل/حذف ماذا ومتى)."""
+    logs, total = await AuditService(db).list_logs(
+        table_name, record_id, action, user_id, date_from, date_to, page
     )
-    return APIResponse(data=[AuditLogOut.model_validate(entry) for entry in logs])
+    return APIResponse(
+        data=Page(
+            items=[AuditLogOut.model_validate(entry) for entry in logs],
+            total=total,
+            limit=page.limit,
+            offset=page.offset,
+        )
+    )
 
 
 @router.get(

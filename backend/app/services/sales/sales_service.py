@@ -21,6 +21,7 @@ from app.api.schemas.sales import (
     SalesQuotationCreate,
     SalesReturnCreate,
 )
+from app.api.schemas.pagination import PageParams, paginate
 from app.core import business_day
 from app.core.exceptions import AppException
 from app.core.permissions import has_permission
@@ -965,13 +966,22 @@ class SalesService:
         return invoice
 
     async def _invoices_for(
-        self, customer_id: int | None, only_salesman_id: int | None
-    ) -> list[SalesInvoice]:
+        self,
+        customer_id: int | None,
+        only_salesman_id: int | None,
+        page: PageParams | None = None,
+    ) -> tuple[list[SalesInvoice], int]:
         """Invoices newest first, optionally narrowed to one customer or salesman.
 
         The scoping is expressed as a salesman id rather than a user so callers with
         no staff user — the customer portal — can reach the same query instead of
         writing a near-identical one that forgets `_attach_return_totals`.
+
+        `page=None` means every matching invoice, and it is not an oversight: the
+        statement adds invoices up into a balance, and a balance computed from the
+        first fifty is a wrong number that looks like a right one. Screens pass a
+        page; arithmetic does not. The unpaged path stays bounded by one customer's
+        own history, which is a few dozen rows, not the whole book.
         """
         stmt = (
             select(SalesInvoice)
@@ -984,20 +994,29 @@ class SalesService:
             stmt = stmt.where(SalesInvoice.salesman_id == only_salesman_id)
         if customer_id is not None:
             stmt = stmt.where(SalesInvoice.customer_id == customer_id)
-        result = await self.session.execute(stmt)
-        invoices = list(result.scalars().all())
+
+        if page is None:
+            result = await self.session.execute(stmt)
+            invoices = list(result.scalars().unique().all())
+            total = len(invoices)
+        else:
+            invoices, total = await paginate(self.session, stmt, page)
         await self._attach_return_totals(invoices)
-        return invoices
+        return invoices, total
 
     async def list_invoices(
-        self, user: User, customer_id: int | None = None
-    ) -> list[SalesInvoice]:
+        self,
+        user: User,
+        customer_id: int | None = None,
+        page: PageParams | None = None,
+    ) -> tuple[list[SalesInvoice], int]:
         """Invoices visible to this user, newest first, optionally per customer."""
         return await self._invoices_for(
             customer_id,
             only_salesman_id=(
                 None if has_permission(user, "sales.all_customers") else user.id
             ),
+            page=page,
         )
 
     # --- Returns ---
@@ -1506,10 +1525,12 @@ class SalesService:
         if user is not None:
             self.ensure_customer_access(user, customer)
 
+        # Unpaged on purpose — see `_invoices_for`. The totals below are sums over
+        # every invoice this customer has, not over a screenful of them.
         if user is None:
-            invoices = await self._invoices_for(customer_id, only_salesman_id=None)
+            invoices, _ = await self._invoices_for(customer_id, only_salesman_id=None)
         else:
-            invoices = await self.list_invoices(user, customer_id)
+            invoices, _ = await self.list_invoices(user, customer_id)
         returns_result = await self.session.execute(
             select(SalesReturn)
             .options(selectinload(SalesReturn.lines))

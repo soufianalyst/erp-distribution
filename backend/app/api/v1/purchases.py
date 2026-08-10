@@ -5,6 +5,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.deps import require_permissions
 from app.api.schemas.common import APIResponse
+from app.api.schemas.pagination import Page, PageParams
 from app.api.schemas.purchases import (
     PurchaseInvoiceCreate,
     PurchaseInvoiceOut,
@@ -116,16 +117,24 @@ async def create_invoice(
 
 @router.get(
     "/invoices",
-    response_model=APIResponse[list[PurchaseInvoiceOut]],
+    response_model=APIResponse[Page[PurchaseInvoiceOut]],
     dependencies=[purchases_view],
 )
 async def list_invoices(
     supplier_id: int | None = Query(default=None),
+    page: PageParams = Depends(),
     db: AsyncSession = Depends(get_db),
-) -> APIResponse[list[PurchaseInvoiceOut]]:
-    """عرض فواتير الشراء، مع إمكانية التصفية حسب المورد."""
-    invoices = await PurchaseService(db).list_invoices(supplier_id)
-    return APIResponse(data=[PurchaseInvoiceOut.model_validate(i) for i in invoices])
+) -> APIResponse[Page[PurchaseInvoiceOut]]:
+    """عرض فواتير الشراء صفحةً صفحة، مع إمكانية التصفية حسب المورد."""
+    invoices, total = await PurchaseService(db).list_invoices(supplier_id, page)
+    return APIResponse(
+        data=Page(
+            items=[PurchaseInvoiceOut.model_validate(i) for i in invoices],
+            total=total,
+            limit=page.limit,
+            offset=page.offset,
+        )
+    )
 
 
 @router.get(
