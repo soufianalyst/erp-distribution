@@ -49,6 +49,12 @@ class CompanySettingsUpdate(BaseModel):
     timezone: str | None = Field(default=None, max_length=64)
     currency_code: str | None = Field(default=None, max_length=10)
     currency_symbol: str | None = Field(default=None, max_length=10)
+    # Replenishment. Bounded rather than open: a lead time of a year or a review
+    # period of zero are not policies, they are typos, and both would silently
+    # produce reorder points nobody could explain.
+    default_lead_time_days: int | None = Field(default=None, ge=1, le=180)
+    safety_stock_days: int | None = Field(default=None, ge=0, le=180)
+    reorder_review_days: int | None = Field(default=None, ge=1, le=180)
 
 
 class CompanySettingsOut(BaseModel):
@@ -65,6 +71,9 @@ class CompanySettingsOut(BaseModel):
     timezone: str
     currency_code: str
     currency_symbol: str
+    default_lead_time_days: int
+    safety_stock_days: int
+    reorder_review_days: int
 
 
 # --- Timezone reference (for the settings control panel picker) ---

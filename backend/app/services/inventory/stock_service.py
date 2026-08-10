@@ -441,13 +441,36 @@ class StockService:
         ]
 
     async def reorder_suggestions(self) -> list["ReorderSuggestionOut"]:
-        """Active products worth reordering: out of stock, or at/below their minimum.
+        """Active products worth reordering, judged against demand rather than a
+        typed threshold.
+
+        The old rule was `stock <= min_stock_level`, and on the seeded database it
+        matched nothing at all: 329 of 1,060 products carry a minimum of zero, so
+        their first warning arrived once the shelf was already empty — by which
+        point, in food distribution, the order has gone to a competitor.
+
+        Now every active product is measured against its own reorder point, computed
+        from how fast it actually sells and how long its supplier takes. Products
+        without enough sales history keep the hand-entered minimum, and say so.
 
         Deliberately an OUTER join from products: an inner join on batches — the
         way `stock_levels` works — hides products with no stock at all, which are
         exactly the ones most in need of ordering.
         """
         from app.api.schemas.purchases import ReorderSuggestionOut
+        from app.services.inventory.demand_service import DemandService
+        from app.services.inventory.replenishment import (
+            ReplenishmentSettings,
+            reorder_for,
+        )
+        from app.services.settings.settings_service import SettingsService
+
+        company = await SettingsService(self.session).get_company_settings()
+        settings = ReplenishmentSettings(
+            lead_time_days=company.default_lead_time_days,
+            safety_stock_days=company.safety_stock_days,
+            review_days=company.reorder_review_days,
+        )
 
         stock = func.coalesce(func.sum(ProductBatch.quantity), 0).label("stock")
         stmt = (
@@ -471,10 +494,29 @@ class StockService:
                 Product.base_unit_name,
                 Product.min_stock_level,
             )
-            .having(stock <= Product.min_stock_level)
             .order_by(stock, Product.name)
         )
-        rows = (await self.session.execute(stmt)).all()
+        all_rows = (await self.session.execute(stmt)).all()
+        if not all_rows:
+            return []
+
+        demands = await DemandService(self.session).for_products(
+            [row[0] for row in all_rows],
+            default_lead_time_days=settings.lead_time_days,
+        )
+
+        # The filter moves out of SQL because the threshold is now per product and
+        # computed. Cheap: it is one pass over the catalogue, already in memory.
+        rows = []
+        plans = {}
+        for row in all_rows:
+            product_id, _, _, _, min_level, on_hand = row
+            plan = reorder_for(
+                demands[product_id], Decimal(str(on_hand)), min_level, settings
+            )
+            if Decimal(str(on_hand)) <= plan.reorder_point and plan.suggested_quantity > 0:
+                rows.append(row)
+                plans[product_id] = plan
         if not rows:
             return []
 
@@ -502,6 +544,13 @@ class StockService:
                 shortfall=max(row[4] - Decimal(str(row[5])), Decimal("0")),
                 out_of_stock=Decimal(str(row[5])) <= 0,
                 last_unit_cost=last_cost.get(row[0]),
+                reorder_point=plans[row[0]].reorder_point,
+                suggested_quantity=plans[row[0]].suggested_quantity,
+                computed=plans[row[0]].computed,
+                basis=plans[row[0]].basis,
+                capped_by_expiry=plans[row[0]].capped_by_expiry,
+                daily_rate=demands[row[0]].daily_rate,
+                lead_time_days=demands[row[0]].lead_time_days,
             )
             for row in rows
         ]

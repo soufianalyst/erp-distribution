@@ -19,12 +19,15 @@ class SupplierCreate(BaseModel):
     phone: str | None = Field(default=None, max_length=30)
     address: str | None = Field(default=None, max_length=200)
     opening_balance: Decimal = Field(default=Decimal("0"), ge=0)
+    # Days from order to delivery. Empty falls back to the company default.
+    lead_time_days: int | None = Field(default=None, ge=1, le=180)
 
 
 class SupplierUpdate(BaseModel):
     name: str | None = Field(default=None, min_length=2, max_length=150)
     phone: str | None = Field(default=None, max_length=30)
     address: str | None = Field(default=None, max_length=200)
+    lead_time_days: int | None = Field(default=None, ge=1, le=180)
     is_active: bool | None = None
 
 
@@ -36,6 +39,7 @@ class SupplierOut(BaseModel):
     phone: str | None
     address: str | None
     opening_balance: Decimal
+    lead_time_days: int | None
     is_active: bool
 
 
@@ -220,6 +224,23 @@ class ReorderSuggestionOut(BaseModel):
     out_of_stock: bool
     # Most recent purchase cost seen for this product, to pre-fill an order line.
     last_unit_cost: Decimal | None
+
+    # --- Why this product is on the list, and what to do about it ---
+    # The level at which it should be reordered. Computed from demand where there is
+    # enough history; the hand-entered `min_stock_level` otherwise.
+    reorder_point: Decimal
+    # How much to order: enough to last until the next review, trimmed to what will
+    # sell before it expires.
+    suggested_quantity: Decimal
+    # False means `reorder_point` is the typed minimum standing in for a calculation
+    # that could not honestly be made.
+    computed: bool
+    # Arabic one-liner explaining the figures, shown beside them. A suggestion a
+    # buyer cannot interrogate is one they learn to ignore.
+    basis: str
+    capped_by_expiry: bool
+    daily_rate: Decimal
+    lead_time_days: int
 
 
 # --- Purchase returns ---

@@ -77,6 +77,28 @@ class CompanySettings(Base):
         Numeric(14, 2), nullable=False, default=Decimal("50.00"), server_default="50.00"
     )
 
+    # --- Replenishment ---
+    # How long a supplier typically takes between an order and the goods arriving.
+    # Stated rather than measured: this system has no purchase-order history to
+    # learn from, and a lead time guessed from nothing would be worse than one a
+    # buyer typed knowing their own suppliers. Overridable per supplier.
+    default_lead_time_days: Mapped[int] = mapped_column(
+        nullable=False, default=7, server_default="7"
+    )
+    # Extra days of cover carried against demand that arrives faster than usual.
+    # Expressed in days rather than as a statistical service level because a
+    # warehouse manager can argue with "one week of stock" and cannot argue with
+    # z=1.65 — and because with demand this intermittent, a normal-curve safety
+    # stock would be false precision.
+    safety_stock_days: Mapped[int] = mapped_column(
+        nullable=False, default=7, server_default="7"
+    )
+    # How often purchasing actually places orders. An order must cover demand until
+    # the next one is placed, not merely until this one lands.
+    reorder_review_days: Mapped[int] = mapped_column(
+        nullable=False, default=14, server_default="14"
+    )
+
     @property
     def country_name(self) -> str | None:
         """Arabic country name resolved from the stored code."""

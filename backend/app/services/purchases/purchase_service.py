@@ -81,6 +81,7 @@ class PurchaseService:
             phone=data.phone,
             address=data.address,
             opening_balance=data.opening_balance,
+            lead_time_days=data.lead_time_days,
         )
         self.session.add(supplier)
         await self.session.commit()
@@ -98,6 +99,8 @@ class PurchaseService:
             supplier.phone = data.phone
         if data.address is not None:
             supplier.address = data.address
+        if data.lead_time_days is not None:
+            supplier.lead_time_days = data.lead_time_days
         if data.is_active is not None:
             supplier.is_active = data.is_active
         await self.session.commit()

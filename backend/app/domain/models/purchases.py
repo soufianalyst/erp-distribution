@@ -54,6 +54,12 @@ class Supplier(Base):
     opening_balance: Mapped[Decimal] = mapped_column(
         Numeric(14, 2), nullable=False, default=Decimal("0")
     )
+    # Days between placing an order with this supplier and the goods arriving.
+    # NULL falls back to the company default. Kept per supplier because in food
+    # distribution the spread is the whole point: a local dairy delivers tomorrow
+    # and imported rice takes a month, and one averaged figure would order the
+    # dairy far too early and the rice far too late.
+    lead_time_days: Mapped[int | None] = mapped_column(nullable=True)
     is_active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=func.now()

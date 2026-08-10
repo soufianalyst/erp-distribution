@@ -363,20 +363,34 @@ function ReorderWorklist({ onAdd, addedIds }) {
               sortValue: (s) => Number(s.current_stock),
             },
             {
-              key: "min_stock_level",
-              label: "الحد الأدنى",
-              render: (s) => qty(s.min_stock_level),
-              sortValue: (s) => Number(s.min_stock_level),
-            },
-            {
-              key: "shortfall",
-              label: "النقص",
+              key: "reorder_point",
+              label: "نقطة الطلب",
               render: (s) => (
-                <span className="font-bold text-rose-700 dark:text-rose-400">
-                  {qty(s.shortfall)}
+                <span className="whitespace-nowrap">
+                  {qty(s.reorder_point)}{" "}
+                  {s.computed ? (
+                    <Badge tone="green">محسوبة</Badge>
+                  ) : (
+                    <Badge tone="slate">يدوية</Badge>
+                  )}
                 </span>
               ),
-              sortValue: (s) => Number(s.shortfall),
+              sortValue: (s) => Number(s.reorder_point),
+            },
+            {
+              key: "suggested_quantity",
+              label: "الكمية المقترحة",
+              render: (s) => (
+                <span className="font-bold text-emerald-700 dark:text-emerald-400">
+                  {qty(s.suggested_quantity)}
+                  {s.capped_by_expiry && (
+                    <span className="ms-2">
+                      <Badge tone="amber">محدودة بالصلاحية</Badge>
+                    </span>
+                  )}
+                </span>
+              ),
+              sortValue: (s) => Number(s.suggested_quantity),
             },
             {
               key: "actions",
@@ -392,6 +406,14 @@ function ReorderWorklist({ onAdd, addedIds }) {
           rows={rows}
           keyField="product_id"
           searchPlaceholder="بحث في الأصناف المقترحة..."
+          renderDetail={(s) => (
+            <div className="text-sm text-slate-600 dark:text-slate-400">
+              {/* The arithmetic in words. A buyer who cannot see why the number is
+                  what it is has no way to disagree with it, and a suggestion you
+                  cannot disagree with is one you stop reading. */}
+              {s.basis}
+            </div>
+          )}
         />
       )}
     </div>
@@ -425,10 +447,12 @@ function PurchaseOrderForm({ suppliers, warehouses, products, order, onDone }) {
   const setLine = (index, key, value) =>
     setLines(lines.map((l, i) => (i === index ? { ...l, [key]: value } : l)));
 
-  // Pull a suggested item onto the order: shortfall as the quantity (falling back
-  // to the minimum level for items with no minimum set) and its last known cost.
+  // Pull a suggested item onto the order. The quantity is the computed one — enough
+  // to last until the next review, already trimmed to what will sell before it
+  // expires — falling back to the plain shortfall if there was nothing to compute.
   const addSuggestion = (s) => {
-    const suggested = Number(s.shortfall) > 0 ? s.shortfall : s.min_stock_level;
+    const suggested =
+      Number(s.suggested_quantity) > 0 ? s.suggested_quantity : s.shortfall;
     const line = {
       product_id: String(s.product_id),
       quantity: Number(suggested) > 0 ? String(suggested) : "",
