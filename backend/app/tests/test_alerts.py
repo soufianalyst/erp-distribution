@@ -8,6 +8,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.domain.models.inventory import ProductBatch
 
+from app.tests.test_portal_account import ready_portal_customer
+from app.tests.test_sales import setup_stocked_catalog
 from app.tests.conftest import (
     TEST_ADMIN_PASSWORD,
     TEST_SALES_PASSWORD,
@@ -456,3 +458,102 @@ class TestAlertOrderingAndAccess:
     async def test_alerts_require_login(self, client: AsyncClient) -> None:
         response = await client.get("/api/v1/alerts")
         assert response.status_code == 401
+
+
+class TestNewCustomerOrdersReachTheDashboard:
+    """A shop waiting on us, as opposed to housekeeping we owe ourselves.
+
+    Every other alert here is work the company owes itself — stock to count, a
+    round to close. This one is a customer standing at their counter wondering
+    whether their order went through, which is why waiting time drives the
+    severity rather than the count: one order from yesterday is a worse problem
+    than five that arrived a minute ago.
+    """
+
+    async def test_a_fresh_order_shows_up_as_a_warning(
+        self, client: AsyncClient
+    ) -> None:
+        admin = await login(client, "admin", TEST_ADMIN_PASSWORD)
+        _, product = await setup_stocked_catalog(client, admin)
+        _, portal = await ready_portal_customer(
+            client, admin, "بقالة التنبيه", "0509000001")
+        placed = await client.post("/api/v1/portal/orders", headers=portal, json={
+            "lines": [{"product_id": product["id"], "quantity": "2"}],
+            "fulfillment": "delivery",
+        })
+        assert placed.status_code == 201, placed.text
+
+        alerts = (await client.get("/api/v1/alerts", headers=admin)).json()["data"]
+        group = next(
+            g for g in alerts["groups"] if g["key"] == "pending_customer_orders")
+        assert group["count"] == 1
+        assert group["severity"] == "warning"
+        assert group["route"] == "/customer-requests"
+        assert group["items"][0]["label"] == "بقالة التنبيه"
+
+    async def test_an_order_left_overnight_becomes_critical(
+        self, client: AsyncClient, db_session
+    ) -> None:
+        """The escalation is the point. Without it a request that nobody answered
+        yesterday looks exactly like one that arrived while you were reading."""
+        from datetime import datetime, timedelta, timezone
+
+        from app.domain.models.sales import CustomerOrder
+
+        admin = await login(client, "admin", TEST_ADMIN_PASSWORD)
+        _, product = await setup_stocked_catalog(client, admin)
+        _, portal = await ready_portal_customer(
+            client, admin, "بقالة المتأخرة", "0509000002")
+        placed = await client.post("/api/v1/portal/orders", headers=portal, json={
+            "lines": [{"product_id": product["id"], "quantity": "2"}],
+            "fulfillment": "pickup",
+        })
+        order = await db_session.get(CustomerOrder, placed.json()["data"]["id"])
+        order.created_at = datetime.now(timezone.utc) - timedelta(hours=20)
+        await db_session.commit()
+
+        alerts = (await client.get("/api/v1/alerts", headers=admin)).json()["data"]
+        group = next(
+            g for g in alerts["groups"] if g["key"] == "pending_customer_orders")
+        assert group["severity"] == "critical"
+        assert "ساعة" in group["hint"]
+        assert alerts["critical_count"] >= 1
+
+    async def test_an_answered_order_stops_alerting(self, client: AsyncClient) -> None:
+        admin = await login(client, "admin", TEST_ADMIN_PASSWORD)
+        _, product = await setup_stocked_catalog(client, admin)
+        _, portal = await ready_portal_customer(
+            client, admin, "بقالة المعتمدة", "0509000003")
+        placed = await client.post("/api/v1/portal/orders", headers=portal, json={
+            "lines": [{"product_id": product["id"], "quantity": "2"}],
+            "fulfillment": "pickup",
+        })
+        order_id = placed.json()["data"]["id"]
+        approved = await client.post(
+            f"/api/v1/customer-orders/{order_id}/approve", headers=admin)
+        assert approved.status_code == 200, approved.text
+
+        alerts = (await client.get("/api/v1/alerts", headers=admin)).json()["data"]
+        assert not any(
+            g["key"] == "pending_customer_orders" for g in alerts["groups"]
+        ), "التنبيه بقي بعد الرد على الطلب"
+
+    async def test_a_rep_is_not_told_about_another_reps_customer(
+        self, client: AsyncClient
+    ) -> None:
+        """The alert names shops. Scoped exactly like the review queue, or it both
+        creates work a rep cannot do and discloses who else we sell to."""
+        admin = await login(client, "admin", TEST_ADMIN_PASSWORD)
+        _, product = await setup_stocked_catalog(client, admin)
+        _, portal = await ready_portal_customer(
+            client, admin, "بقالة مندوب آخر", "0509000004")
+        await client.post("/api/v1/portal/orders", headers=portal, json={
+            "lines": [{"product_id": product["id"], "quantity": "2"}],
+            "fulfillment": "pickup",
+        })
+
+        salesman = await login(client, "salesman", TEST_SALES_PASSWORD)
+        alerts = (await client.get("/api/v1/alerts", headers=salesman)).json()["data"]
+        assert not any(
+            g["key"] == "pending_customer_orders" for g in alerts["groups"]
+        ), "المندوب أُشعر بطلب عميل ليس من عملائه"

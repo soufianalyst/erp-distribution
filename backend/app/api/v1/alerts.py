@@ -11,7 +11,6 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.api.deps import get_current_user
 from app.api.schemas.analytics import AlertsOut
 from app.api.schemas.common import APIResponse
-from app.core.permissions import effective_permissions
 from app.db.session import get_db
 from app.domain.models.user import User
 from app.services.analytics.alerts_service import AlertsService
@@ -25,5 +24,5 @@ async def list_alerts(
     current_user: User = Depends(get_current_user),
 ) -> APIResponse[AlertsOut]:
     """التنبيهات التي تحتاج إجراءً الآن — كل مستخدم يرى ما يستطيع التعامل معه فقط."""
-    alerts = await AlertsService(db).alerts(effective_permissions(current_user))
+    alerts = await AlertsService(db).alerts(current_user)
     return APIResponse(data=alerts)

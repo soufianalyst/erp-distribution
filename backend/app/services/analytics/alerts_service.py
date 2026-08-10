@@ -9,7 +9,7 @@ Each group is gated by the permission needed to *act* on it, so a salesman is
 never shown purchase-order or warehouse work they cannot do anything about.
 """
 
-from datetime import date
+from datetime import date, datetime, timezone
 from decimal import Decimal
 
 from sqlalchemy import select
@@ -18,7 +18,9 @@ from sqlalchemy.orm import selectinload
 
 from app.api.schemas.analytics import AlertGroupOut, AlertItemOut, AlertsOut
 from app.core import arabic
+from app.core.permissions import effective_permissions, has_permission
 from app.domain.models.inventory import Stocktake, StocktakeStatus, Warehouse
+from app.domain.models.sales import Customer, CustomerOrder, CustomerOrderStatus
 from app.domain.models.purchases import (
     PurchaseOrder,
     PurchaseOrderStatus,
@@ -27,11 +29,18 @@ from app.domain.models.purchases import (
 from app.services.analytics.analytics_service import AnalyticsService
 from app.services.inventory.stock_service import StockService
 from app.services.sales.round_settlement_service import RoundSettlementService
+from app.domain.models.user import User
 
 # How many examples to carry per group; the dashboard shows a preview, not a report.
 PREVIEW_LIMIT = 5
 # Batches inside this window count as expiring soon (already-expired is separate).
 EXPIRY_WINDOW_DAYS = 30
+
+# How long a customer's order may sit unanswered before it stops being "new" and
+# becomes a problem. Four hours is roughly half a working day: long enough that a
+# busy morning does not raise a false alarm, short enough that nothing waits
+# overnight without shouting about it.
+PENDING_ORDER_CRITICAL_HOURS = 4
 
 
 class AlertsService:
@@ -41,8 +50,16 @@ class AlertsService:
         self.analytics = AnalyticsService(session)
         self.settlements = RoundSettlementService(session)
 
-    async def alerts(self, permissions: set[str]) -> AlertsOut:
-        """Every alert the caller is able to act on, worst first."""
+    async def alerts(self, user: User) -> AlertsOut:
+        """Every alert the caller is able to act on, worst first.
+
+        Takes the user rather than a permission set because some alerts are scoped
+        to them as well as gated by them: a salesman's order queue is his own
+        customers', not the company's. Passing permissions alone made that
+        impossible to express, and optional scoping is the kind of argument someone
+        eventually forgets to pass.
+        """
+        permissions = effective_permissions(user)
         groups: list[AlertGroupOut] = []
 
         if "stock.view" in permissions:
@@ -56,6 +73,8 @@ class AlertsService:
             groups.extend(await self._unsettled_round_group())
         if "customers.view" in permissions:
             groups.extend(await self._credit_group())
+        if "sales.orders_review" in permissions:
+            groups.extend(await self._pending_orders_group(user))
 
         # Critical first, then by how many items are waiting.
         severity_rank = {"critical": 0, "warning": 1, "info": 2}
@@ -66,6 +85,95 @@ class AlertsService:
             warning_count=sum(1 for g in groups if g.severity == "warning"),
             groups=groups,
         )
+
+    async def _pending_orders_group(self, user: User) -> list[AlertGroupOut]:
+        """Orders a shop has sent that nobody has answered yet.
+
+        The only alert here that represents a customer actively waiting on us
+        rather than housekeeping we owe ourselves. A shop that ordered through the
+        portal is standing at their counter wondering whether it went through; every
+        hour it sits unanswered is an hour they might spend phoning a competitor.
+
+        That is why waiting time drives the severity rather than the count. One
+        order from this morning is routine; one order from yesterday is a problem,
+        and a single unanswered request is worse than five that arrived a minute
+        ago.
+
+        Scoped to the rep's own customers, matching the review queue exactly — an
+        alert about work someone cannot do is noise, and it names shops they have no
+        business seeing.
+        """
+        query = (
+            select(CustomerOrder, Customer.name)
+            .join(Customer, Customer.id == CustomerOrder.customer_id)
+            .where(CustomerOrder.status == CustomerOrderStatus.PENDING)
+            .order_by(CustomerOrder.created_at)
+        )
+        if not has_permission(user, "sales.all_customers"):
+            query = query.where(Customer.salesman_id == user.id)
+
+        rows = (await self.session.execute(query)).all()
+        if not rows:
+            return []
+
+        now = datetime.now(timezone.utc)
+        oldest, _ = rows[0]
+        waited = now - self._as_utc(oldest.created_at)
+        hours = waited.total_seconds() / 3600
+
+        overdue = hours >= PENDING_ORDER_CRITICAL_HOURS
+        return [
+            AlertGroupOut(
+                key="pending_customer_orders",
+                label=(
+                    "طلبات عملاء لم يُرد عليها بعد"
+                    if overdue
+                    else "طلبات جديدة من بوابة العملاء"
+                ),
+                severity="critical" if overdue else "warning",
+                count=len(rows),
+                hint=(
+                    f"أقدم طلب ينتظر منذ {self._waited(waited)} — راجعه الآن قبل أن "
+                    "يطلب العميل من غيرنا."
+                    if overdue
+                    else "راجع الطلب واعتمده أو أصدر فاتورته."
+                ),
+                route="/customer-requests",
+                items=[
+                    AlertItemOut(
+                        label=name,
+                        detail=(
+                            "توصيل"
+                            if order.fulfillment.value == "delivery"
+                            else "استلام من المستودع"
+                        ),
+                        value=f"منذ {self._waited(now - self._as_utc(order.created_at))}",
+                    )
+                    for order, name in rows[:PREVIEW_LIMIT]
+                ],
+            )
+        ]
+
+    @staticmethod
+    def _as_utc(moment: datetime) -> datetime:
+        """SQLite hands back naive datetimes for `DateTime(timezone=True)`.
+
+        Postgres returns aware ones, so subtracting `now()` works in production and
+        raises in the test suite — a difference that only shows up where it is least
+        convenient to discover.
+        """
+        return moment if moment.tzinfo else moment.replace(tzinfo=timezone.utc)
+
+    @staticmethod
+    def _waited(delta) -> str:
+        """How long, in words a person would use."""
+        minutes = int(delta.total_seconds() // 60)
+        if minutes < 60:
+            return f"{max(minutes, 1)} دقيقة"
+        hours = minutes // 60
+        if hours < 24:
+            return f"{hours} ساعة"
+        return f"{hours // 24} يوم"
 
     async def _expiry_groups(self) -> list[AlertGroupOut]:
         """Expired stock is a loss already on the shelf; near-expiry is still sellable."""
