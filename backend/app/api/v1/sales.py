@@ -27,6 +27,7 @@ from app.api.schemas.sales import (
     CustomerPaymentOut,
     CustomerStatementOut,
     CustomerUpdate,
+    InvoiceTimelineOut,
     QuotationConvertIn,
     SalesInvoiceCreate,
     SalesInvoiceOut,
@@ -39,6 +40,7 @@ from app.db.session import get_db
 from app.domain.models.user import User
 from app.domain.models.sales import CreditResolution, RoundSettlementStatus
 from app.services.sales.field_sync_service import FieldSyncService
+from app.services.sales.invoice_timeline_service import InvoiceTimelineService
 from app.services.sales.round_settlement_service import RoundSettlementService
 from app.services.sales.sales_service import SalesService
 
@@ -207,6 +209,27 @@ async def get_invoice(
     customer = await service.get_customer(invoice.customer_id)
     service.ensure_customer_access(current_user, customer)
     return APIResponse(data=SalesInvoiceOut.model_validate(invoice))
+
+
+@router.get(
+    "/invoices/{invoice_id}/timeline",
+    response_model=APIResponse[InvoiceTimelineOut],
+)
+async def invoice_timeline(
+    invoice_id: int,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(sales_view),
+) -> APIResponse[InvoiceTimelineOut]:
+    """تتبّع الفاتورة: أين وصلت من الإصدار حتى التسليم أو الاستلام.
+
+    نفس صلاحيات عرض الفاتورة: المندوب يتتبّع فواتير عملائه فقط.
+    """
+    service = SalesService(db)
+    invoice = await service.get_invoice(invoice_id)
+    customer = await service.get_customer(invoice.customer_id)
+    service.ensure_customer_access(current_user, customer)
+    timeline = await InvoiceTimelineService(db).timeline(invoice)
+    return APIResponse(data=InvoiceTimelineOut.model_validate(timeline))
 
 
 # --- Returns ---

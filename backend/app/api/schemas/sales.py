@@ -537,3 +537,32 @@ class RoundSettlementOut(BaseModel):
     opened_at: datetime
     settled_at: datetime | None
     cancelled_at: datetime | None
+
+# --- Invoice tracker ---
+class InvoiceStepOut(BaseModel):
+    """One stage of an invoice's journey, as the tracker draws it."""
+
+    key: str
+    label: str
+    # done = behind us, current = where it is now, pending = ahead,
+    # failed = stopped here and needs a human.
+    state: Literal["done", "current", "pending", "failed"]
+    at: datetime | None
+    detail: str | None
+
+
+class InvoiceTimelineOut(BaseModel):
+    invoice_id: int
+    reference: str
+    customer_name: str
+    fulfillment: Literal["pickup", "delivery"]
+    # Driver or vehicle for a delivery; "collected at the warehouse" otherwise.
+    shipped_via: str
+    # The step the invoice is sitting on, for the heading.
+    status_label: str
+    # Trip date for a delivery; nothing to promise for a counter collection.
+    expected: date | None
+    total: Decimal
+    amount_due: Decimal
+    returned_total: Decimal
+    steps: list[InvoiceStepOut]

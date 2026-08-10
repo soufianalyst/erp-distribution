@@ -22,6 +22,7 @@ import {
   useUnsavedGuard,
 } from "../components/Ui";
 import { useAuth } from "../context/AuthContext";
+import InvoiceTracker from "../components/InvoiceTracker";
 import useFetch from "../hooks/useFetch";
 import api, { apiMessage } from "../services/api";
 
@@ -1439,6 +1440,10 @@ export default function SalesPage() {
       >
         {viewing && (
           <div className="space-y-4">
+            {/* Where the invoice has got to, before its contents. Someone opening
+                an invoice usually wants to know what is happening to it, not to
+                re-read the lines they typed. */}
+            <InvoiceTracker invoiceId={viewing.id} />
             <Table
               columns={[
                 {
