@@ -19,6 +19,9 @@ import {
   money,
 } from "../components/Ui";
 import { useAuth } from "../context/AuthContext";
+
+// Matches the shared Table's own page size, so the server slice and the pager agree.
+const PAGE_SIZE = 15;
 import useFetch from "../hooks/useFetch";
 import api, { apiMessage } from "../services/api";
 
@@ -185,9 +188,20 @@ export default function ProductsPage() {
   const { can } = useAuth();
   const [search, setSearch] = useState("");
   const [query, setQuery] = useState("");
+  const [page, setPage] = useState(1);
+  // Fifteen rows from the server instead of the whole catalogue. This endpoint used
+  // to return all 1,060 products — 326 KB — and ignore `limit` entirely, on the
+  // screen a storekeeper opens most often.
   const { data, loading, error, reload } = useFetch(
-    () => api.get("/inventory/products", { params: query ? { search: query } : {} }),
-    [query]
+    () =>
+      api.get("/inventory/products", {
+        params: {
+          ...(query ? { search: query } : {}),
+          limit: PAGE_SIZE,
+          offset: (page - 1) * PAGE_SIZE,
+        },
+      }),
+    [query, page]
   );
   const warehouses = useFetch(() => api.get("/inventory/warehouses"));
 
@@ -246,6 +260,7 @@ export default function ProductsPage() {
           onSubmit={(e) => {
             e.preventDefault();
             setQuery(search);
+            setPage(1);
           }}
         >
           <Input
@@ -321,7 +336,12 @@ export default function ProductsPage() {
                 ),
               },
             ]}
-            rows={data}
+            rows={data?.items ?? []}
+            serverPaged={{
+              total: data?.total ?? 0,
+              page,
+              onPageChange: setPage,
+            }}
           />
         )}
       </Card>

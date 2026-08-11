@@ -17,6 +17,7 @@ from app.api.schemas.inventory import (
     BatchOut,
     NearExpiryOut,
     ProductCreate,
+    ProductLookupOut,
     ProductOut,
     ProductUpdate,
     StockAdjustmentCancel,
@@ -34,6 +35,7 @@ from app.api.schemas.inventory import (
     WarehouseOut,
     WarehouseUpdate,
 )
+from app.api.schemas.pagination import Page, PageParams, paginate
 from app.api.schemas.purchases import ReorderSuggestionOut
 from app.db.session import get_db
 from app.services.inventory.offer_service import OfferService
@@ -121,16 +123,45 @@ async def create_product(
 
 @router.get(
     "/products",
-    response_model=APIResponse[list[ProductOut]],
+    response_model=APIResponse[Page[ProductOut]],
     dependencies=[products_view],
 )
 async def list_products(
     search: str | None = Query(default=None, description="بحث بالاسم أو رمز الصنف أو الباركود"),
+    page: PageParams = Depends(),
     db: AsyncSession = Depends(get_db),
-) -> APIResponse[list[ProductOut]]:
-    """عرض قائمة الأصناف مع إمكانية البحث."""
-    products = await ProductService(db).list_products(search)
-    return APIResponse(data=[ProductOut.model_validate(p) for p in products])
+) -> APIResponse[Page[ProductOut]]:
+    """صفحة من الأصناف مع بحث على الخادم.
+
+    كانت ترجع الكتالوج كاملاً — ١٠٦٠ صنفاً و٣٢٦ كيلوبايت في كل طلب، وكان الوسيط `limit`
+    يُتجاهل بصمت. من يحتاج الكتالوج كاملاً فعلاً (تطبيق المندوب دون إنترنت، والتقارير
+    التي تحوّل المعرّف إلى اسم) فليستخدم `/products/lookup` وهي أخف.
+    """
+    items, total = await paginate(db, ProductService(db).list_query(search), page)
+    return APIResponse(
+        data=Page(
+            items=[ProductOut.model_validate(p) for p in items],
+            total=total, limit=page.limit, offset=page.offset,
+        )
+    )
+
+
+@router.get(
+    "/products/lookup",
+    response_model=APIResponse[list[ProductLookupOut]],
+    dependencies=[products_view],
+)
+async def product_lookup(
+    db: AsyncSession = Depends(get_db),
+) -> APIResponse[list[ProductLookupOut]]:
+    """كل الأصناف الفعّالة، بأقل الحقول اللازمة للتسمية والتسعير.
+
+    غير مُصفّحة بقصد: من يستدعيها يحتاج الكتالوج كاملاً — تطبيق المندوب ليعمل دون
+    إنترنت، أو تقرير يحوّل معرّف صنف إلى اسمه. الصفحات التي تعرض قائمة تستخدم
+    `/products` المصفّحة.
+    """
+    products = await ProductService(db).list_products(active_only=True)
+    return APIResponse(data=[ProductLookupOut.model_validate(p) for p in products])
 
 
 @router.get(

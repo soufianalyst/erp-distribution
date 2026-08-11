@@ -127,9 +127,16 @@ class ProductService:
         await self.session.delete(product)
         await self.session.commit()
 
-    async def list_products(self, search: str | None = None) -> list[Product]:
-        """Products, optionally filtered by a search across name, SKU and barcode."""
+    def list_query(self, search: str | None = None, active_only: bool = False):
+        """The product query, unexecuted, so the caller can page it.
+
+        Returned rather than executed because the list screen wants fifteen rows and
+        the offline sync wants all of them. Two copies of this WHERE clause would mean
+        a search that behaves differently depending on which screen typed it.
+        """
         stmt = select(Product).options(selectinload(Product.units)).order_by(Product.id)
+        if active_only:
+            stmt = stmt.where(Product.is_active.is_(True))
         if search:
             pattern = f"%{search}%"
             stmt = stmt.where(
@@ -137,5 +144,11 @@ class ProductService:
                 | Product.sku.ilike(pattern)
                 | Product.barcode.ilike(pattern)
             )
-        result = await self.session.execute(stmt)
+        return stmt
+
+    async def list_products(
+        self, search: str | None = None, active_only: bool = False
+    ) -> list[Product]:
+        """Every matching product. Callers that show a list should page instead."""
+        result = await self.session.execute(self.list_query(search, active_only))
         return list(result.scalars().all())

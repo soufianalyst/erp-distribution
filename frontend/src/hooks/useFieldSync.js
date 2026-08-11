@@ -48,7 +48,7 @@ export default function useFieldSync() {
     try {
       const [customers, products, van, taxRates] = await Promise.all([
         api.get("/sales/customers"),
-        api.get("/inventory/products"),
+        api.get("/inventory/products/lookup"),
         api.get("/sales/field/van").catch(() => null),
         api.get("/settings/tax-rates", {
           params: { active_only: true, in_scope_only: true },

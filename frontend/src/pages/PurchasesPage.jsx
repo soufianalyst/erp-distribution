@@ -948,7 +948,7 @@ export default function PurchasesPage() {
   const returns = useFetch(() => api.get("/purchases/returns"));
   const suppliers = useFetch(() => api.get("/purchases/suppliers"));
   const warehouses = useFetch(() => api.get("/inventory/warehouses"));
-  const products = useFetch(() => api.get("/inventory/products"));
+  const products = useFetch(() => api.get("/inventory/products/lookup"));
   const taxRates = useFetch(() => api.get("/settings/tax-rates", { params: { active_only: true, in_scope_only: true } }));
 
   if (suppliers.loading || warehouses.loading || products.loading || taxRates.loading) {

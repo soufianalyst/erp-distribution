@@ -9,7 +9,7 @@ export default function PrintInvoicePage() {
   const navigate = useNavigate();
   const invoice = useFetch(() => api.get(`/sales/invoices/${invoiceId}`), [invoiceId]);
   const customers = useFetch(() => api.get("/sales/customers"));
-  const products = useFetch(() => api.get("/inventory/products"));
+  const products = useFetch(() => api.get("/inventory/products/lookup"));
   const warehouses = useFetch(() => api.get("/inventory/warehouses"));
   const company = useFetch(() => api.get("/settings/company"));
 

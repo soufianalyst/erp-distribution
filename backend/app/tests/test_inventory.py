@@ -138,7 +138,11 @@ class TestCatalog:
             "/api/v1/inventory/products", headers=headers, params={"search": "بسمتي"}
         )
         assert response.status_code == 200
-        assert len(response.json()["data"]) == 1
+        page = response.json()["data"]
+        # `data` is a page, not a list: the search runs on the server, so `total` is
+        # the number of matches in the catalogue rather than on this screen.
+        assert len(page["items"]) == 1
+        assert page["total"] == 1
 
     async def test_storekeeper_cannot_create_product(self, client: AsyncClient) -> None:
         headers = await login(client, "storekeeper", TEST_STORE_PASSWORD)
@@ -318,7 +322,7 @@ class TestBarcode:
             params={"search": "555444333"},
         )
         assert response.status_code == 200
-        assert len(response.json()["data"]) == 1
+        assert len(response.json()["data"]["items"]) == 1
 
 
 class TestProductDelete:
@@ -829,3 +833,127 @@ class TestVehicleWarehouses:
         assert van.status_code == 200, van.text
         assert van.json()["data"]["warehouse_id"] == van_id
         assert as_decimal(van.json()["data"]["lines"][0]["quantity"]) == Decimal("25")
+
+
+class TestTheCatalogueIsNotShippedWhole:
+    """The products list used to return all 1,060 rows and ignore `limit` entirely.
+
+    326 KB, on the screen a storekeeper opens most often, growing linearly with the
+    catalogue — at ten thousand products it would be 3 MB a page-load. It was missed
+    when the other lists were paged because it reads like reference data rather than a
+    transaction log, and the invoice pickers genuinely did want the whole thing.
+
+    So there are now two endpoints with two honest jobs, and these tests hold the line
+    between them: `/products` is a page, and `/products/lookup` is the deliberate
+    full-catalogue download for the offline salesman app and for reports that turn an
+    id into a name.
+    """
+
+    async def test_the_list_honours_limit_instead_of_ignoring_it(
+        self, client: AsyncClient
+    ) -> None:
+        headers = await login(client, "admin", TEST_ADMIN_PASSWORD)
+        warehouse_id = await create_warehouse(client, headers, "مخزن الصفحات")
+        for index in range(7):
+            await create_product(
+                client, headers, sku=f"PAGE-{index}", warehouse_id=warehouse_id)
+
+        response = await client.get(
+            "/api/v1/inventory/products", headers=headers, params={"limit": 3})
+        assert response.status_code == 200
+        page = response.json()["data"]
+        assert len(page["items"]) == 3
+        assert page["total"] == 7
+        assert page["limit"] == 3
+
+    async def test_the_second_page_holds_different_products(
+        self, client: AsyncClient
+    ) -> None:
+        """A limit that is obeyed but an offset that is not looks identical on page 1."""
+        headers = await login(client, "admin", TEST_ADMIN_PASSWORD)
+        warehouse_id = await create_warehouse(client, headers, "مخزن الإزاحة")
+        for index in range(6):
+            await create_product(
+                client, headers, sku=f"OFF-{index}", warehouse_id=warehouse_id)
+
+        first = (await client.get(
+            "/api/v1/inventory/products", headers=headers,
+            params={"limit": 3, "offset": 0})).json()["data"]["items"]
+        second = (await client.get(
+            "/api/v1/inventory/products", headers=headers,
+            params={"limit": 3, "offset": 3})).json()["data"]["items"]
+
+        assert {p["id"] for p in first}.isdisjoint({p["id"] for p in second})
+        assert len(second) == 3
+
+    async def test_search_runs_on_the_server_not_on_one_page(
+        self, client: AsyncClient
+    ) -> None:
+        """The trap that makes paging a list worse than not paging it.
+
+        Filtering in the browser searches whatever happens to be loaded. Against a
+        full array that is everything, and correct; against one page of fifteen it
+        silently searches fifteen rows of a thousand while looking exactly the same.
+        """
+        headers = await login(client, "admin", TEST_ADMIN_PASSWORD)
+        warehouse_id = await create_warehouse(client, headers, "مخزن البحث")
+        for index in range(20):
+            await create_product(
+                client, headers, sku=f"BULK-{index}", warehouse_id=warehouse_id)
+        await create_product(
+            client, headers, sku="NEEDLE-1", warehouse_id=warehouse_id)
+
+        # The needle is the last product created, so it is off page one by id order.
+        page_one = (await client.get(
+            "/api/v1/inventory/products", headers=headers,
+            params={"limit": 15})).json()["data"]["items"]
+        assert not any(p["sku"] == "NEEDLE-1" for p in page_one)
+
+        found = (await client.get(
+            "/api/v1/inventory/products", headers=headers,
+            params={"limit": 15, "search": "NEEDLE"})).json()["data"]
+        assert found["total"] == 1
+        assert found["items"][0]["sku"] == "NEEDLE-1"
+
+    async def test_the_lookup_is_lighter_than_the_full_product(
+        self, client: AsyncClient
+    ) -> None:
+        """It exists to be smaller; if it is not, it is just a second way to be slow."""
+        headers = await login(client, "admin", TEST_ADMIN_PASSWORD)
+        await create_product(client, headers, sku="LOOK-1")
+
+        lookup = (await client.get(
+            "/api/v1/inventory/products/lookup", headers=headers)).json()["data"]
+        full = (await client.get(
+            "/api/v1/inventory/products", headers=headers)).json()["data"]["items"]
+
+        assert lookup and full
+        assert set(lookup[0]) < set(full[0]), "lookup must be a strict subset"
+        # The fields a picker never reads are the ones worth dropping at a thousand rows.
+        assert "barcode" not in lookup[0]
+        assert "min_stock_level" not in lookup[0]
+        # But is_active must survive: the line forms filter on it, and a missing key
+        # is falsey in JavaScript, which would silently empty every picker.
+        assert lookup[0]["is_active"] is True
+
+    async def test_the_lookup_hides_discontinued_products(
+        self, client: AsyncClient
+    ) -> None:
+        headers = await login(client, "admin", TEST_ADMIN_PASSWORD)
+        warehouse_id = await create_warehouse(client, headers, "مخزن الموقوف")
+        product = await create_product(
+            client, headers, sku="GONE-1", warehouse_id=warehouse_id)
+        await client.patch(
+            f"/api/v1/inventory/products/{product['id']}",
+            headers=headers, json={"is_active": False})
+
+        lookup = (await client.get(
+            "/api/v1/inventory/products/lookup", headers=headers)).json()["data"]
+        assert not any(p["sku"] == "GONE-1" for p in lookup)
+
+        # Still on the management list, though — that screen is where you go to
+        # reactivate it, so hiding it there would make it unreachable.
+        listed = (await client.get(
+            "/api/v1/inventory/products", headers=headers,
+            params={"search": "GONE-1"})).json()["data"]["items"]
+        assert [p["sku"] for p in listed] == ["GONE-1"]

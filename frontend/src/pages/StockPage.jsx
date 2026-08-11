@@ -455,7 +455,7 @@ export default function StockPage() {
   const [sheet, setSheet] = useState(null);
   const [newCountWarehouse, setNewCountWarehouse] = useState("");
 
-  const products = useFetch(() => api.get("/inventory/products"));
+  const products = useFetch(() => api.get("/inventory/products/lookup"));
   const warehouses = useFetch(() => api.get("/inventory/warehouses"));
   const levels = useFetch(() => api.get("/inventory/stock/levels"));
   const nearExpiry = useFetch(() => api.get("/inventory/stock/near-expiry", { params: { days: 60 } }));

@@ -101,6 +101,33 @@ class ProductOut(BaseModel):
     units: list[ProductUnitOut]
 
 
+class ProductLookupOut(BaseModel):
+    """Just enough to name a product and price a line.
+
+    A separate, deliberately smaller shape for the two callers that really do need
+    every product at once — the offline salesman app, and reports that map an id to a
+    name. `ProductOut` carries the barcode, the stock minimum and the home warehouse,
+    none of which a name-and-price lookup uses, and at a thousand products those
+    unused fields are most of the payload.
+    """
+
+    model_config = ConfigDict(from_attributes=True)
+
+    id: int
+    sku: str
+    name: str
+    base_unit_name: str
+    wholesale_price: Decimal
+    half_wholesale_price: Decimal
+    retail_price: Decimal
+    # Kept even though the endpoint already returns only active products: the line
+    # forms filter on this field, and a missing `is_active` reads as falsey in
+    # JavaScript, which would silently empty every picker in the system.
+    is_active: bool
+    warehouse_id: int | None
+    units: list[ProductUnitOut]
+
+
 # --- Stock operations ---
 class StockReceiveRequest(BaseModel):
     product_id: int

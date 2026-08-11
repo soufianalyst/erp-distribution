@@ -215,7 +215,7 @@ export default function DashboardPage() {
       <NewOrdersBanner group={newOrders} />
 
       <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-4">
-        <Stat label="عدد الأصناف" value={products.data?.length ?? 0} />
+        <Stat label="عدد الأصناف" value={products.data?.total ?? 0} />
         <Stat label="أرصدة مخزنية نشطة" value={levels.data?.length ?? 0} />
         <Stat
           label="تنبيهات عاجلة"

@@ -123,7 +123,7 @@ class TestNothingIsWrittenUntilEverythingIsUnderstood:
         assert data["applied"] is False
         assert data["error_count"] == 0
         listed = (await client.get(
-            "/api/v1/inventory/products", headers=admin)).json()["data"]
+            "/api/v1/inventory/products", headers=admin)).json()["data"]["items"]
         assert not any(p["sku"] == "M-1" for p in listed)
 
     async def test_one_bad_row_rejects_the_whole_file(

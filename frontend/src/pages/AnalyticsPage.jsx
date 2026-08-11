@@ -155,7 +155,7 @@ export default function AnalyticsPage() {
   );
   // The slicer option lists. Products are picked by typing (there are over a
   // thousand); customers fit a dropdown.
-  const products = useFetch(() => api.get("/inventory/products"));
+  const products = useFetch(() => api.get("/inventory/products/lookup"));
   const customers = useFetch(() => api.get("/sales/customers"));
   const expiryRisk = useFetch(() => api.get("/analytics/inventory/expiry-risk"));
   const turnover = useFetch(() => api.get("/analytics/inventory/turnover"));
