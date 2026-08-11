@@ -2,6 +2,7 @@
 
 from datetime import date, datetime
 from decimal import Decimal
+from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -309,3 +310,80 @@ class ProductOfferOut(BaseModel):
     offer_price: Decimal | None = None
     unit_cost: Decimal | None = None
     below_cost: bool = False
+
+
+# --- Markdown plan ---
+class MarkdownBuyerOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    customer_id: int
+    name: str
+    phone: str | None
+    last_bought: date
+    units: Decimal
+
+
+class MarkdownProposalOut(BaseModel):
+    """One batch, and the single thing worth doing about it."""
+
+    model_config = ConfigDict(from_attributes=True)
+
+    batch_id: int
+    product_id: int
+    sku: str
+    name: str
+    batch_number: str
+    warehouse_name: str
+    expiry_date: date
+    days_left: int
+    quantity: Decimal
+    unit_cost: Decimal | None
+    stock_value: Decimal
+    daily_rate: Decimal
+    # Units still on the shelf on the expiry date at the current rate of sale.
+    surplus: Decimal
+    surplus_value: Decimal
+    # leave = clears on its own · markdown = a discount closes the gap ·
+    # push = has past buyers, so it is a call not a price ·
+    # write_off = no demand and no buyer; no discount reaches zero.
+    action: Literal["leave", "markdown", "push", "write_off"]
+    discount_percent: Decimal | None
+    price_before: Decimal | None
+    price_now: Decimal | None
+    recovery_value: Decimal
+    reason: str
+    buyers: list[MarkdownBuyerOut]
+    active_offer_percent: Decimal | None
+
+
+class MarkdownPlanOut(BaseModel):
+    horizon_days: int
+    # The elasticity behind every proposed depth, and whether it was learned from
+    # past discounts or assumed. A buyer deserves to know which.
+    elasticity: Decimal
+    elasticity_source: Literal["measured", "assumed"]
+    elasticity_observations: int
+    stock_at_risk: Decimal
+    surplus_value: Decimal
+    recoverable_value: Decimal
+    write_off_value: Decimal
+    items: list[MarkdownProposalOut]
+
+
+class MarkdownApplyIn(BaseModel):
+    """Turn chosen proposals into real offers.
+
+    Batch ids rather than a blanket "apply everything": the plan is advice, and a
+    human decides which lines they are willing to discount. Sending the ids back
+    also means a plan read ten minutes ago cannot silently discount a batch that
+    has since sold out.
+    """
+
+    batch_ids: list[int] = Field(min_length=1, max_length=200)
+
+
+class MarkdownApplyOut(BaseModel):
+    created: int
+    skipped: int
+    # Why each skipped batch was skipped, so nothing disappears without a word.
+    notes: list[str]

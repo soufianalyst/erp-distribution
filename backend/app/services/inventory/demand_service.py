@@ -76,6 +76,7 @@ class DemandService:
         *,
         default_lead_time_days: int,
         on: date | None = None,
+        window_days: int = WINDOW_DAYS,
     ) -> dict[int, Demand]:
         """Demand for every product, or just the ones asked for.
 
@@ -84,7 +85,13 @@ class DemandService:
         be a thousand round trips to answer one question.
         """
         today = on or date.today()
-        window_start = today - timedelta(days=WINDOW_DAYS)
+        # The window is a parameter because the right length depends on the
+        # question. A reorder point wants a year: it is a standing policy and
+        # benefits from every scrap of signal. An expiry decision wants a quarter,
+        # because what matters is whether this stock moves *now*, and a brisk
+        # spring should not vouch for a dead autumn. Same definition, one knob —
+        # two separately-written rate calculations would drift within a month.
+        window_start = today - timedelta(days=window_days)
 
         sold = await self._sales(product_ids, window_start, today)
         shelf_lives = await self._shelf_lives(product_ids)
@@ -112,7 +119,7 @@ class DemandService:
 
             demand[product_id] = Demand(
                 product_id=product_id,
-                daily_rate=(quantity / Decimal(WINDOW_DAYS)).quantize(THREE_PLACES),
+                daily_rate=(quantity / Decimal(window_days)).quantize(THREE_PLACES),
                 sale_days=sale_days,
                 total_quantity=quantity,
                 confidence=confidence,

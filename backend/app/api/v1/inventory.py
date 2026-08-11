@@ -1,11 +1,17 @@
 """Inventory endpoints: warehouses, products, and stock operations (receive/transfer/levels)."""
 
+from decimal import Decimal
+
 from fastapi import APIRouter, Depends, Query, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.deps import require_permissions
 from app.api.schemas.common import APIResponse
 from app.api.schemas.inventory import (
+    MarkdownApplyIn,
+    MarkdownApplyOut,
+    MarkdownPlanOut,
+    MarkdownProposalOut,
     ProductOfferCreate,
     ProductOfferOut,
     BatchOut,
@@ -34,6 +40,7 @@ from app.services.inventory.offer_service import OfferService
 from app.domain.models.inventory import StocktakeStatus
 from app.domain.models.user import User
 from app.services.inventory.product_service import ProductService
+from app.services.inventory.markdown_service import MarkdownService
 from app.services.inventory.stock_service import StockService
 from app.services.inventory.warehouse_service import WarehouseService
 
@@ -473,3 +480,86 @@ async def end_offer(
 ) -> APIResponse[ProductOfferOut]:
     """إيقاف العرض من الآن — لا يُحذف، حفاظاً على تفسير الفواتير السابقة."""
     return APIResponse(data=await OfferService(db).end(offer_id), message="تم إيقاف العرض.")
+
+
+# --- Markdown plan ---
+@router.get(
+    "/markdown-plan",
+    response_model=APIResponse[MarkdownPlanOut],
+    dependencies=[Depends(require_permissions("products.offers"))],
+)
+async def markdown_plan(
+    horizon_days: int = Query(default=60, ge=7, le=365),
+    max_discount: Decimal = Query(
+        default=Decimal("50"), gt=0, le=90,
+        description="أقصى خصم يسمح به النظام — سياسة تجارية وليست حساباً",
+    ),
+    db: AsyncSession = Depends(get_db),
+) -> APIResponse[MarkdownPlanOut]:
+    """خطة تصريف المخزون المهدد: ما الذي يُخصم، وما الذي يحتاج اتصالاً، وما الذي يُشطب.
+
+    الخصم المقترح يُحسب من سرعة البيع الفعلية والأيام المتبقية، فيتعمّق تلقائياً كلما
+    اقترب تاريخ الانتهاء دون الحاجة إلى سلّم ثابت.
+    """
+    plan = await MarkdownService(db).plan(
+        horizon_days=horizon_days, max_discount=max_discount
+    )
+    return APIResponse(
+        data=MarkdownPlanOut(
+            horizon_days=plan.horizon_days,
+            elasticity=plan.elasticity.value,
+            elasticity_source=plan.elasticity.source,
+            elasticity_observations=plan.elasticity.observations,
+            stock_at_risk=plan.stock_at_risk,
+            surplus_value=plan.surplus_value,
+            recoverable_value=plan.recoverable_value,
+            write_off_value=plan.write_off_value,
+            items=[MarkdownProposalOut.model_validate(item) for item in plan.items],
+        )
+    )
+
+
+@router.post(
+    "/markdown-plan/apply",
+    response_model=APIResponse[MarkdownApplyOut],
+)
+async def apply_markdown_plan(
+    body: MarkdownApplyIn,
+    horizon_days: int = Query(default=60, ge=7, le=365),
+    max_discount: Decimal = Query(default=Decimal("50"), gt=0, le=90),
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(require_permissions("products.offers")),
+) -> APIResponse[MarkdownApplyOut]:
+    """تحويل المقترحات المختارة إلى عروض فعلية تسري على الفواتير والبوابة.
+
+    تُعاد الخطة حسابها هنا من جديد؛ لا يُوثق بأي رقم قادم من الشاشة، لأن الخصم سعرٌ
+    يُحاسَب عليه العميل فعلاً.
+    """
+    created, skipped, notes = await MarkdownService(db).apply(
+        body.batch_ids, current_user.id,
+        horizon_days=horizon_days, max_discount=max_discount,
+    )
+    return APIResponse(
+        data=MarkdownApplyOut(created=created, skipped=skipped, notes=notes),
+        message=(
+            (f"تم إنشاء {_offers(created)}." if created else "لم يُنشأ أي عرض.")
+            + (f" وتم تخطّي {_offers(skipped)}." if skipped else "")
+        ),
+    )
+
+
+def _offers(count: int) -> str:
+    """"عرض واحد"، "عرضان"، "٣ عروض"، "١٢ عرضاً" — Arabic counts a noun by its number.
+
+    Written out rather than interpolated as `f"{n} عرضاً"`, which reads as broken
+    Arabic for every count below eleven and is the sort of thing that quietly tells
+    a user the software was not built for them.
+    """
+    if count == 1:
+        return "عرض واحد"
+    if count == 2:
+        # Genitive after the masdar إنشاء/تخطّي, so عرضين rather than عرضان.
+        return "عرضين"
+    if count <= 10:
+        return f"{count} عروض"
+    return f"{count} عرضاً"

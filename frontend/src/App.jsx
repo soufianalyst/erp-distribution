@@ -15,6 +15,7 @@ import DashboardPage from "./pages/DashboardPage";
 import DeliveryPage from "./pages/DeliveryPage";
 import ExpensesPage from "./pages/ExpensesPage";
 import ExpiryWorklistPage from "./pages/ExpiryWorklistPage";
+import MarkdownPlanPage from "./pages/MarkdownPlanPage";
 import FieldPage from "./pages/FieldPage";
 import LoginPage from "./pages/LoginPage";
 import PrintInvoicePage from "./pages/PrintInvoicePage";
@@ -188,6 +189,14 @@ function StaffApp() {
                 element={
                   <RequirePerm perm="stock.view">
                     <ExpiryWorklistPage />
+                  </RequirePerm>
+                }
+              />
+              <Route
+                path="/markdown-plan"
+                element={
+                  <RequirePerm perm="products.offers">
+                    <MarkdownPlanPage />
                   </RequirePerm>
                 }
               />
