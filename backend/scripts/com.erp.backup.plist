@@ -1,0 +1,67 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  Nightly verified backup, via launchd.
+
+  Install:
+      cp backend/scripts/com.erp.backup.plist ~/Library/LaunchAgents/
+      launchctl load ~/Library/LaunchAgents/com.erp.backup.plist
+
+  Check it is scheduled:
+      launchctl list | grep com.erp.backup
+
+  Run it now without waiting for 03:15:
+      launchctl start com.erp.backup
+
+  Two things worth knowing about this file.
+
+  RunAtLoad is true on purpose. A laptop is asleep at 03:15 most nights, and launchd
+  does not queue missed StartCalendarInterval runs while the machine is off — it
+  simply skips them. Without RunAtLoad, a machine that never happens to be awake at
+  03:15 would report a perfectly installed backup job that has never once run.
+
+  The log is the only place a failure surfaces. There is no console watching this, so
+  the script's exit status and its Arabic error text go to the file below; a nightly
+  run that has been failing for a month looks identical to a working one until
+  somebody reads it. `--drill` is deliberately NOT part of this schedule: it drops and
+  recreates a database, and that is not something to do unattended at 03:15. Run it by
+  hand, monthly, and read the output.
+-->
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.erp.backup</string>
+
+    <key>ProgramArguments</key>
+    <array>
+        <string>/opt/anaconda3/bin/python3</string>
+        <string>/Users/soufianerahal/Desktop/ERP Project/backend/scripts/backup.py</string>
+    </array>
+
+    <key>WorkingDirectory</key>
+    <string>/Users/soufianerahal/Desktop/ERP Project/backend</string>
+
+    <key>StartCalendarInterval</key>
+    <dict>
+        <key>Hour</key>
+        <integer>3</integer>
+        <key>Minute</key>
+        <integer>15</integer>
+    </dict>
+
+    <key>RunAtLoad</key>
+    <true/>
+
+    <key>StandardOutPath</key>
+    <string>/Users/soufianerahal/Desktop/ERP Project/backups/backup.log</string>
+    <key>StandardErrorPath</key>
+    <string>/Users/soufianerahal/Desktop/ERP Project/backups/backup.log</string>
+
+    <!-- docker lives in /usr/local/bin or /opt/homebrew/bin; launchd's default PATH
+         has neither, and the script is useless without it. -->
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>PATH</key>
+        <string>/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+    </dict>
+</dict>
+</plist>
