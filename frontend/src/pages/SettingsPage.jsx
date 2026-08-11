@@ -371,6 +371,62 @@ function CompanySection({ canManage, countries, timezones, onCountrySaved }) {
               />
             </div>
           </div>
+
+          {/* Four numbers that decide what the system orders and how deep it
+              discounts. They existed in the API from the day the reorder point and
+              the clearance plan were built, and no screen could change them — which
+              meant the only way to set company policy was a curl command. */}
+          <div className="space-y-3 rounded-lg border border-slate-200 p-4 dark:border-slate-700">
+            <div>
+              <h3 className="text-sm font-bold text-slate-800 dark:text-slate-100">
+                سياسة الشراء والتصريف
+              </h3>
+              <p className="text-xs text-slate-500 dark:text-slate-400">
+                تُستخدم في حساب نقطة إعادة الطلب وفي عمق الخصم المقترح على المخزون
+                القريب من الانتهاء.
+              </p>
+            </div>
+            <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
+              <Input
+                label="مهلة التوريد الافتراضية (يوم)"
+                type="number"
+                min="1"
+                max="180"
+                value={form.default_lead_time_days}
+                onChange={set("default_lead_time_days")}
+              />
+              <Input
+                label="مخزون الأمان (يوم تغطية)"
+                type="number"
+                min="0"
+                max="180"
+                value={form.safety_stock_days}
+                onChange={set("safety_stock_days")}
+              />
+              <Input
+                label="دورية مراجعة الطلبات (يوم)"
+                type="number"
+                min="1"
+                max="180"
+                value={form.reorder_review_days}
+                onChange={set("reorder_review_days")}
+              />
+              <Input
+                label="أقصى خصم تصريف مسموح %"
+                type="number"
+                min="1"
+                max="90"
+                step="0.01"
+                value={form.markdown_max_discount_percent}
+                onChange={set("markdown_max_discount_percent")}
+              />
+            </div>
+            <p className="text-xs text-slate-500 dark:text-slate-400">
+              سقف الخصم حدٌّ أعلى وليس هدفاً: لن يقترح النظام أعمق منه، وتستطيع شاشة
+              خطة التصريف أن تختار أقل منه في أي وقت.
+            </p>
+          </div>
+
           {canManage && (
             <div className="flex justify-end">
               <Button type="submit">حفظ بيانات الشركة</Button>

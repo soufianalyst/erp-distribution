@@ -477,3 +477,62 @@ class TestTheEndpoint:
         row = next(item for item in data["items"] if item["sku"] == "HTTP-1")
         assert row["action"] == "write_off"
         assert row["buyers"] == []
+
+
+class TestTheCeilingIsCompanyPolicy:
+    """How deep a discount may go is not the browser's decision.
+
+    The cap started life as a query parameter defaulting to 50, which meant the
+    deepest markdown the engine could ever propose — on prices customers are
+    actually charged — was whatever number last arrived in a query string. It is now
+    a company setting, and a request may only ask for something gentler.
+    """
+
+    async def test_a_request_deeper_than_policy_is_clamped(
+        self, client: AsyncClient, db_session
+    ) -> None:
+        from app.services.settings.settings_service import SettingsService
+
+        admin = await login(client, "admin", TEST_ADMIN_PASSWORD)
+        company = await SettingsService(db_session).get_company_settings()
+        company.markdown_max_discount_percent = Decimal("15")
+        await db_session.commit()
+
+        warehouse_id, product = await expiring_stock(
+            client, admin, sku="CAP-1", quantity="900", expiry_days=30)
+        customer_id = await create_customer(
+            client, admin, name="عميل السقف", credit_limit="900000")
+        await sell_on_days(client, admin, db_session, customer_id, warehouse_id,
+                           product["id"], [7 * (i + 1) for i in range(10)], "5")
+
+        # Asking for 90% must not get 90%.
+        response = await client.get(
+            "/api/v1/inventory/markdown-plan",
+            headers=admin, params={"horizon_days": 60, "max_discount": "90"})
+        assert response.status_code == 200, response.text
+        row = next(
+            item for item in response.json()["data"]["items"]
+            if item["sku"] == "CAP-1"
+        )
+        assert Decimal(row["discount_percent"]) == Decimal("15.00")
+
+    async def test_a_shallower_request_is_honoured(
+        self, client: AsyncClient, db_session
+    ) -> None:
+        """Policy is a ceiling, not a target — a manager may still go gentler."""
+        admin = await login(client, "admin", TEST_ADMIN_PASSWORD)
+        warehouse_id, product = await expiring_stock(
+            client, admin, sku="CAP-2", quantity="900", expiry_days=30)
+        customer_id = await create_customer(
+            client, admin, name="عميل السقف الثاني", credit_limit="900000")
+        await sell_on_days(client, admin, db_session, customer_id, warehouse_id,
+                           product["id"], [7 * (i + 1) for i in range(10)], "5")
+
+        response = await client.get(
+            "/api/v1/inventory/markdown-plan",
+            headers=admin, params={"horizon_days": 60, "max_discount": "8"})
+        row = next(
+            item for item in response.json()["data"]["items"]
+            if item["sku"] == "CAP-2"
+        )
+        assert Decimal(row["discount_percent"]) == Decimal("8.00")

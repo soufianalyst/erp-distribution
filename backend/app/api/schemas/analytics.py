@@ -4,7 +4,7 @@ from datetime import date
 from decimal import Decimal
 from typing import Literal
 
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict
 
 
 # --- RFM ---
@@ -334,3 +334,58 @@ class LapsingReportOut(BaseModel):
     total_customers: int
     annual_value_at_risk: Decimal
     items: list[LapsingCustomerOut]
+
+
+# --- 80/20 (ABC) analysis ---
+class ParetoItemOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    # Zero for class D: it has no value to be ranked on, and giving it a rank would
+    # place "never sold" in the same ordering as "sold least", which reads as a
+    # near-miss rather than as nothing at all.
+    rank: int
+    entity_id: int
+    name: str
+    code: str | None
+    value: Decimal
+    share: Decimal
+    cumulative_share: Decimal
+    abc_class: Literal["A", "B", "C", "D"]
+    # Stock at cost for a product; unpaid balance for a customer.
+    carrying_value: Decimal
+    last_activity: date | None
+
+
+class ParetoClassOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    abc_class: Literal["A", "B", "C", "D"]
+    label: str
+    entities: int
+    entity_share: Decimal
+    value: Decimal
+    value_share: Decimal
+    carrying_value: Decimal
+    carrying_share: Decimal
+
+
+class ParetoReportOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    dimension: Literal["customers", "products"]
+    measure: Literal["revenue", "profit"]
+    date_from: date | None
+    date_to: date | None
+    total_value: Decimal
+    total_carrying_value: Decimal
+    entity_count: int
+    entities_for_80_percent: int
+    share_of_entities_for_80: Decimal
+    # Keyed by rank: {1: 2.20, 5: 9.80, ...}. A short table beats a curve here — the
+    # figure a manager repeats out loud is "the top five are a tenth of our revenue".
+    top_shares: dict[int, Decimal]
+    # The reading of the numbers, in Arabic, including the case where the 80/20 shape
+    # is absent — which is a real answer and not a missing one.
+    verdict: str
+    classes: list[ParetoClassOut]
+    items: list[ParetoItemOut]

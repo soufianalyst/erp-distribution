@@ -55,6 +55,11 @@ class CompanySettingsUpdate(BaseModel):
     default_lead_time_days: int | None = Field(default=None, ge=1, le=180)
     safety_stock_days: int | None = Field(default=None, ge=0, le=180)
     reorder_review_days: int | None = Field(default=None, ge=1, le=180)
+    # Capped at 90 for the same reason the others are bounded: a 100% discount is
+    # not a clearance policy, it is a giveaway with extra steps.
+    markdown_max_discount_percent: Decimal | None = Field(
+        default=None, gt=0, le=90, decimal_places=2
+    )
 
 
 class CompanySettingsOut(BaseModel):
@@ -74,6 +79,7 @@ class CompanySettingsOut(BaseModel):
     default_lead_time_days: int
     safety_stock_days: int
     reorder_review_days: int
+    markdown_max_discount_percent: Decimal
 
 
 # --- Timezone reference (for the settings control panel picker) ---

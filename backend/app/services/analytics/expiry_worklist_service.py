@@ -33,6 +33,7 @@ from app.api.schemas.analytics import (
 )
 from app.domain.models.inventory import Product, ProductBatch, Warehouse
 from app.domain.models.sales import Customer, SalesInvoice, SalesInvoiceLine
+from app.services.inventory.demand_service import DemandService
 from app.services.inventory.stock_query import sellable
 from app.services.sales.offer_pricing import active_offers
 
@@ -41,12 +42,11 @@ TWO_PLACES = Decimal("0.01")
 # How far back to measure how fast something sells. Long enough to survive a quiet
 # fortnight, short enough that last season's demand does not vouch for this one.
 #
-# The rate divides by the whole window, which understates anything that only started
-# selling recently: a line launched last week reads as slow, and may be flagged when
-# it is in fact accelerating. That is the conservative direction — it over-warns
-# rather than under-warns — and dividing by "days since first sale" instead would let
-# a single day's burst imply a rate the product has never sustained. Worth revisiting
-# once there is enough real history to tell the two apart.
+# The rate itself is `DemandService`'s, not this file's. It used to be computed here
+# too, with the same arithmetic — and the day the two drifted, this screen and the
+# markdown plan would have shown a manager two different surpluses for one product.
+# What is kept local is only the *window*: a shelf-life decision asks whether stock
+# moves now, so a quarter, where a reorder point wants a year.
 VELOCITY_WINDOW_DAYS = 90
 
 # How many past buyers to name per product. A list of thirty is not a call list.
@@ -56,36 +56,6 @@ MAX_SUGGESTED_BUYERS = 5
 class ExpiryWorklistService:
     def __init__(self, session: AsyncSession) -> None:
         self.session = session
-
-    async def _daily_rate(self, product_ids: list[int]) -> dict[int, Decimal]:
-        """Units sold per day per product over the recent window.
-
-        Returns nothing for a product that has not sold, and the caller treats that
-        as a rate of zero — which is the conservative reading: with no evidence it
-        moves, assume none of it will.
-        """
-        if not product_ids:
-            return {}
-        since = date.today() - timedelta(days=VELOCITY_WINDOW_DAYS)
-        rows = (
-            await self.session.execute(
-                select(
-                    SalesInvoiceLine.product_id,
-                    func.sum(SalesInvoiceLine.quantity),
-                )
-                .join(SalesInvoice, SalesInvoice.id == SalesInvoiceLine.invoice_id)
-                .where(
-                    SalesInvoiceLine.product_id.in_(product_ids),
-                    SalesInvoice.invoice_date >= since,
-                )
-                .group_by(SalesInvoiceLine.product_id)
-            )
-        ).all()
-        return {
-            product_id: (Decimal(str(total)) / Decimal(VELOCITY_WINDOW_DAYS))
-            for product_id, total in rows
-            if total
-        }
 
     async def _buyers(self, product_ids: list[int]) -> dict[int, list[SuggestedBuyerOut]]:
         """Customers who have actually bought each product, best prospects first.
@@ -184,15 +154,25 @@ class ExpiryWorklistService:
             entry["batches"] += 1
 
         product_ids = list(grouped)
-        rates = await self._daily_rate(product_ids)
+        demand = await DemandService(self.session).for_products(
+            product_ids, default_lead_time_days=0,
+            window_days=VELOCITY_WINDOW_DAYS,
+        )
         buyers = await self._buyers(product_ids)
         offers = await active_offers(self.session, product_ids)
 
         items: list[ExpiryWorklistItemOut] = []
         for product_id, entry in grouped.items():
             days_remaining = (entry["earliest"] - today).days
-            rate = rates.get(product_id, Decimal("0"))
-            will_sell = rate * Decimal(max(days_remaining, 0))
+            # The rate is DemandService's; the *nominal* projection is this screen's
+            # deliberate choice. A thin rate still counts here, because this list is
+            # advice and its value lies in staying short. The markdown plan asks the
+            # same object for `confident_projection` instead, and will therefore
+            # report a larger surplus for a rarely-sold product — on purpose: one
+            # screen suggests a phone call, the other sets a price.
+            product_demand = demand[product_id]
+            rate = product_demand.daily_rate
+            will_sell = product_demand.nominal_projection(days_remaining)
             surplus = max(entry["quantity"] - will_sell, Decimal("0"))
 
             unit_value = (
@@ -220,7 +200,7 @@ class ExpiryWorklistService:
                     surplus_quantity=surplus.quantize(Decimal("0.001")),
                     surplus_value=surplus_value,
                     urgency=urgency.quantize(TWO_PLACES),
-                    has_sales_history=product_id in rates,
+                    has_sales_history=product_demand.sale_days > 0,
                     unit_cost=unit_value.quantize(Decimal("0.0001")) if unit_value else None,
                     wholesale_price=entry["product"].wholesale_price,
                     active_offer_percent=offer.discount_percent if offer else None,

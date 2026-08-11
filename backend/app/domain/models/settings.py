@@ -99,6 +99,16 @@ class CompanySettings(Base):
         nullable=False, default=14, server_default="14"
     )
 
+    # --- Clearance ---
+    # The deepest markdown the engine may ever propose. A ceiling rather than a
+    # target: past it, pricing is not clearing the stock, it is giving it away and
+    # teaching customers to wait for the fire sale. It lives here, not as a query
+    # parameter, because it is company policy — the screen may choose to be gentler
+    # on a given day, never harsher.
+    markdown_max_discount_percent: Mapped[Decimal] = mapped_column(
+        Numeric(5, 2), nullable=False, default=Decimal("50"), server_default="50"
+    )
+
     @property
     def country_name(self) -> str | None:
         """Arabic country name resolved from the stored code."""

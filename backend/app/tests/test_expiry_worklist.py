@@ -192,3 +192,108 @@ class TestWhoToCall:
         data = await fetch(client, admin)
         urgencies = [Decimal(i["urgency"]) for i in data["items"]]
         assert urgencies == sorted(urgencies, reverse=True)
+
+
+class TestTheTwoScreensAgree:
+    """One product, two screens, one surplus.
+
+    The expiry worklist and the markdown plan both answer "how much of this will
+    still be on the shelf when it expires". They each used to divide the same sales
+    total by the same window in their own file, which is fine until someone changes
+    one — and then a manager reads two different surpluses for one product on two
+    tabs on the same morning, and stops trusting both. The projection now lives on
+    `Demand`, and this is the test that notices if a call site starts doing its own
+    multiplication again.
+    """
+
+    async def test_the_worklist_surplus_matches_the_markdown_plan(
+        self, client: AsyncClient, db_session
+    ) -> None:
+        from app.services.inventory.markdown_service import MarkdownService
+
+        admin = await login(client, "admin", TEST_ADMIN_PASSWORD)
+        warehouse_id = await create_warehouse(client, admin, "مخزن الاتفاق")
+        product = await create_product(
+            client, admin, sku="AGREE-1", warehouse_id=warehouse_id)
+        await receive(client, admin, product["id"], warehouse_id, "B-AGREE", 40,
+                      "600", unit_cost="20")
+        customer_id = await create_customer(
+            client, admin, name="عميل الاتفاق", credit_limit="900000")
+        for offset in [7 * (i + 1) for i in range(10)]:
+            response = await post_invoice(
+                client, admin, customer_id, warehouse_id, product["id"], "5",
+                tax_rate_ids=[])
+            assert response.status_code == 201, response.text
+            from app.domain.models.sales import SalesInvoice
+            invoice = await db_session.get(
+                SalesInvoice, response.json()["data"]["id"])
+            invoice.invoice_date = date.today() - timedelta(days=offset)
+        await db_session.commit()
+
+        worklist = await fetch(client, admin, horizon=60)
+        row = find(worklist["items"], product["id"])
+        assert row is not None, "the product should be on the worklist"
+
+        plan = await MarkdownService(db_session).plan(horizon_days=60)
+        proposal = next(i for i in plan.items if i.sku == "AGREE-1")
+
+        assert Decimal(row["daily_sales_rate"]) == proposal.daily_rate
+        assert Decimal(row["surplus_quantity"]) == proposal.surplus
+
+    async def test_a_thin_rate_makes_the_markdown_plan_the_stricter_of_the_two(
+        self, client: AsyncClient, db_session
+    ) -> None:
+        """The one place the screens are meant to disagree, pinned so it stays meant.
+
+        Three sale-days is a rate the worklist will still project — it is advice, and
+        its worth is in staying short enough to be worked. The markdown plan refuses
+        the same rate, because its output is a price a customer gets charged. Same
+        underlying rate from the same service, two different projections, both named
+        at the call site.
+
+        Written down because the difference looks exactly like a bug: two screens,
+        one product, two surpluses. Deleting it "to make them agree" would either
+        flood the worklist or price stock off an anecdote.
+        """
+        from app.domain.models.sales import SalesInvoice
+        from app.services.inventory.demand_service import (
+            DemandConfidence,
+            DemandService,
+        )
+        from app.services.inventory.markdown_service import MarkdownService
+
+        admin = await login(client, "admin", TEST_ADMIN_PASSWORD)
+        warehouse_id = await create_warehouse(client, admin, "مخزن النادر")
+        product = await create_product(
+            client, admin, sku="RARE-AGREE", warehouse_id=warehouse_id)
+        await receive(client, admin, product["id"], warehouse_id, "B-RARE", 40,
+                      "600", unit_cost="20")
+        customer_id = await create_customer(
+            client, admin, name="عميل النادر", credit_limit="900000")
+        for offset in (7, 14, 21):
+            response = await post_invoice(
+                client, admin, customer_id, warehouse_id, product["id"], "5",
+                tax_rate_ids=[])
+            assert response.status_code == 201, response.text
+            invoice = await db_session.get(
+                SalesInvoice, response.json()["data"]["id"])
+            invoice.invoice_date = date.today() - timedelta(days=offset)
+        await db_session.commit()
+
+        demand = (await DemandService(db_session).for_products(
+            [product["id"]], default_lead_time_days=0, window_days=90
+        ))[product["id"]]
+        assert demand.confidence is DemandConfidence.SPARSE
+
+        row = find((await fetch(client, admin, horizon=60))["items"], product["id"])
+        proposal = next(
+            i for i in (await MarkdownService(db_session).plan(horizon_days=60)).items
+            if i.sku == "RARE-AGREE"
+        )
+
+        # The rate is the same number on both — that is the part consolidation buys.
+        assert Decimal(row["daily_sales_rate"]) == proposal.daily_rate
+        # The projection is not, and the strict one belongs to the pricing decision.
+        assert Decimal(row["projected_sales"]) > 0
+        assert proposal.surplus > Decimal(row["surplus_quantity"])
+        assert proposal.surplus == Decimal("585")

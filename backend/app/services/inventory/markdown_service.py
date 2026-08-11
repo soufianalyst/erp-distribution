@@ -35,7 +35,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.domain.models.inventory import Product, ProductBatch, Warehouse
 from app.domain.models.sales import Customer, SalesInvoice, SalesInvoiceLine
-from app.services.inventory.demand_service import DemandConfidence, DemandService
+from app.services.inventory.demand_service import DemandService
 from app.services.inventory.elasticity import Elasticity, ElasticityService
 from app.services.sales.offer_pricing import active_offers
 
@@ -187,8 +187,8 @@ class MarkdownService:
         cost = Decimal(str(batch.unit_cost)) if batch.unit_cost is not None else None
         stock_value = quantity * (cost or ZERO)
 
-        measured = demand.confidence is DemandConfidence.MEASURED and demand.daily_rate > 0
-        sellable = demand.daily_rate * Decimal(days_left) if measured else ZERO
+        measured = demand.is_measured
+        sellable = demand.confident_projection(days_left)
         surplus = max(quantity - sellable, ZERO)
         surplus_value = (surplus * (cost or ZERO)).quantize(TWO_PLACES)
 

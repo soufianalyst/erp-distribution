@@ -26,11 +26,17 @@ from app.api.schemas.analytics import (
     TurnoverOut,
     WarehouseRevenueOut,
 )
+from app.api.schemas.analytics import ParetoReportOut
 from app.api.schemas.common import APIResponse
 from app.db.session import get_db
 from app.services.analytics.analytics_service import AnalyticsService
 from app.services.analytics.expiry_worklist_service import ExpiryWorklistService
 from app.services.analytics.lapsing_service import LapsingService
+from app.services.analytics.pareto_service import (
+    ParetoDimension,
+    ParetoMeasure,
+    ParetoService,
+)
 
 router = APIRouter(
     prefix="/analytics",
@@ -219,4 +225,29 @@ async def discount_report(
     """تقرير الخصومات الممنوحة على الفواتير لفترة محددة، حسب العميل والمندوب."""
     return APIResponse(
         data=await AnalyticsService(db).discount_report(date_from, date_to)
+    )
+
+
+@router.get("/pareto", response_model=APIResponse[ParetoReportOut])
+async def pareto_report(
+    dimension: ParetoDimension = Query(default=ParetoDimension.PRODUCTS),
+    measure: ParetoMeasure = Query(default=ParetoMeasure.REVENUE),
+    date_from: date | None = Query(default=None),
+    date_to: date | None = Query(default=None),
+    db: AsyncSession = Depends(get_db),
+) -> APIResponse[ParetoReportOut]:
+    """تحليل 20/80 (تصنيف أ ب ج): ما القليل الذي يصنع معظم القيمة، وما يكلّفه الباقي.
+
+    لا يكتفي بترتيب الأصناف أو العملاء تنازلياً؛ يقابل القيمة التي يصنعها كل بند بما
+    يحتجزه فعلاً — مخزوناً بالتكلفة للصنف، ورصيداً غير محصَّل للعميل — لأن الرقم الذي
+    يغيّر القرار هو ما يستهلكه الذيل الطويل، وليس ترتيب المقدمة.
+
+    تُضاف فئة رابعة (د) لما لم يُبَع في الفترة إطلاقاً: دمجها في الفئة ج يخفي أكبر
+    كتلة أموال راكدة داخل خانة اسمها «قيمة منخفضة».
+    """
+    return APIResponse(
+        data=await ParetoService(db).report(
+            dimension=dimension, measure=measure,
+            date_from=date_from, date_to=date_to,
+        )
     )

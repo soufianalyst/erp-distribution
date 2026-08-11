@@ -190,7 +190,8 @@ class SettingsService:
         # Replenishment. Required columns with sensible defaults, so null means
         # "leave alone" — there is no meaningful empty lead time.
         for field in (
-            "default_lead_time_days", "safety_stock_days", "reorder_review_days"
+            "default_lead_time_days", "safety_stock_days", "reorder_review_days",
+            "markdown_max_discount_percent",
         ):
             value = getattr(data, field)
             if value is not None:

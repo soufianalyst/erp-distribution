@@ -11,6 +11,7 @@ import {
   Bar,
   BarChart,
   CartesianGrid,
+  ComposedChart,
   Cell,
   Label,
   LabelList,
@@ -118,6 +119,7 @@ const TABS = [
   { id: "customers", label: "🧑‍💼 تحليل العملاء (RFM)" },
   { id: "products", label: "📦 تحليل الأصناف (RFM)" },
   { id: "inventory", label: "🗑️ المخزون والهدر" },
+  { id: "pareto", label: "⚖️ تحليل 20/80" },
   { id: "discounts", label: "🏷️ الخصومات" },
   { id: "lapsing", label: "📞 عملاء توقفوا عن الشراء" },
   { id: "credit", label: "💳 الذمم والمخاطر الائتمانية" },
@@ -224,6 +226,8 @@ export default function AnalyticsPage() {
           loading={expiryRisk.loading || turnover.loading}
         />
       )}
+
+      {tab === "pareto" && <ParetoCard />}
 
       {tab === "discounts" && <DiscountReportCard />}
 
@@ -752,6 +756,284 @@ const DAMAGE_REASON_LABELS = {
   count_shortfall: "نقص عند الجرد",
   other: "أخرى",
 };
+
+// 20/80, with the column that makes it a decision instead of a leaderboard.
+//
+// Every ABC report shows value descending. This one puts what each line *ties up*
+// beside what it earns — stock at cost for a product, unpaid balance for a customer —
+// because a ranking on its own tells a manager what they already suspected, while the
+// pairing tells them where the money is sitting.
+//
+// The verdict sentence comes from the server rather than being composed here. It is a
+// reading of the distribution, including the case where the famous curve simply is
+// not present, and that judgement belongs next to the arithmetic that produced it.
+const CLASS_TONE = { A: "green", B: "blue", C: "amber", D: "red" };
+const CLASS_BAR = {
+  A: "#059669",
+  B: "#0284c7",
+  C: "#d97706",
+  D: "#e11d48",
+};
+
+// Enough bars to see the elbow, few enough to read the labels. The table below
+// carries the full list.
+const CHART_ROWS = 30;
+
+function ParetoCard() {
+  const [dimension, setDimension] = useState("products");
+  const [measure, setMeasure] = useState("revenue");
+  const [dateFrom, setDateFrom] = useState("");
+  const [dateTo, setDateTo] = useState("");
+
+  const report = useFetch(
+    () =>
+      api.get("/analytics/pareto", {
+        params: {
+          dimension,
+          measure,
+          date_from: dateFrom || undefined,
+          date_to: dateTo || undefined,
+        },
+      }),
+    [dimension, measure, dateFrom, dateTo]
+  );
+
+  const data = report.data;
+  const isProducts = dimension === "products";
+  const carryingLabel = isProducts ? "قيمة المخزون" : "رصيد غير محصَّل";
+
+  const chartRows = (data?.items ?? [])
+    .filter((item) => item.rank > 0)
+    .slice(0, CHART_ROWS)
+    .map((item) => ({
+      name: item.code || item.name,
+      value: Number(item.value),
+      cumulative: Number(item.cumulative_share),
+      abc: item.abc_class,
+    }));
+
+  const classColumns = [
+    {
+      key: "label",
+      label: "الفئة",
+      render: (row) => <Badge tone={CLASS_TONE[row.abc_class]}>{row.label}</Badge>,
+    },
+    { key: "entities", label: "العدد" },
+    { key: "entity_share", label: "% من العدد", render: (row) => `${qty(row.entity_share)}%` },
+    { key: "value", label: "القيمة", render: (row) => money(row.value) },
+    {
+      key: "value_share",
+      label: "% من القيمة",
+      render: (row) => <span className="font-bold">{qty(row.value_share)}%</span>,
+    },
+    { key: "carrying_value", label: carryingLabel, render: (row) => money(row.carrying_value) },
+    {
+      key: "carrying_share",
+      label: "% منه",
+      // The number the report exists for: what the tail ties up.
+      render: (row) => (
+        <span className="font-bold text-amber-700 dark:text-amber-400">
+          {qty(row.carrying_share)}%
+        </span>
+      ),
+    },
+  ];
+
+  const columns = [
+    {
+      key: "rank",
+      label: "#",
+      // Class D has no rank; a dash says so rather than a misleading zero.
+      render: (row) => (row.rank > 0 ? row.rank : "—"),
+      sortValue: (row) => (row.rank > 0 ? row.rank : Number.MAX_SAFE_INTEGER),
+    },
+    {
+      key: "name",
+      label: isProducts ? "الصنف" : "العميل",
+      render: (row) => (
+        <span className="flex flex-col">
+          <span>{row.name}</span>
+          {row.code ? (
+            <span className="text-xs text-slate-500 dark:text-slate-400">{row.code}</span>
+          ) : null}
+        </span>
+      ),
+      search: (row) => `${row.name} ${row.code ?? ""}`,
+    },
+    {
+      key: "abc_class",
+      label: "الفئة",
+      render: (row) => <Badge tone={CLASS_TONE[row.abc_class]}>{row.abc_class}</Badge>,
+    },
+    {
+      key: "value",
+      label: measure === "revenue" ? "الإيراد" : "الربح",
+      render: (row) => money(row.value),
+      sortValue: (row) => Number(row.value),
+    },
+    {
+      key: "share",
+      label: "النسبة",
+      render: (row) => `${qty(row.share)}%`,
+      sortValue: (row) => Number(row.share),
+    },
+    {
+      key: "cumulative_share",
+      label: "التراكمي",
+      render: (row) => (row.rank > 0 ? `${qty(row.cumulative_share)}%` : "—"),
+      sortValue: (row) => Number(row.cumulative_share),
+    },
+    {
+      key: "carrying_value",
+      label: carryingLabel,
+      render: (row) => money(row.carrying_value),
+      sortValue: (row) => Number(row.carrying_value),
+    },
+    { key: "last_activity", label: "آخر حركة", render: (row) => row.last_activity || "—" },
+  ];
+
+  return (
+    <Card title="⚖️ تحليل 20/80 — تصنيف أ ب ج">
+      <div className="mb-4 flex flex-wrap items-end gap-3">
+        <Select
+          label="المحور"
+          value={dimension}
+          onChange={(e) => setDimension(e.target.value)}
+        >
+          <option value="products">الأصناف</option>
+          <option value="customers">العملاء</option>
+        </Select>
+        <Select label="المقياس" value={measure} onChange={(e) => setMeasure(e.target.value)}>
+          <option value="revenue">الإيراد</option>
+          <option value="profit">الربح الإجمالي</option>
+        </Select>
+        <Input
+          label="من تاريخ"
+          type="date"
+          value={dateFrom}
+          onChange={(e) => setDateFrom(e.target.value)}
+        />
+        <Input
+          label="إلى تاريخ"
+          type="date"
+          value={dateTo}
+          onChange={(e) => setDateTo(e.target.value)}
+        />
+      </div>
+
+      <Alert>{report.error}</Alert>
+
+      {report.loading ? (
+        <Loading />
+      ) : (
+        <div className="space-y-5">
+          {/* The reading, first and in words. A manager who reads only one line of
+              this screen should read the one that names the conclusion. */}
+          <div className="rounded-lg border border-sky-200 bg-sky-50 p-4 text-sm font-bold leading-relaxed text-sky-900 dark:border-sky-900 dark:bg-sky-950/50 dark:text-sky-200">
+            {data?.verdict}
+          </div>
+
+          <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
+            <div className="rounded-lg bg-slate-50 p-3 text-sm dark:bg-slate-800/60">
+              <div className="font-extrabold text-slate-500 dark:text-slate-400">
+                {measure === "revenue" ? "إجمالي الإيراد" : "إجمالي الربح"}
+              </div>
+              <div className="text-lg font-extrabold">{money(data?.total_value)}</div>
+            </div>
+            <div className="rounded-lg bg-slate-50 p-3 text-sm dark:bg-slate-800/60">
+              <div className="font-extrabold text-slate-500 dark:text-slate-400">
+                {carryingLabel}
+              </div>
+              <div className="text-lg font-extrabold text-amber-700 dark:text-amber-400">
+                {money(data?.total_carrying_value)}
+              </div>
+            </div>
+            <div className="rounded-lg bg-slate-50 p-3 text-sm dark:bg-slate-800/60">
+              <div className="font-extrabold text-slate-500 dark:text-slate-400">
+                حصة الأكبر ١ / ٥ / ١٠
+              </div>
+              <div className="text-lg font-extrabold">
+                {[1, 5, 10]
+                  .map((rank) =>
+                    data?.top_shares?.[rank] ? `${qty(data.top_shares[rank])}%` : "—"
+                  )
+                  .join(" · ")}
+              </div>
+            </div>
+          </div>
+
+          {/* Bars for value, a line for the cumulative share: the elbow is where the
+              80% is reached, and seeing it is worth more than reading the number. */}
+          {chartRows.length ? (
+            <div className="h-80 w-full">
+              <ResponsiveContainer>
+                <ComposedChart data={chartRows} margin={{ top: 10, right: 10, bottom: 60, left: 10 }}>
+                  <CartesianGrid strokeDasharray="3 3" stroke="#94a3b8" strokeOpacity={0.3} />
+                  <XAxis
+                    dataKey="name"
+                    angle={-45}
+                    textAnchor="end"
+                    interval={0}
+                    height={70}
+                    tick={{ fontSize: 10 }}
+                  />
+                  <YAxis yAxisId="value" tick={{ fontSize: 11 }} />
+                  <YAxis
+                    yAxisId="cumulative"
+                    orientation="right"
+                    domain={[0, 100]}
+                    unit="%"
+                    tick={{ fontSize: 11 }}
+                  />
+                  <Tooltip
+                    formatter={(value, name) =>
+                      name === "التراكمي" ? `${value}%` : money(value)
+                    }
+                  />
+                  <Legend />
+                  <Bar yAxisId="value" dataKey="value" name="القيمة" radius={[3, 3, 0, 0]}>
+                    {chartRows.map((row) => (
+                      <Cell key={row.name} fill={CLASS_BAR[row.abc]} />
+                    ))}
+                  </Bar>
+                  <Line
+                    yAxisId="cumulative"
+                    type="monotone"
+                    dataKey="cumulative"
+                    name="التراكمي"
+                    stroke="#7c3aed"
+                    strokeWidth={2}
+                    dot={false}
+                  />
+                </ComposedChart>
+              </ResponsiveContainer>
+            </div>
+          ) : null}
+
+          {/* The class summary — the actual finding on this data: class A holds a
+              fifth of the stock while D, which sold nothing, holds over half. Four
+              rows, but still the shared Table: hand-rolling the markup here would
+              have exempted this whole file from the pagination convention check. */}
+          <Table
+            columns={classColumns}
+            rows={data?.classes ?? []}
+            keyField="abc_class"
+            searchable={false}
+            empty="لا توجد فئات لعرضها."
+          />
+
+          <Table
+            columns={columns}
+            rows={data?.items ?? []}
+            keyField="entity_id"
+            empty="لا توجد بيانات في هذه الفترة."
+          />
+        </div>
+      )}
+    </Card>
+  );
+}
+
 
 function DiscountReportCard() {
   const navigate = useNavigate();

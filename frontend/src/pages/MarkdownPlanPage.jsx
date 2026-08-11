@@ -36,14 +36,19 @@ const HORIZONS = [
   { value: 90, label: "خلال ٩٠ يوماً" },
 ];
 
-// The ceiling on any single markdown. A computed depth above this means pricing
-// cannot save the batch, and obeying it literally teaches customers to wait for the
-// fire sale — so it is a setting a manager makes deliberately, not a slider.
-const CAPS = [
-  { value: 25, label: "حتى ٢٥%" },
-  { value: 50, label: "حتى ٥٠%" },
-  { value: 70, label: "حتى ٧٠%" },
-];
+// The ceiling on any single markdown lives in company settings, and the server
+// clamps to it whatever this screen asks for. So the options are built from it: the
+// policy ceiling, plus gentler steps for a manager who wants to try a lighter touch
+// today. Offering a deeper one would be an option that silently does nothing.
+const capOptions = (ceiling) => {
+  const steps = [10, 15, 20, 25, 30, 40, 50]
+    .filter((step) => step < ceiling)
+    .map((step) => ({ value: step, label: `حتى ${step}%` }));
+  return [
+    { value: ceiling, label: `سقف الشركة (${ceiling}%)` },
+    ...steps.reverse(),
+  ];
+};
 
 const BUCKETS = [
   {
@@ -141,7 +146,10 @@ export default function MarkdownPlanPage() {
   const { can } = useAuth();
   const canApply = can("products.offers");
   const [horizon, setHorizon] = useState(60);
-  const [cap, setCap] = useState(50);
+  // Null until the company policy loads, so the first plan request carries no cap
+  // at all and the server answers with its own — rather than this screen inventing
+  // a number and then being corrected.
+  const [cap, setCap] = useState(null);
   const [bucket, setBucket] = useState("markdown");
   const [picked, setPicked] = useState(() => new Set());
   const [busy, setBusy] = useState(false);
@@ -149,10 +157,16 @@ export default function MarkdownPlanPage() {
   const [notes, setNotes] = useState([]);
   const [actionError, setActionError] = useState(null);
 
+  const company = useFetch(() => api.get("/settings/company"));
+  const ceiling = Number(company.data?.markdown_max_discount_percent ?? 0);
+
   const plan = useFetch(
     () =>
       api.get("/inventory/markdown-plan", {
-        params: { horizon_days: horizon, max_discount: cap },
+        params: {
+          horizon_days: horizon,
+          ...(cap === null ? {} : { max_discount: cap }),
+        },
       }),
     [horizon, cap]
   );
@@ -192,11 +206,16 @@ export default function MarkdownPlanPage() {
     setNotice(null);
     setNotes([]);
     try {
-      const response = await api.post("/inventory/markdown-plan/apply", {
-        batch_ids: [...picked],
-        horizon_days: horizon,
-        max_discount: cap,
-      });
+      const response = await api.post(
+        "/inventory/markdown-plan/apply",
+        { batch_ids: [...picked] },
+        {
+          params: {
+            horizon_days: horizon,
+            ...(cap === null ? {} : { max_discount: cap }),
+          },
+        }
+      );
       const result = response.data.data;
       setNotice(response.data.message);
       setNotes(result.notes ?? []);
@@ -299,13 +318,18 @@ export default function MarkdownPlanPage() {
               </option>
             ))}
           </Select>
-          <Select value={cap} onChange={(e) => setCap(Number(e.target.value))}>
-            {CAPS.map((c) => (
-              <option key={c.value} value={c.value}>
-                {c.label}
-              </option>
-            ))}
-          </Select>
+          {ceiling > 0 ? (
+            <Select
+              value={cap ?? ceiling}
+              onChange={(e) => setCap(Number(e.target.value))}
+            >
+              {capOptions(ceiling).map((c) => (
+                <option key={c.value} value={c.value}>
+                  {c.label}
+                </option>
+              ))}
+            </Select>
+          ) : null}
         </div>
       </div>
 

@@ -60,10 +60,51 @@ class Demand:
     # Typical days between a batch arriving and its expiry date, from purchase
     # history. None when this product has never been received with both dates.
     shelf_life_days: int | None
+
     # Lead time that applies to this product: its most recent supplier's, or the
     # company default.
     lead_time_days: int
     supplier_name: str | None
+
+    @property
+    def is_measured(self) -> bool:
+        """Whether this rate may be projected forward at all.
+
+        A rate exists for anything that sold once; it is only *usable* when there
+        were enough separate sale-days behind it to be a pattern rather than an
+        anecdote. Callers that skip this check get a number, which is worse than
+        getting nothing, because a number gets acted on.
+        """
+        return self.confidence is DemandConfidence.MEASURED and self.daily_rate > ZERO
+
+    def confident_projection(self, days: int) -> Decimal:
+        """Units that will move in `days`, or nothing if the rate is not trustworthy.
+
+        For decisions that commit to something. A markdown sets a price the customer
+        is charged, so a rate from three sale-days must project to zero rather than
+        to a plausible-looking number: better to call the whole batch surplus and be
+        told to phone a customer than to discount on the strength of an anecdote.
+        """
+        if not self.is_measured or days <= 0:
+            return ZERO
+        return self.daily_rate * Decimal(days)
+
+    def nominal_projection(self, days: int) -> Decimal:
+        """Units that will move in `days` at whatever rate exists, thin or not.
+
+        For advisory screens. The expiry worklist earns its keep by *not* listing
+        stock that will clear on its own, and on this catalogue 439 of 1,060 products
+        sold on three days or fewer in a year — gate those to zero and the list
+        becomes the wall of noise it was built to replace.
+
+        Two named methods rather than one with a flag, because the rate underneath is
+        the thing that must never diverge, while this choice is a real editorial
+        difference between a price commitment and a suggestion. Naming both makes a
+        call site declare which it is instead of doing its own multiplication.
+        """
+        if days <= 0:
+            return ZERO
+        return self.daily_rate * Decimal(days)
 
 
 class DemandService:

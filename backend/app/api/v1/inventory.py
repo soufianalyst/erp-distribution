@@ -43,6 +43,7 @@ from app.services.inventory.product_service import ProductService
 from app.services.inventory.markdown_service import MarkdownService
 from app.services.inventory.stock_service import StockService
 from app.services.inventory.warehouse_service import WarehouseService
+from app.services.settings.settings_service import SettingsService
 
 router = APIRouter(prefix="/inventory", tags=["Inventory"])
 
@@ -490,9 +491,9 @@ async def end_offer(
 )
 async def markdown_plan(
     horizon_days: int = Query(default=60, ge=7, le=365),
-    max_discount: Decimal = Query(
-        default=Decimal("50"), gt=0, le=90,
-        description="أقصى خصم يسمح به النظام — سياسة تجارية وليست حساباً",
+    max_discount: Decimal | None = Query(
+        default=None, gt=0, le=90,
+        description="سقف الخصم لهذه المرة؛ لا يتجاوز سقف الشركة في الإعدادات",
     ),
     db: AsyncSession = Depends(get_db),
 ) -> APIResponse[MarkdownPlanOut]:
@@ -502,7 +503,8 @@ async def markdown_plan(
     اقترب تاريخ الانتهاء دون الحاجة إلى سلّم ثابت.
     """
     plan = await MarkdownService(db).plan(
-        horizon_days=horizon_days, max_discount=max_discount
+        horizon_days=horizon_days,
+        max_discount=await _discount_ceiling(db, max_discount),
     )
     return APIResponse(
         data=MarkdownPlanOut(
@@ -526,7 +528,7 @@ async def markdown_plan(
 async def apply_markdown_plan(
     body: MarkdownApplyIn,
     horizon_days: int = Query(default=60, ge=7, le=365),
-    max_discount: Decimal = Query(default=Decimal("50"), gt=0, le=90),
+    max_discount: Decimal | None = Query(default=None, gt=0, le=90),
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(require_permissions("products.offers")),
 ) -> APIResponse[MarkdownApplyOut]:
@@ -537,7 +539,8 @@ async def apply_markdown_plan(
     """
     created, skipped, notes = await MarkdownService(db).apply(
         body.batch_ids, current_user.id,
-        horizon_days=horizon_days, max_discount=max_discount,
+        horizon_days=horizon_days,
+        max_discount=await _discount_ceiling(db, max_discount),
     )
     return APIResponse(
         data=MarkdownApplyOut(created=created, skipped=skipped, notes=notes),
@@ -546,6 +549,21 @@ async def apply_markdown_plan(
             + (f" وتم تخطّي {_offers(skipped)}." if skipped else "")
         ),
     )
+
+
+async def _discount_ceiling(
+    db: AsyncSession, requested: Decimal | None
+) -> Decimal:
+    """The company's markdown ceiling, or a shallower one the caller asked for.
+
+    The screen may be gentler than policy on a given day and never harsher, so the
+    request is clamped rather than trusted. Before this, the deepest discount the
+    engine could propose was whatever number arrived in a query string — which is a
+    price a customer gets charged, decided by the browser.
+    """
+    policy = (await SettingsService(db).get_company_settings()) \
+        .markdown_max_discount_percent
+    return min(requested, policy) if requested is not None else policy
 
 
 def _offers(count: int) -> str:
