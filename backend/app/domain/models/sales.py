@@ -732,3 +732,58 @@ class CustomerOrderLine(Base):
     quantity: Mapped[Decimal] = mapped_column(Numeric(14, 3), nullable=False)
 
     order: Mapped[CustomerOrder] = relationship(back_populates="lines")
+
+
+class CollectionOutcome(str, enum.Enum):
+    """What happened when somebody chased the money."""
+
+    PROMISED = "promised"      # committed to pay: an amount and a date
+    PAID = "paid"              # paid there and then
+    NO_ANSWER = "no_answer"
+    REFUSED = "refused"
+    DISPUTED = "disputed"      # contests the invoice; stop chasing, start checking
+    NOTE = "note"
+
+
+class CollectionActivity(Base):
+    """One attempt to collect a debt, and what came of it.
+
+    Aging reports already say who owes what. What nothing recorded was the *chase*:
+    that a shop was called on Tuesday, promised 5,000 by Thursday, and that Thursday
+    came and went. Without it, the person collecting starts every morning from the
+    same undifferentiated list, rings people who already paid, and has no way to tell
+    a customer who is genuinely arranging payment from one who says so every week.
+
+    A promise is deliberately just two fields — an amount and a date — and whether it
+    was *kept* is never stored. That is computed from the payments actually received,
+    because a stored "kept" flag is a second opinion about money that the ledger
+    already settles, and the two would disagree the first time somebody paid in cash
+    to a driver.
+    """
+
+    __tablename__ = "collection_activities"
+
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    customer_id: Mapped[int] = mapped_column(
+        ForeignKey("customers.id"), nullable=False, index=True
+    )
+    outcome: Mapped[CollectionOutcome] = mapped_column(
+        Enum(
+            CollectionOutcome,
+            name="collectionoutcome",
+            values_callable=lambda e: [m.value for m in e],
+        ),
+        nullable=False,
+    )
+    # Set only when the outcome is PROMISED. Nullable rather than defaulted to zero:
+    # "no promise" and "promised nothing" are different things, and a zero would
+    # quietly count as a kept promise the moment any payment arrived.
+    promised_amount: Mapped[Decimal | None] = mapped_column(Numeric(14, 2))
+    promised_on: Mapped[date | None] = mapped_column(Date)
+    note: Mapped[str | None] = mapped_column(String(500))
+    created_by: Mapped[int | None] = mapped_column(ForeignKey("users.id"))
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+
+    customer: Mapped[Customer] = relationship()

@@ -412,6 +412,14 @@ function CompanySection({ canManage, countries, timezones, onCountrySaved }) {
                 onChange={set("reorder_review_days")}
               />
               <Input
+                label="إيقاف البيع الآجل بعد (يوم) — صفر يعطّله"
+                type="number"
+                min="0"
+                max="730"
+                value={form.credit_block_after_days}
+                onChange={set("credit_block_after_days")}
+              />
+              <Input
                 label="أقصى خصم تصريف مسموح %"
                 type="number"
                 min="1"
@@ -421,6 +429,11 @@ function CompanySection({ canManage, countries, timezones, onCountrySaved }) {
                 onChange={set("markdown_max_discount_percent")}
               />
             </div>
+            <p className="text-xs text-slate-500 dark:text-slate-400">
+              إيقاف البيع الآجل يقيس <span className="font-bold">عمر</span> الدين لا
+              حجمه؛ الحد الائتماني وحده يمرّر عميلاً متأخراً سنة ما دام تحت سقفه.
+              يبقى للمدير تجاوزه بالموافقة على الفاتورة.
+            </p>
             <p className="text-xs text-slate-500 dark:text-slate-400">
               سقف الخصم حدٌّ أعلى وليس هدفاً: لن يقترح النظام أعمق منه، وتستطيع شاشة
               خطة التصريف أن تختار أقل منه في أي وقت.

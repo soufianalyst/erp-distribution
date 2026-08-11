@@ -109,6 +109,19 @@ class CompanySettings(Base):
         Numeric(5, 2), nullable=False, default=Decimal("50"), server_default="50"
     )
 
+    # --- Credit control ---
+    # Refuse a new credit sale when the customer holds a debt older than this many
+    # days. Zero disables it, which is the default: switching it on stops sales, and
+    # that is a commercial decision for the owner rather than a shipped assumption.
+    #
+    # This is the control the credit limit cannot be. A limit measures how *much* is
+    # owed; it has nothing to say about how long it has been owed, so a customer
+    # sitting a year overdue but well under their ceiling passes the check every
+    # time — which is exactly the state the seeded book of business is in.
+    credit_block_after_days: Mapped[int] = mapped_column(
+        nullable=False, default=0, server_default="0"
+    )
+
     @property
     def country_name(self) -> str | None:
         """Arabic country name resolved from the stored code."""

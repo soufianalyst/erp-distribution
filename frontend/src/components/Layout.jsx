@@ -16,6 +16,7 @@ const NAV_ITEMS = [
   { to: "/expiry-worklist", label: "المهدد بالانتهاء", icon: "⏳", perm: "stock.view" },
   { to: "/markdown-plan", label: "خطة التصريف", icon: "🏷️", perm: "products.offers" },
   { to: "/customers", label: "العملاء", icon: "🧑‍💼", perm: "customers.view" },
+  { to: "/collections", label: "متابعة التحصيل", icon: "📒", perm: "sales.collections" },
   { to: "/sales", label: "فواتير المبيعات", icon: "🧾", perm: "sales.view" },
   { to: "/field", label: "جولة المندوب", icon: "🚐", perm: "sales.field_sync" },
   { to: "/rounds", label: "تسوية الجولات", icon: "🧮", perm: "sales.round_settle" },

@@ -60,6 +60,8 @@ class CompanySettingsUpdate(BaseModel):
     markdown_max_discount_percent: Decimal | None = Field(
         default=None, gt=0, le=90, decimal_places=2
     )
+    # 0 = off. Capped at two years: beyond that it is not a credit policy.
+    credit_block_after_days: int | None = Field(default=None, ge=0, le=730)
 
 
 class CompanySettingsOut(BaseModel):
@@ -80,6 +82,7 @@ class CompanySettingsOut(BaseModel):
     safety_stock_days: int
     reorder_review_days: int
     markdown_max_discount_percent: Decimal
+    credit_block_after_days: int
 
 
 # --- Timezone reference (for the settings control panel picker) ---

@@ -67,6 +67,13 @@ PERMISSION_GROUPS: list[dict] = [
                 "label": "الموافقة على تجاوز الحد الائتماني",
             },
             {
+                # Chasing debt is its own job, held apart from raising invoices: the
+                # person selling to a shop is the last one who wants to be the one
+                # refusing it credit.
+                "code": "sales.collections",
+                "label": "متابعة تحصيل الديون وتسجيل الوعود",
+            },
+            {
                 "code": "sales.commission_view",
                 "label": "عرض تقرير عمولات المناديب",
             },
@@ -234,6 +241,8 @@ ROLE_DEFAULT_PERMISSIONS: dict[str, frozenset[str]] = {
             "sales.quotations",
             "sales.field_sync",
             "sales.payments",
+            # Scoped to his own shops by the same rule as the customer list.
+            "sales.collections",
             "delivery.view",
             "settings.view",
         }
@@ -268,6 +277,8 @@ ROLE_DEFAULT_PERMISSIONS: dict[str, frozenset[str]] = {
             "products.offers",
             "sales.view",
             "sales.payments",
+            # The accountant works the whole book; a rep only his own shops.
+            "sales.collections",
             "sales.all_customers",
             "suppliers.view",
             "suppliers.manage",

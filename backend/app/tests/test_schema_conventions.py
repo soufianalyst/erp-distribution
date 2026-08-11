@@ -141,6 +141,21 @@ class TestMigrationIdentifiers:
                 known.add(rev.group(1))
             if down:
                 edges.append((down.group(1), path.name))
+        # Every file must declare a revision this scanner can see. Two migrations
+        # were written with a bare `revision = "..."` and were therefore invisible
+        # here — not flagged, simply absent from `known`, so the check silently
+        # skipped them. It only surfaced when a later migration pointed at one and
+        # looked dangling. A parser that cannot read a file must say so.
+        unreadable = [
+            path.name
+            for path in sorted(versions.glob("*.py"))
+            if not re.search(r'^revision: str = "', path.read_text(encoding="utf-8"), re.M)
+        ]
+        assert not unreadable, (
+            "migrations whose revision id this check cannot parse — declare it as "
+            f'`revision: str = "..."` like the rest: {unreadable}'
+        )
+
         dangling = [(d, name) for d, name in edges if d not in known]
         assert not dangling, f"down_revision values with no matching revision: {dangling}"
 

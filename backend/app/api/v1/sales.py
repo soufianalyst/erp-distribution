@@ -9,6 +9,9 @@ from app.api.deps import require_permissions
 from app.api.schemas.common import APIResponse
 from app.api.schemas.pagination import Page, PageParams
 from app.api.schemas.sales import (
+    CollectionActivityIn,
+    CollectionActivityOut,
+    CollectionsWorklistOut,
     ReturnCancelIn,
     CustomerCreditOut,
     CustomerCreditResolveIn,
@@ -37,6 +40,8 @@ from app.api.schemas.sales import (
     SalesReturnOut,
 )
 from app.db.session import get_db
+from app.domain.models.sales import CollectionOutcome
+from app.services.sales.collections_service import CollectionsService
 from app.domain.models.user import User
 from app.domain.models.sales import CreditResolution, RoundSettlementStatus
 from app.services.sales.field_sync_service import FieldSyncService
@@ -555,4 +560,74 @@ async def cancel_return(
     return APIResponse(
         data=SalesReturnOut.model_validate(sales_return),
         message="تم إلغاء المرتجع وعكس أثره.",
+    )
+
+
+# --- Collections ---
+collections = Depends(require_permissions("sales.collections"))
+
+
+@router.get(
+    "/collections/worklist",
+    response_model=APIResponse[CollectionsWorklistOut],
+)
+async def collections_worklist(
+    min_days: int = Query(default=30, ge=0, le=365),
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(require_permissions("sales.collections")),
+) -> APIResponse[CollectionsWorklistOut]:
+    """من يُتصل به اليوم لتحصيل الدين، مرتباً بحسب كلفة التأجيل.
+
+    الترتيب بالمبلغ المتأخر مرجَّحاً بعمره، لا بالمبلغ وحده ولا بالعمر وحده: دينٌ
+    كبير متأخر ثلاثة أسابيع مكالمة لا تزال مجدية، وآخر صغير عمره سنة اعترافٌ مؤجَّل.
+
+    المندوب يرى عملاءه فقط؛ من يملك صلاحية «جميع العملاء» يرى الدفتر كاملاً — فوجود
+    شخصين يتصلان بشأن دين واحد أسوأ من عدم الاتصال.
+    """
+    data = await CollectionsService(db).worklist(current_user, min_days=min_days)
+    return APIResponse(data=CollectionsWorklistOut.model_validate(data))
+
+
+@router.post(
+    "/customers/{customer_id}/collections",
+    response_model=APIResponse[CollectionActivityOut],
+    status_code=status.HTTP_201_CREATED,
+)
+async def log_collection_activity(
+    customer_id: int,
+    body: CollectionActivityIn,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(require_permissions("sales.collections")),
+) -> APIResponse[CollectionActivityOut]:
+    """تسجيل محاولة تحصيل ونتيجتها؛ والوعد بالسداد يحتاج مبلغاً وتاريخاً.
+
+    لا يُخزَّن إن كان الوعد قد أُوفي به: ذلك يُحسب من الدفعات الفعلية، لأن حقلاً
+    مخزّناً سيخالف دفتر الحسابات أول مرة يُسدَّد فيها نقداً لمندوب.
+    """
+    activity = await CollectionsService(db).log(
+        customer_id,
+        CollectionOutcome(body.outcome),
+        current_user,
+        promised_amount=body.promised_amount,
+        promised_on=body.promised_on,
+        note=body.note,
+    )
+    return APIResponse(
+        data=CollectionActivityOut.model_validate(activity),
+        message="تم تسجيل المتابعة.",
+    )
+
+
+@router.get(
+    "/customers/{customer_id}/collections",
+    response_model=APIResponse[list[CollectionActivityOut]],
+    dependencies=[collections],
+)
+async def collection_history(
+    customer_id: int, db: AsyncSession = Depends(get_db)
+) -> APIResponse[list[CollectionActivityOut]]:
+    """سجل متابعات التحصيل لعميل واحد، الأحدث أولاً."""
+    history = await CollectionsService(db).history(customer_id)
+    return APIResponse(
+        data=[CollectionActivityOut.model_validate(a) for a in history]
     )

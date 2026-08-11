@@ -566,3 +566,72 @@ class InvoiceTimelineOut(BaseModel):
     amount_due: Decimal
     returned_total: Decimal
     steps: list[InvoiceStepOut]
+
+
+# --- Collections ---
+class PromiseOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    activity_id: int
+    amount: Decimal
+    due_on: date
+    made_on: date
+    # What the customer has actually paid since making the promise. Shown beside the
+    # promise so a part-payment reads as progress rather than as a broken word.
+    paid_since: Decimal
+    state: Literal["open", "kept", "broken"]
+
+
+class DebtorOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    customer_id: int
+    name: str
+    phone: str | None
+    salesman_name: str | None
+    balance: Decimal
+    overdue: Decimal
+    oldest_days: int
+    invoice_count: int
+    # current / d31_60 / d61_90 / d90_plus
+    buckets: dict[str, Decimal]
+    credit_limit: Decimal
+    last_contact: datetime | None
+    last_outcome: str | None
+    promise: PromiseOut | None
+    # Overdue amount weighted by age: the cost of leaving it another week.
+    priority: Decimal
+    # Why this shop is on today's list, in one line the caller can read aloud.
+    reason: str
+
+
+class CollectionsWorklistOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    total_outstanding: Decimal
+    total_overdue: Decimal
+    broken_promises: int
+    never_contacted: int
+    items: list[DebtorOut]
+
+
+class CollectionActivityIn(BaseModel):
+    outcome: Literal["promised", "paid", "no_answer", "refused", "disputed", "note"]
+    # Required together when the outcome is a promise; the service refuses a promise
+    # missing either, because one without a date or an amount cannot be checked.
+    promised_amount: Decimal | None = Field(default=None, gt=0)
+    promised_on: date | None = None
+    note: str | None = Field(default=None, max_length=500)
+
+
+class CollectionActivityOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: int
+    customer_id: int
+    outcome: str
+    promised_amount: Decimal | None
+    promised_on: date | None
+    note: str | None
+    created_by: int | None
+    created_at: datetime

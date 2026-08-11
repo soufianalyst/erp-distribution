@@ -14,13 +14,15 @@ Revision ID: 07da8f0e246c
 Revises: 18155dc754fa
 """
 
+from typing import Sequence, Union
+
 import sqlalchemy as sa
 from alembic import op
 
-revision = "07da8f0e246c"
-down_revision = "18155dc754fa"
-branch_labels = None
-depends_on = None
+revision: str = "07da8f0e246c"
+down_revision: Union[str, None] = "18155dc754fa"
+branch_labels: Union[str, Sequence[str], None] = None
+depends_on: Union[str, Sequence[str], None] = None
 
 
 def upgrade() -> None:

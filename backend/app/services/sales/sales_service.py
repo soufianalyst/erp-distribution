@@ -432,6 +432,44 @@ class SalesService:
                     "يتطلب البيع الآجل موافقة المدير.",
                 )
 
+    async def _check_overdue_age(
+        self, customer: Customer, data: SalesInvoiceCreate, user: User
+    ) -> None:
+        """Refuse a credit sale to someone sitting on old debt.
+
+        The credit limit cannot do this job. It measures how *much* is owed and has
+        nothing to say about how long — so on this book of business a shop 367 days
+        overdue for 10,711 passes a 25,000 limit without comment, and was in fact sold
+        to on credit two days ago. Every one of the worst debtors is under their limit.
+
+        Off by default (`credit_block_after_days = 0`), because turning it on stops
+        sales and that is the owner's decision. Overridable by the same permission and
+        the same flag as the limit: a manager approving a credit sale is approving it
+        for whichever reason it was blocked, and inventing a second override would
+        mean two ways to say the same yes.
+        """
+        from app.services.settings.settings_service import SettingsService
+
+        threshold = (
+            await SettingsService(self.session).get_company_settings()
+        ).credit_block_after_days
+        if threshold <= 0:
+            return
+
+        from app.services.sales.collections_service import CollectionsService
+
+        age = await CollectionsService(self.session).overdue_debt_days(customer.id)
+        if age <= threshold:
+            return
+
+        if data.credit_override and has_permission(user, "sales.credit_override"):
+            return
+        raise AppException(
+            400,
+            f"لدى العميل دين عمره {age} يوماً (الحد المسموح {threshold} يوماً)؛ "
+            "البيع الآجل موقوف حتى السداد أو بموافقة المدير.",
+        )
+
     async def _post_invoice_entries(
         self,
         invoice: SalesInvoice,
@@ -527,6 +565,7 @@ class SalesService:
         if data.payment_method == SalesPaymentMethod.CREDIT:
             balance = await self.customer_balance(customer.id)
             self._check_credit_limit(customer, balance, invoice.total, data, user)
+            await self._check_overdue_age(customer, data, user)
 
         # Cashier gate: cash/card invoices wait unpaid until the cashier collects
         # them (see CashierService); credit invoices are confirmed immediately
