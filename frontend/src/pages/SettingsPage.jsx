@@ -339,10 +339,19 @@ function CompanySection({ canManage, countries, timezones, onCountrySaved }) {
             />
             <Input label="العنوان" value={form.address || ""} onChange={set("address")} />
             <Input label="الهاتف" value={form.phone || ""} onChange={set("phone")} />
+            {/* NIF and NIS — printed in the header of documents an authority reads,
+                alongside the customer's own pair on the المواد المقننة declaration. */}
             <Input
-              label="الرقم الضريبي"
+              label="رقم التعريف الضريبي (NIF)"
               value={form.tax_number || ""}
               onChange={set("tax_number")}
+              maxLength={50}
+            />
+            <Input
+              label="رقم التعريف الإحصائي (NIS)"
+              value={form.statistical_number || ""}
+              onChange={set("statistical_number")}
+              maxLength={50}
             />
             <CountrySelect
               label="دولة العمل — تحدد الضرائب المتاحة عند إصدار الفواتير"

@@ -44,7 +44,9 @@ class CompanySettingsUpdate(BaseModel):
     tagline: str | None = Field(default=None, max_length=200)
     address: str | None = Field(default=None, max_length=300)
     phone: str | None = Field(default=None, max_length=30)
+    # NIF and NIS — the company's registration numbers on printed documents.
     tax_number: str | None = Field(default=None, max_length=50)
+    statistical_number: str | None = Field(default=None, max_length=50)
     country_code: str | None = Field(default=None, min_length=2, max_length=2)
     timezone: str | None = Field(default=None, max_length=64)
     currency_code: str | None = Field(default=None, max_length=10)
@@ -73,6 +75,7 @@ class CompanySettingsOut(BaseModel):
     address: str | None
     phone: str | None
     tax_number: str | None
+    statistical_number: str | None
     country_code: str | None
     country_name: str | None
     timezone: str

@@ -148,6 +148,37 @@ class TestCompanySettings:
         ]
         assert again["name"] == "مؤسسة الأمل التجارية"
 
+    async def test_the_registration_numbers_save_and_clear(
+        self, client: AsyncClient
+    ) -> None:
+        """NIF and NIS on the company, printed in the header of official documents.
+
+        Clearing matters as much as setting: these are typed from a certificate, and a
+        field that can be filled but never emptied means a number entered against the
+        wrong company stays on every document until someone edits the database.
+        """
+        admin = await login(client, "admin", TEST_ADMIN_PASSWORD)
+        saved = await client.put(
+            "/api/v1/settings/company",
+            headers=admin,
+            json={"tax_number": "000216001234567",
+                  "statistical_number": "001234567890123"},
+        )
+        assert saved.status_code == 200, saved.text
+        assert saved.json()["data"]["statistical_number"] == "001234567890123"
+
+        again = (await client.get(
+            "/api/v1/settings/company", headers=admin)).json()["data"]
+        assert again["tax_number"] == "000216001234567"
+        assert again["statistical_number"] == "001234567890123"
+
+        cleared = await client.put(
+            "/api/v1/settings/company", headers=admin,
+            json={"statistical_number": None})
+        assert cleared.json()["data"]["statistical_number"] is None
+        # Sending one field leaves the other alone.
+        assert cleared.json()["data"]["tax_number"] == "000216001234567"
+
     async def test_storekeeper_cannot_update_company(self, client: AsyncClient) -> None:
         store = await login(client, "storekeeper", TEST_STORE_PASSWORD)
         response = await client.put(

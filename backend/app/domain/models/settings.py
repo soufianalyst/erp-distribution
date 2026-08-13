@@ -52,7 +52,12 @@ class CompanySettings(Base):
     tagline: Mapped[str | None] = mapped_column(String(200))
     address: Mapped[str | None] = mapped_column(String(300))
     phone: Mapped[str | None] = mapped_column(String(30))
+    # The company's own registration numbers, printed in the header of documents that
+    # an authority reads: NIF (رقم التعريف الضريبي) and NIS (رقم التعريف الإحصائي).
+    # `tax_number` is the NIF and predates the name — renaming a column that eight
+    # print pages and the settings screen already read would be churn for a label.
     tax_number: Mapped[str | None] = mapped_column(String(50))
+    statistical_number: Mapped[str | None] = mapped_column(String(50))
     # The country the business operates in — decides which country-specific tax
     # rates are offered when invoicing.
     country_code: Mapped[str | None] = mapped_column(String(2))

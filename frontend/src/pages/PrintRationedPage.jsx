@@ -55,7 +55,14 @@ export default function PrintRationedPage() {
             {co.address && <div className="text-sm text-slate-600">{co.address}</div>}
             {co.phone && <div className="text-sm text-slate-600">هاتف: {co.phone}</div>}
             {co.tax_number && (
-              <div className="text-sm text-slate-600">الرقم الضريبي: {co.tax_number}</div>
+              <div className="text-sm text-slate-600">
+                رقم التعريف الضريبي (NIF): {co.tax_number}
+              </div>
+            )}
+            {co.statistical_number && (
+              <div className="text-sm text-slate-600">
+                رقم التعريف الإحصائي (NIS): {co.statistical_number}
+              </div>
             )}
           </div>
           <div className="rounded-lg border-2 border-slate-800 px-6 py-3 text-center">

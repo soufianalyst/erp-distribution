@@ -161,7 +161,8 @@ class SettingsService:
         # panel can actually clear one — emptying an address, or picking
         # "— لم تُحدد —" for the country. Treating null as "leave alone" here
         # would make those fields set-once.
-        for field in ("tagline", "address", "phone", "tax_number"):
+        for field in ("tagline", "address", "phone", "tax_number",
+                      "statistical_number"):
             if field in sent:
                 setattr(company, field, getattr(data, field))
         if "country_code" in sent:
