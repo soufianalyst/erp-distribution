@@ -79,6 +79,19 @@ export default function PrintRationedPage() {
             {reg.customer_phone && (
               <div className="text-slate-600">هاتف: {reg.customer_phone}</div>
             )}
+            {/* The registration numbers an authority identifies the client by. Each
+                line appears only when the number exists, so a customer without them
+                prints a clean block rather than two empty labels. */}
+            {reg.customer_tax_number && (
+              <div className="text-slate-600">
+                رقم التعريف الضريبي (NIF): {reg.customer_tax_number}
+              </div>
+            )}
+            {reg.customer_statistical_number && (
+              <div className="text-slate-600">
+                رقم التعريف الإحصائي (NIS): {reg.customer_statistical_number}
+              </div>
+            )}
           </div>
           <div className="rounded-lg bg-slate-50 p-4 print:border print:border-slate-300 print:bg-white">
             <div className="mb-1 font-extrabold text-slate-500">ملخص البيان</div>

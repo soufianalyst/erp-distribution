@@ -95,6 +95,8 @@ class RationedRegister:
     customer_id: int
     customer_name: str
     customer_phone: str | None
+    customer_tax_number: str | None
+    customer_statistical_number: str | None
     opened_at: datetime
     closed_at: datetime | None
     closed_by_name: str | None
@@ -324,6 +326,8 @@ class RationedService:
                     customer_id=record.customer_id,
                     customer_name=record.customer.name,
                     customer_phone=record.customer.phone,
+                    customer_tax_number=record.customer.tax_number,
+                    customer_statistical_number=record.customer.statistical_number,
                     opened_at=record.opened_at,
                     closed_at=record.closed_at,
                     closed_by_name=closers.get(record.closed_by),

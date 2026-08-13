@@ -76,6 +76,15 @@ class Customer(Base):
     )
     phone: Mapped[str | None] = mapped_column(String(30))
     address: Mapped[str | None] = mapped_column(String(200))
+    # The customer's own registration numbers, printed on the المواد المقننة
+    # declaration: NIF (رقم التعريف الضريبي) and NIS (رقم التعريف الإحصائي).
+    #
+    # Optional, because most shops are billed without either and a mandatory field
+    # would be filled with a dash to get past it. Deliberately *not* unique: a NIF
+    # identifies the legal entity, so two branches of one company share theirs, and a
+    # unique index would refuse the second branch for being correct.
+    tax_number: Mapped[str | None] = mapped_column(String(50))
+    statistical_number: Mapped[str | None] = mapped_column(String(50))
     price_tier: Mapped[PriceTier] = mapped_column(
         Enum(PriceTier, values_callable=lambda e: [m.value for m in e]),
         nullable=False,

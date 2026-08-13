@@ -1079,3 +1079,79 @@ class TestTheLog:
         assert opened["record_id"] in [r["record_id"] for r in august["items"]], (
             "closed at 00:30 local on 1 August — it belongs to August"
         )
+
+
+class TestTheCustomersRegistrationNumbers:
+    """NIF and NIS — how an authority identifies the shop the declaration is about.
+
+    Optional, and read live rather than snapshotted onto the register: a number typed
+    wrong is corrected once on the customer file and every reprint is right, which is
+    the behaviour anyone would expect of a field that identifies a party rather than
+    records a transaction.
+    """
+
+    async def test_they_are_optional(self, client: AsyncClient) -> None:
+        admin = await login(client, "admin", TEST_ADMIN_PASSWORD)
+        customer_id = await create_customer(
+            client, admin, name="عميل بلا أرقام", credit_limit="1000")
+        customer = [
+            c for c in (await client.get(
+                "/api/v1/sales/customers", headers=admin)).json()["data"]
+            if c["id"] == customer_id
+        ][0]
+        assert customer["tax_number"] is None
+        assert customer["statistical_number"] is None
+
+    async def test_they_are_saved_on_creation_and_shown_on_the_declaration(
+        self, client: AsyncClient
+    ) -> None:
+        admin = await login(client, "admin", TEST_ADMIN_PASSWORD)
+        created = await client.post(
+            "/api/v1/sales/customers", headers=admin,
+            json={"name": "عميل مسجَّل", "credit_limit": "90000",
+                  "tax_number": "000216001234567",
+                  "statistical_number": "001234567890123"})
+        assert created.status_code == 201, created.text
+        customer_id = created.json()["data"]["id"]
+        assert created.json()["data"]["tax_number"] == "000216001234567"
+
+        warehouse_id, product_id = await stocked(client, admin, "RAT-NIF")
+        await sell(client, admin, customer_id, warehouse_id,
+                   [{"product_id": product_id, "quantity": "4", "rationed": True}])
+
+        data = await register(client, admin, customer_id)
+        assert data["customer_tax_number"] == "000216001234567"
+        assert data["customer_statistical_number"] == "001234567890123"
+
+    async def test_correcting_the_number_corrects_every_reprint(
+        self, client: AsyncClient
+    ) -> None:
+        """Read from the customer file, not copied onto the register when it opened.
+
+        A NIF is a fact about the client, not about the month. Snapshotting it would
+        mean a typo caught in October still prints wrong on every declaration issued
+        before it — and those are the documents someone has to hand over.
+        """
+        admin = await login(client, "admin", TEST_ADMIN_PASSWORD)
+        created = await client.post(
+            "/api/v1/sales/customers", headers=admin,
+            json={"name": "عميل رقمه خطأ", "credit_limit": "90000",
+                  "tax_number": "999999999999999"})
+        customer_id = created.json()["data"]["id"]
+        warehouse_id, product_id = await stocked(client, admin, "RAT-NIFFIX")
+        await sell(client, admin, customer_id, warehouse_id,
+                   [{"product_id": product_id, "quantity": "4", "rationed": True}])
+        record_id = (await register(client, admin, customer_id))["record_id"]
+        # Closed and issued — the reprint of a *closed* declaration must pick up the
+        # correction too, which is exactly where a snapshot would fail.
+        await client.post(
+            f"/api/v1/sales/rationed/{record_id}/close", headers=admin, json={})
+
+        fixed = await client.patch(
+            f"/api/v1/sales/customers/{customer_id}", headers=admin,
+            json={"tax_number": "000216001234567"})
+        assert fixed.status_code == 200, fixed.text
+
+        declaration = (await client.get(
+            f"/api/v1/sales/rationed/{record_id}", headers=admin)).json()["data"]
+        assert declaration["customer_tax_number"] == "000216001234567"

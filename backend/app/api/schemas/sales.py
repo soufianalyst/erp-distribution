@@ -19,10 +19,16 @@ from app.domain.models.sales import (
 
 
 # --- Customers ---
+# `tax_number` and `statistical_number` below are the customer's registration numbers,
+# printed on the المواد المقننة declaration: NIF = numéro d'identification fiscale
+# (رقم التعريف الضريبي) and NIS = numéro d'identification statistique (رقم التعريف
+# الإحصائي). Both optional — most shops are billed without either.
 class CustomerCreate(BaseModel):
     name: str = Field(min_length=2, max_length=150)
     phone: str | None = Field(default=None, max_length=30)
     address: str | None = Field(default=None, max_length=200)
+    tax_number: str | None = Field(default=None, max_length=50)
+    statistical_number: str | None = Field(default=None, max_length=50)
     price_tier: PriceTier = PriceTier.WHOLESALE
     credit_limit: Decimal = Field(default=Decimal("0"), ge=0)
     opening_balance: Decimal = Field(default=Decimal("0"), ge=0)
@@ -33,6 +39,8 @@ class CustomerUpdate(BaseModel):
     name: str | None = Field(default=None, min_length=2, max_length=150)
     phone: str | None = Field(default=None, max_length=30)
     address: str | None = Field(default=None, max_length=200)
+    tax_number: str | None = Field(default=None, max_length=50)
+    statistical_number: str | None = Field(default=None, max_length=50)
     price_tier: PriceTier | None = None
     credit_limit: Decimal | None = Field(default=None, ge=0)
     salesman_id: int | None = None
@@ -46,6 +54,8 @@ class CustomerOut(BaseModel):
     name: str
     phone: str | None
     address: str | None
+    tax_number: str | None
+    statistical_number: str | None
     price_tier: PriceTier
     credit_limit: Decimal
     opening_balance: Decimal
@@ -696,6 +706,10 @@ class RationedRegisterOut(BaseModel):
     customer_id: int
     customer_name: str
     customer_phone: str | None
+    # Printed under the customer on the declaration — read live from the customer file,
+    # not snapshotted, so correcting a mistyped NIF fixes every reprint.
+    customer_tax_number: str | None
+    customer_statistical_number: str | None
     opened_at: datetime
     closed_at: datetime | None
     closed_by_name: str | None

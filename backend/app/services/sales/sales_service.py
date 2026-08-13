@@ -138,6 +138,8 @@ class SalesService:
             name=data.name,
             phone=data.phone,
             address=data.address,
+            tax_number=data.tax_number,
+            statistical_number=data.statistical_number,
             price_tier=data.price_tier,
             credit_limit=data.credit_limit,
             opening_balance=data.opening_balance,
@@ -159,6 +161,10 @@ class SalesService:
             customer.phone = data.phone
         if data.address is not None:
             customer.address = data.address
+        if data.tax_number is not None:
+            customer.tax_number = data.tax_number
+        if data.statistical_number is not None:
+            customer.statistical_number = data.statistical_number
         if data.price_tier is not None:
             customer.price_tier = data.price_tier
         if data.credit_limit is not None:

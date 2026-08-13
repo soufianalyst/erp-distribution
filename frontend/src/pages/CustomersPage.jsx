@@ -32,10 +32,27 @@ const EMPTY_FORM = {
   name: "",
   phone: "",
   address: "",
+  // The customer's own registration numbers, printed on the المواد المقننة
+  // declaration. Optional: most shops are billed without either.
+  tax_number: "",
+  statistical_number: "",
   price_tier: "wholesale",
   credit_limit: "0",
   salesman_id: "",
 };
+
+// The same fields, read back off a customer for editing. Nulls become "" because a
+// controlled input handed null switches itself to uncontrolled and warns.
+const formFrom = (customer) => ({
+  name: customer.name ?? "",
+  phone: customer.phone ?? "",
+  address: customer.address ?? "",
+  tax_number: customer.tax_number ?? "",
+  statistical_number: customer.statistical_number ?? "",
+  price_tier: customer.price_tier ?? "wholesale",
+  credit_limit: String(customer.credit_limit ?? "0"),
+  salesman_id: customer.salesman_id ? String(customer.salesman_id) : "",
+});
 
 function AccountDialog({ onClose, onDone }) {
   const [customerId, setCustomerId] = useState("");
@@ -675,6 +692,10 @@ export default function CustomersPage() {
   );
 
   const [open, setOpen] = useState(false);
+  // The customer being edited, or null when the dialog is adding a new one. One form
+  // serves both: the fields are identical, and a second copy of them is a second place
+  // to forget a field the next time one is added.
+  const [editing, setEditing] = useState(null);
   const [form, setForm] = useState(EMPTY_FORM);
   const [formError, setFormError] = useState(null);
   const [statement, setStatement] = useState(null);
@@ -686,12 +707,32 @@ export default function CustomersPage() {
   const [notice, setNotice] = useState(null);
   const set = (key) => (e) => setForm({ ...form, [key]: e.target.value });
 
+  const startAdd = () => {
+    setEditing(null);
+    setForm(EMPTY_FORM);
+    setFormError(null);
+    setOpen(true);
+  };
+
+  const startEdit = (customer) => {
+    setEditing(customer);
+    setForm(formFrom(customer));
+    setFormError(null);
+    setOpen(true);
+  };
+
   const submit = async (event) => {
     event.preventDefault();
     setFormError(null);
+    const payload = { ...form, salesman_id: form.salesman_id || null };
     try {
-      await api.post("/sales/customers", { ...form, salesman_id: form.salesman_id || null });
+      if (editing) {
+        await api.patch(`/sales/customers/${editing.id}`, payload);
+      } else {
+        await api.post("/sales/customers", payload);
+      }
       setOpen(false);
+      setEditing(null);
       setForm(EMPTY_FORM);
       reload();
     } catch (err) {
@@ -712,7 +753,7 @@ export default function CustomersPage() {
     <div className="space-y-6">
       <div className="flex flex-wrap items-center justify-between gap-3">
         <h1 className="text-2xl font-extrabold">العملاء</h1>
-        {canManage && <Button onClick={() => setOpen(true)}>+ عميل جديد</Button>}
+        {canManage && <Button onClick={startAdd}>+ عميل جديد</Button>}
       </div>
       <Card>
         <Alert>{error}</Alert>
@@ -735,6 +776,11 @@ export default function CustomersPage() {
                 label: "",
                 render: (r) => (
                   <div className="flex flex-wrap gap-2">
+                    {canManage && (
+                      <Button variant="secondary" onClick={() => startEdit(r)}>
+                        تعديل
+                      </Button>
+                    )}
                     <Button variant="secondary" onClick={() => showStatement(r)}>
                       كشف حساب
                     </Button>
@@ -752,7 +798,11 @@ export default function CustomersPage() {
         )}
       </Card>
 
-      <Modal open={open} title="إضافة عميل جديد" onClose={() => setOpen(false)}>
+      <Modal
+        open={open}
+        title={editing ? `تعديل بيانات — ${editing.name}` : "إضافة عميل جديد"}
+        onClose={() => setOpen(false)}
+      >
         <form onSubmit={submit} className="space-y-4">
           <Alert>{formError}</Alert>
           <Input label="اسم العميل" value={form.name} onChange={set("name")} required autoFocus />
@@ -776,9 +826,26 @@ export default function CustomersPage() {
             </Select>
           </div>
           <Input label="العنوان" value={form.address} onChange={set("address")} />
+          {/* Printed on the customer's المواد المقننة declaration, which is why they
+              live on the customer file and not on the document: the numbers identify
+              the shop, and every declaration it ever gets should carry the same ones. */}
+          <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
+            <Input
+              label="رقم التعريف الضريبي (NIF) — اختياري"
+              value={form.tax_number}
+              onChange={set("tax_number")}
+              maxLength={50}
+            />
+            <Input
+              label="رقم التعريف الإحصائي (NIS) — اختياري"
+              value={form.statistical_number}
+              onChange={set("statistical_number")}
+              maxLength={50}
+            />
+          </div>
           <div className="flex justify-end gap-2">
             <CancelButton onClose={() => setOpen(false)} />
-            <Button type="submit">حفظ العميل</Button>
+            <Button type="submit">{editing ? "حفظ التعديلات" : "حفظ العميل"}</Button>
           </div>
         </form>
       </Modal>
