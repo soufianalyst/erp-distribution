@@ -11,7 +11,12 @@ from app.tests.conftest import (
     login,
 )
 from app.tests.test_delivery import create_trip
-from app.tests.test_inventory import as_decimal
+from app.tests.test_inventory import (
+    as_decimal,
+    create_product,
+    create_warehouse,
+    receive,
+)
 from app.tests.test_sales import create_customer, post_invoice, setup_stocked_catalog
 
 
@@ -266,3 +271,91 @@ class TestDriverRole:
             json={"driver_name": "غير مصرح", "warehouse_id": warehouse_id},
         )
         assert denied.status_code == 403
+
+
+class TestAnInvoiceLineNamesItsOwnProduct:
+    """An invoice is a financial record, and this one could not say what it sold.
+
+    The line stored `product_id` and `batch_number` but not the name or unit, with two
+    consequences: printing one invoice meant downloading the whole catalogue to resolve
+    two strings, and renaming a product silently rewrote every historical invoice that
+    contained it. `batch_number` had been denormalised onto the line for exactly this
+    reason since the beginning; these columns follow that precedent.
+    """
+
+    async def test_the_line_carries_the_name_and_unit_at_sale_time(
+        self, client: AsyncClient
+    ) -> None:
+        admin = await login(client, "admin", TEST_ADMIN_PASSWORD)
+        warehouse_id = await create_warehouse(client, admin, "مخزن التسمية")
+        product = await create_product(
+            client, admin, sku="NAME-1", warehouse_id=warehouse_id)
+        await receive(client, admin, product["id"], warehouse_id, "B-NAME", 200, "100")
+        customer_id = await create_customer(
+            client, admin, name="عميل التسمية", credit_limit="90000")
+
+        response = await post_invoice(
+            client, admin, customer_id, warehouse_id, product["id"], "5",
+            tax_rate_ids=[])
+        assert response.status_code == 201, response.text
+        line = response.json()["data"]["lines"][0]
+        assert line["product_name"] == product["name"]
+        assert line["unit_name"] == product["base_unit_name"]
+
+    async def test_renaming_a_product_does_not_rewrite_an_old_invoice(
+        self, client: AsyncClient
+    ) -> None:
+        """The reason this is stored rather than joined.
+
+        A read-time join would show the *current* name on a document that was printed,
+        signed and filed years ago — quietly restating what the customer was billed for.
+        """
+        admin = await login(client, "admin", TEST_ADMIN_PASSWORD)
+        warehouse_id = await create_warehouse(client, admin, "مخزن إعادة التسمية")
+        product = await create_product(
+            client, admin, sku="RENAME-1", warehouse_id=warehouse_id)
+        await receive(client, admin, product["id"], warehouse_id, "B-REN", 200, "100")
+        customer_id = await create_customer(
+            client, admin, name="عميل إعادة التسمية", credit_limit="90000")
+
+        invoice_id = (await post_invoice(
+            client, admin, customer_id, warehouse_id, product["id"], "3",
+            tax_rate_ids=[])).json()["data"]["id"]
+
+        renamed = await client.patch(
+            f"/api/v1/inventory/products/{product['id']}",
+            headers=admin, json={"name": "اسم جديد تماماً"})
+        assert renamed.status_code == 200, renamed.text
+
+        reread = (await client.get(
+            f"/api/v1/sales/invoices/{invoice_id}", headers=admin)).json()["data"]
+        assert reread["lines"][0]["product_name"] == product["name"]
+        assert reread["lines"][0]["product_name"] != "اسم جديد تماماً"
+
+    async def test_printing_an_invoice_needs_no_product_lookup(
+        self, client: AsyncClient
+    ) -> None:
+        """What the print screen actually consumes, asserted on the response.
+
+        If the name and unit are on the line, the page needs the invoice and nothing
+        else — which is the whole saving. A test on the payload rather than the screen,
+        because it is the payload that made the download necessary.
+        """
+        admin = await login(client, "admin", TEST_ADMIN_PASSWORD)
+        warehouse_id = await create_warehouse(client, admin, "مخزن الطباعة")
+        product = await create_product(
+            client, admin, sku="PRINT-1", warehouse_id=warehouse_id)
+        await receive(client, admin, product["id"], warehouse_id, "B-PR", 200, "100")
+        customer_id = await create_customer(
+            client, admin, name="عميل الطباعة", credit_limit="90000")
+        invoice_id = (await post_invoice(
+            client, admin, customer_id, warehouse_id, product["id"], "2",
+            tax_rate_ids=[])).json()["data"]["id"]
+
+        data = (await client.get(
+            f"/api/v1/sales/invoices/{invoice_id}", headers=admin)).json()["data"]
+        for line in data["lines"]:
+            # Everything the printed row shows, present without a second request.
+            assert line["product_name"]
+            assert line["unit_name"]
+            assert line["batch_number"]

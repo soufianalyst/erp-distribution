@@ -326,6 +326,8 @@ class SalesService:
                         product_id=product.id,
                         batch_id=batch.id,
                         batch_number=batch.batch_number,
+                        product_name=product.name,
+                        unit_name=product.base_unit_name,
                         # Where the goods actually left from, taken from the batch
                         # rather than the product's home warehouse. A van sale
                         # draws on the vehicle, and recording the home warehouse
@@ -1198,6 +1200,9 @@ class SalesService:
                 sales_return.lines.append(
                     SalesReturnLine(
                         product_id=line.product_id,
+                        # From the invoice line: a credit note describes the goods as
+                        # the invoice it reverses described them.
+                        product_name=inv_line.product_name,
                         batch_id=inv_line.batch_id,
                         quantity=take,
                         unit_price=inv_line.unit_price,

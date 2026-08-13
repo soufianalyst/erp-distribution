@@ -86,6 +86,10 @@ class SalesLineOut(BaseModel):
     product_id: int
     batch_id: int
     batch_number: str
+    # Named on the line itself, so printing an invoice needs no product lookup and a
+    # later rename cannot rewrite what this invoice says it sold.
+    product_name: str
+    unit_name: str
     # Warehouse this line was picked from — drives print grouping by warehouse.
     warehouse_id: int | None
     quantity: Decimal
@@ -251,6 +255,8 @@ class ReturnLineOut(BaseModel):
 
     id: int
     product_id: int
+    # Named on the line, so no consumer needs the product catalogue to read it.
+    product_name: str
     batch_id: int
     quantity: Decimal
     unit_price: Decimal

@@ -136,6 +136,10 @@ class PurchaseOrderLine(Base):
         index=True,
     )
     product_id: Mapped[int] = mapped_column(ForeignKey("products.id"), nullable=False)
+    # The product as it was transacted. See SalesInvoiceLine.product_name: a document
+    # that borrows its description from a mutable table changes when somebody renames
+    # a product, and every consumer otherwise has to fetch the catalogue to read it.
+    product_name: Mapped[str] = mapped_column(String(200), nullable=False)
     # Ordered amount in the product's base unit, at the expected cost per base
     # unit. Batch number and expiry are unknown until the goods actually arrive,
     # so they live on the receipt, not here.
@@ -227,6 +231,10 @@ class PurchaseInvoiceLine(Base):
         index=True,
     )
     product_id: Mapped[int] = mapped_column(ForeignKey("products.id"), nullable=False)
+    # The product as it was transacted. See SalesInvoiceLine.product_name: a document
+    # that borrows its description from a mutable table changes when somebody renames
+    # a product, and every consumer otherwise has to fetch the catalogue to read it.
+    product_name: Mapped[str] = mapped_column(String(200), nullable=False)
     batch_id: Mapped[int] = mapped_column(
         ForeignKey("product_batches.id"), nullable=False
     )
@@ -305,6 +313,10 @@ class PurchaseReturnLine(Base):
         index=True,
     )
     product_id: Mapped[int] = mapped_column(ForeignKey("products.id"), nullable=False)
+    # The product as it was transacted. See SalesInvoiceLine.product_name: a document
+    # that borrows its description from a mutable table changes when somebody renames
+    # a product, and every consumer otherwise has to fetch the catalogue to read it.
+    product_name: Mapped[str] = mapped_column(String(200), nullable=False)
     batch_id: Mapped[int] = mapped_column(
         ForeignKey("product_batches.id"), nullable=False
     )

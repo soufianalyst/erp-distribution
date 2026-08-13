@@ -188,6 +188,12 @@ class SalesInvoiceLine(Base):
         ForeignKey("product_batches.id"), nullable=False
     )
     batch_number: Mapped[str] = mapped_column(String(50), nullable=False)
+    # The product as it was sold, frozen here rather than joined at read time.
+    # `batch_number` above set this precedent: an invoice is a financial record, and
+    # a record that borrows its description from a mutable table is a record that
+    # changes when somebody renames a product three years later.
+    product_name: Mapped[str] = mapped_column(String(200), nullable=False)
+    unit_name: Mapped[str] = mapped_column(String(50), nullable=False)
     # Snapshot of the product's warehouse at sale time — drives print grouping for
     # delivery/pickup regardless of any later change to the product's home warehouse.
     warehouse_id: Mapped[int | None] = mapped_column(
@@ -422,6 +428,10 @@ class SalesReturnLine(Base):
         ForeignKey("sales_returns.id", ondelete="CASCADE"), nullable=False, index=True
     )
     product_id: Mapped[int] = mapped_column(ForeignKey("products.id"), nullable=False)
+    # The product as it was transacted. See SalesInvoiceLine.product_name: a document
+    # that borrows its description from a mutable table changes when somebody renames
+    # a product, and every consumer otherwise has to fetch the catalogue to read it.
+    product_name: Mapped[str] = mapped_column(String(200), nullable=False)
     batch_id: Mapped[int] = mapped_column(
         ForeignKey("product_batches.id"), nullable=False
     )

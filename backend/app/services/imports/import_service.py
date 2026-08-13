@@ -798,6 +798,7 @@ class ImportService:
                     PurchaseInvoiceLine(
                         invoice_id=invoice.id,
                         product_id=product.id,
+                        product_name=product.name,
                         batch_id=batch.id,
                         batch_number=batch.batch_number,
                         expiry_date=line.get("expiry_date") or batch.expiry_date,
@@ -1072,6 +1073,8 @@ class ImportService:
                         product_id=product.id,
                         batch_id=batch.id,
                         batch_number=batch.batch_number,
+                        product_name=product.name,
+                        unit_name=product.base_unit_name,
                         warehouse_id=warehouse.id,
                         quantity=quantity,
                         unit_price=unit_price,

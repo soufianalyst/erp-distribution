@@ -4,7 +4,7 @@
 // An order carries no stock or accounting effect until a delivery is received,
 // at which point it raises an ordinary purchase invoice. The order form opens
 // with a worklist of items that are out of stock or below their minimum.
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import {
   Alert,
   Badge,
@@ -20,14 +20,16 @@ import {
   qty,
 } from "../components/Ui";
 import { useAuth } from "../context/AuthContext";
+import ProductPicker, { productLabel } from "../components/ProductPicker";
 import useFetch from "../hooks/useFetch";
+import useProductCatalog from "../hooks/useProductCatalog";
 import api, { apiMessage } from "../services/api";
 
 // Matches the shared Table's page size, so the pager and the server agree.
 const PAGE_SIZE = 15;
 
-const EMPTY_LINE = { product_id: "", batch_number: "", expiry_date: "", quantity: "", unit_id: "", unit_cost: "" };
-const EMPTY_ORDER_LINE = { product_id: "", quantity: "", unit_id: "", unit_cost: "" };
+const EMPTY_LINE = { product_id: "", product_label: "", batch_number: "", expiry_date: "", quantity: "", unit_id: "", unit_cost: "" };
+const EMPTY_ORDER_LINE = { product_id: "", product_label: "", quantity: "", unit_id: "", unit_cost: "" };
 
 const PAYMENT_METHOD_LABELS = { cash: "نقدي", card: "بطاقة", credit: "آجل" };
 const PAYMENT_METHOD_TONE = { cash: "green", card: "blue", credit: "amber" };
@@ -56,7 +58,10 @@ export const PURCHASE_RETURN_REASON_LABELS = {
   other: "أخرى",
 };
 
-function PurchaseForm({ suppliers, warehouses, products, taxRates, onCreated, invoice }) {
+function PurchaseForm({
+  suppliers, warehouses, products, onProductQuery, productsLoading = false,
+  ensureProducts, taxRates, onCreated, invoice,
+}) {
   const editing = !!invoice;
   const defaultTaxRate = taxRates.find((t) => t.is_default);
   const [form, setForm] = useState(
@@ -83,6 +88,9 @@ function PurchaseForm({ suppliers, warehouses, products, taxRates, onCreated, in
     editing
       ? invoice.lines.map((l) => ({
           product_id: String(l.product_id),
+          // From the line, not a catalogue lookup — the same reason the sales form
+          // stopped needing every product loaded before it could show an invoice.
+          product_label: l.product_name,
           batch_number: l.batch_number,
           expiry_date: l.expiry_date,
           quantity: String(l.quantity),
@@ -92,6 +100,17 @@ function PurchaseForm({ suppliers, warehouses, products, taxRates, onCreated, in
       : [{ ...EMPTY_LINE }]
   );
   const [error, setError] = useState(null);
+
+  // The unit list and the landed cost come from the product record, so the handful
+  // named by an edited invoice are fetched by id; searching cannot find them because
+  // nobody typed anything.
+  useEffect(() => {
+    if (editing && ensureProducts) {
+      ensureProducts(invoice.lines.map((l) => l.product_id));
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
   const set = (key) => (e) => setForm({ ...form, [key]: e.target.value });
   const toggleTax = (taxId) =>
     setForm((f) => ({
@@ -192,22 +211,28 @@ function PurchaseForm({ suppliers, warehouses, products, taxRates, onCreated, in
           return (
             <div key={index} className={`line-row ${index === 0 ? "line-row-first" : ""} mb-2 grid grid-cols-12 items-end gap-2 max-sm:grid-cols-1 max-sm:[&>*]:col-span-1`}>
               <div className="col-span-3">
-                <Select
-                  label="الصنف"
-                  data-purchase-product
-                  value={line.product_id}
-                  onChange={(e) => setLine(index, "product_id", e.target.value)}
+                <ProductPicker
+                  listId="purchase-products"
+                  products={products}
+                  value={line.product_label ?? ""}
+                  loading={productsLoading}
+                  onQuery={onProductQuery}
+                  onSelect={(match, text) =>
+                    setLines(
+                      lines.map((l, i) =>
+                        i === index
+                          ? {
+                              ...l,
+                              product_label: text,
+                              product_id: match ? String(match.id) : "",
+                              unit_id: "",
+                            }
+                          : l
+                      )
+                    )
+                  }
                   required
-                >
-                  <option value="">—</option>
-                  {products
-                    .filter((p) => p.is_active || String(p.id) === String(line.product_id))
-                    .map((p) => (
-                      <option key={p.id} value={p.id}>
-                        {p.sku} — {p.name}
-                      </option>
-                    ))}
-                </Select>
+                />
               </div>
               <div className="col-span-2">
                 <Input
@@ -279,11 +304,13 @@ function PurchaseForm({ suppliers, warehouses, products, taxRates, onCreated, in
                       e.preventDefault();
                       setLines([...lines, { ...EMPTY_LINE }]);
                       setTimeout(() => {
-                        const selects = document.querySelectorAll(
-                          "select[data-purchase-product]"
+                        // Now an input rather than a select: the picker is a text
+                        // box, which is the point — a storekeeper types and tabs.
+                        const pickers = document.querySelectorAll(
+                          'input[list="purchase-products"]'
                         );
-                        const newSelect = selects[selects.length - 1];
-                        if (newSelect) newSelect.focus();
+                        const next = pickers[pickers.length - 1];
+                        if (next) next.focus();
                       }, 0);
                     }
                   }}
@@ -420,7 +447,10 @@ function ReorderWorklist({ onAdd, addedIds }) {
   );
 }
 
-function PurchaseOrderForm({ suppliers, warehouses, products, order, onDone }) {
+function PurchaseOrderForm({
+  suppliers, warehouses, products, onProductQuery, productsLoading = false,
+  ensureProducts, order, onDone,
+}) {
   const editing = !!order;
   const [form, setForm] = useState(
     editing
@@ -545,22 +575,28 @@ function PurchaseOrderForm({ suppliers, warehouses, products, order, onDone }) {
           return (
             <div key={index} className={`line-row ${index === 0 ? "line-row-first" : ""} mb-2 grid grid-cols-12 items-end gap-2 max-sm:grid-cols-1 max-sm:[&>*]:col-span-1`}>
               <div className="col-span-5">
-                <Select
-                  label="الصنف"
-                  data-order-product
-                  value={line.product_id}
-                  onChange={(e) => setLine(index, "product_id", e.target.value)}
+                <ProductPicker
+                  listId="order-products"
+                  products={products}
+                  value={line.product_label ?? ""}
+                  loading={productsLoading}
+                  onQuery={onProductQuery}
+                  onSelect={(match, text) =>
+                    setLines(
+                      lines.map((l, i) =>
+                        i === index
+                          ? {
+                              ...l,
+                              product_label: text,
+                              product_id: match ? String(match.id) : "",
+                              unit_id: "",
+                            }
+                          : l
+                      )
+                    )
+                  }
                   required
-                >
-                  <option value="">—</option>
-                  {products
-                    .filter((p) => p.is_active || String(p.id) === String(line.product_id))
-                    .map((p) => (
-                      <option key={p.id} value={p.id}>
-                        {p.sku} — {p.name}
-                      </option>
-                    ))}
-                </Select>
+                />
               </div>
               <div className="col-span-2">
                 <Input
@@ -648,7 +684,7 @@ function PurchaseOrderForm({ suppliers, warehouses, products, order, onDone }) {
   );
 }
 
-function ReceiveOrderForm({ order, products, warehouses, taxRates, onDone }) {
+function ReceiveOrderForm({ order, warehouses, taxRates, onDone }) {
   const defaultTaxRate = (taxRates || []).find((t) => t.is_default);
   const outstanding = order.lines.filter((l) => Number(l.outstanding_quantity) > 0);
   const [form, setForm] = useState({
@@ -755,7 +791,8 @@ function ReceiveOrderForm({ order, products, warehouses, taxRates, onDone }) {
       </div>
 
       {outstanding.map((line) => {
-        const product = products.find((p) => p.id === line.product_id);
+        // The order line names its own product.
+        const product = { name: line.product_name };
         const row = rows[line.id];
         return (
           <div
@@ -816,12 +853,15 @@ function ReceiveOrderForm({ order, products, warehouses, taxRates, onDone }) {
   );
 }
 
-function PurchaseReturnForm({ invoice, products, onDone }) {
-  // Aggregate the invoice's batch lines into per-product received totals.
+function PurchaseReturnForm({ invoice, onDone }) {
+  // Aggregate the invoice's batch lines into per-product received totals, named from
+  // the lines: a credit note should describe the goods as its invoice described them.
   const receivedByProduct = {};
+  const named = {};
   for (const line of invoice.lines) {
     receivedByProduct[line.product_id] =
       (receivedByProduct[line.product_id] || 0) + Number(line.quantity);
+    named[line.product_id] = { name: line.product_name };
   }
   const productIds = Object.keys(receivedByProduct);
 
@@ -865,7 +905,7 @@ function PurchaseReturnForm({ invoice, products, onDone }) {
         البضاعة المرتجعة تخرج نهائياً من المخزون وتعود للمورد، أياً كان السبب.
       </p>
       {productIds.map((id) => {
-        const product = products.find((p) => p.id === Number(id));
+        const product = named[id];
         return (
           <div key={id} className="grid grid-cols-2 items-end gap-4">
             <div className="text-sm font-bold">
@@ -948,10 +988,12 @@ export default function PurchasesPage() {
   const returns = useFetch(() => api.get("/purchases/returns"));
   const suppliers = useFetch(() => api.get("/purchases/suppliers"));
   const warehouses = useFetch(() => api.get("/inventory/warehouses"));
-  const products = useFetch(() => api.get("/inventory/products/lookup"));
+  // Searched, not downloaded. The dropdown here used to carry all 1,060 products,
+  // which is unusable as a control long before it is slow.
+  const catalog = useProductCatalog();
   const taxRates = useFetch(() => api.get("/settings/tax-rates", { params: { active_only: true, in_scope_only: true } }));
 
-  if (suppliers.loading || warehouses.loading || products.loading || taxRates.loading) {
+  if (suppliers.loading || warehouses.loading || taxRates.loading) {
     return <Loading />;
   }
 
@@ -985,7 +1027,10 @@ export default function PurchasesPage() {
             <PurchaseForm
               suppliers={suppliers.data}
               warehouses={warehouses.data}
-              products={products.data}
+              products={catalog.products}
+              onProductQuery={catalog.setQuery}
+              productsLoading={catalog.loading}
+              ensureProducts={catalog.ensure}
               taxRates={taxRates.data || []}
               onCreated={(invoice) => {
                 // Saved, so the fields are no longer unsaved work.
@@ -1209,7 +1254,8 @@ export default function PurchasesPage() {
                 {
                   key: "product_id",
                   label: "الصنف",
-                  render: (r) => products.data.find((p) => p.id === r.product_id)?.name ?? r.product_id,
+                  // The line names its own product; no catalogue lookup needed.
+                  render: (r) => r.product_name,
                 },
                 { key: "batch_number", label: "التشغيلة" },
                 { key: "expiry_date", label: "الانتهاء" },
@@ -1251,8 +1297,7 @@ export default function PurchasesPage() {
                             {ret.lines.map((line) => (
                               <tr key={line.id}>
                                 <td>
-                                  {products.data.find((p) => p.id === line.product_id)?.name ??
-                                    line.product_id}
+                                  {line.product_name}
                                 </td>
                                 <td>{qty(line.quantity)}</td>
                                 <td>{money(line.line_total)}</td>
@@ -1351,7 +1396,10 @@ export default function PurchasesPage() {
             invoice={editing}
             suppliers={suppliers.data}
             warehouses={warehouses.data}
-            products={products.data}
+            products={catalog.products}
+            onProductQuery={catalog.setQuery}
+            productsLoading={catalog.loading}
+            ensureProducts={catalog.ensure}
             taxRates={taxRates.data || []}
             onCreated={(invoice) => {
               setEditing(null);
@@ -1368,7 +1416,10 @@ export default function PurchasesPage() {
           <PurchaseOrderForm
             suppliers={suppliers.data}
             warehouses={warehouses.data}
-            products={products.data}
+            products={catalog.products}
+            onProductQuery={catalog.setQuery}
+            productsLoading={catalog.loading}
+            ensureProducts={catalog.ensure}
             onDone={(order) => {
               setNewOrder(false);
               setNotice(`تم حفظ طلب الشراء رقم ${order.id} كمسودة — أرسله للمورد عند الجاهزية.`);
@@ -1389,7 +1440,10 @@ export default function PurchasesPage() {
             order={editingOrder}
             suppliers={suppliers.data}
             warehouses={warehouses.data}
-            products={products.data}
+            products={catalog.products}
+            onProductQuery={catalog.setQuery}
+            productsLoading={catalog.loading}
+            ensureProducts={catalog.ensure}
             onDone={(order) => {
               setEditingOrder(null);
               setNotice(`تم تعديل طلب الشراء رقم ${order.id}.`);
@@ -1408,7 +1462,6 @@ export default function PurchasesPage() {
         {receivingOrder && (
           <ReceiveOrderForm
             order={receivingOrder}
-            products={products.data}
             warehouses={warehouses.data}
             taxRates={taxRates.data || []}
             onDone={(invoice) => {
@@ -1454,7 +1507,8 @@ export default function PurchasesPage() {
                 {
                   key: "product_id",
                   label: "الصنف",
-                  render: (r) => products.data.find((p) => p.id === r.product_id)?.name ?? r.product_id,
+                  // The line names its own product; no catalogue lookup needed.
+                  render: (r) => r.product_name,
                 },
                 { key: "quantity", label: "المطلوب", render: (r) => qty(r.quantity) },
                 { key: "received_quantity", label: "المستلم", render: (r) => qty(r.received_quantity) },
@@ -1522,7 +1576,6 @@ export default function PurchasesPage() {
         {returnFor && (
           <PurchaseReturnForm
             invoice={returnFor}
-            products={products.data}
             onDone={() => {
               setReturnFor(null);
               setNotice("تم تسجيل مرتجع المشتريات بنجاح.");

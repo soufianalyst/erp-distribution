@@ -9,14 +9,12 @@ export default function PrintInvoicePage() {
   const navigate = useNavigate();
   const invoice = useFetch(() => api.get(`/sales/invoices/${invoiceId}`), [invoiceId]);
   const customers = useFetch(() => api.get("/sales/customers"));
-  const products = useFetch(() => api.get("/inventory/products/lookup"));
   const warehouses = useFetch(() => api.get("/inventory/warehouses"));
   const company = useFetch(() => api.get("/settings/company"));
 
   if (
     invoice.loading ||
     customers.loading ||
-    products.loading ||
     warehouses.loading ||
     company.loading
   ) {
@@ -28,7 +26,6 @@ export default function PrintInvoicePage() {
 
   const inv = invoice.data;
   const customer = customers.data?.find((c) => c.id === inv.customer_id);
-  const productOf = (id) => products.data?.find((p) => p.id === id);
   const warehouseName = (id) =>
     warehouses.data?.find((w) => w.id === id)?.name ?? "غير محدد";
 
@@ -112,18 +109,20 @@ export default function PrintInvoicePage() {
                 </tr>
               </thead>
               <tbody>
+                {/* The line names its own product now. Printing an invoice used to
+                    download the whole catalogue to resolve these two strings, and a
+                    renamed product silently rewrote what old invoices said they sold. */}
                 {group.lines.map((line, index) => {
-                  const product = productOf(line.product_id);
                   return (
                     <tr key={line.id}>
                       <td className="border border-slate-300 px-3 py-2">{index + 1}</td>
                       <td className="border border-slate-300 px-3 py-2 font-bold">
-                        {product?.name ?? line.product_id}
+                        {line.product_name}
                       </td>
                       <td className="border border-slate-300 px-3 py-2">{line.batch_number}</td>
                       <td className="border border-slate-300 px-3 py-2">{qty(line.quantity)}</td>
                       <td className="border border-slate-300 px-3 py-2">
-                        {product?.base_unit_name ?? ""}
+                        {line.unit_name}
                       </td>
                       <td className="border border-slate-300 px-3 py-2">{money(line.unit_price)}</td>
                       <td className="border border-slate-300 px-3 py-2 font-bold">

@@ -23,7 +23,9 @@ import {
 } from "../components/Ui";
 import { useAuth } from "../context/AuthContext";
 import InvoiceTracker from "../components/InvoiceTracker";
+import ProductPicker, { productLabel } from "../components/ProductPicker";
 import useFetch from "../hooks/useFetch";
+import useProductCatalog from "../hooks/useProductCatalog";
 import api, { apiMessage } from "../services/api";
 
 // Matches the shared Table's page size, so the pager and the server agree.
@@ -31,7 +33,7 @@ const PAGE_SIZE = 15;
 
 const EMPTY_LINE = { product_id: "", product_label: "", quantity: "", unit_id: "" };
 
-const productLabel = (p) => `${p.sku} — ${p.name}`;
+
 
 export const REASON_LABELS = {
   resellable: "صالح لإعادة البيع",
@@ -174,27 +176,33 @@ function FinalizeInvoice({ totals, initialCollectable, onConfirm, onCancel, busy
 }
 
 // Aggregate an existing invoice's batch-level lines back into per-product form lines.
-function linesFromInvoice(invoice, products) {
+function linesFromInvoice(invoice) {
   const byProduct = {};
+  const named = {};
   for (const line of invoice.lines) {
     byProduct[line.product_id] =
       (byProduct[line.product_id] || 0) + Number(line.quantity);
+    named[line.product_id] = line.product_name;
   }
-  return Object.entries(byProduct).map(([product_id, quantity]) => {
-    const product = products.find((p) => p.id === Number(product_id));
-    return {
-      product_id,
-      product_label: product ? productLabel(product) : "",
-      quantity: String(quantity),
-      unit_id: "",
-    };
-  });
+  // Labelled from the invoice's own line, not from a catalogue lookup: the form used
+  // to need all 1,060 products loaded before it could show what an invoice contained.
+  // The id is already known, so nothing has to be resolved for the row to be correct;
+  // `ensure` below fetches the product only for the unit list and the price.
+  return Object.entries(byProduct).map(([product_id, quantity]) => ({
+    product_id,
+    product_label: named[product_id] ?? "",
+    quantity: String(quantity),
+    unit_id: "",
+  }));
 }
 
 function InvoiceForm({
   customers,
   warehouses,
   products,
+  onProductQuery,
+  productsLoading = false,
+  ensureProducts,
   taxRates,
   isAdmin,
   onCreated,
@@ -225,11 +233,21 @@ function InvoiceForm({
         }
   );
   const [lines, setLines] = useState(
-    editing ? linesFromInvoice(invoice, products) : [{ ...EMPTY_LINE }]
+    editing ? linesFromInvoice(invoice) : [{ ...EMPTY_LINE }]
   );
   const [error, setError] = useState(null);
   const [finalizing, setFinalizing] = useState(false);
   const [busy, setBusy] = useState(false);
+
+  // Editing: the lines already know their product ids and names, but the unit list and
+  // the price come from the product record, so those few are fetched by id. Searching
+  // cannot find them — nobody typed anything.
+  useEffect(() => {
+    if (editing && ensureProducts) {
+      ensureProducts(invoice.lines.map((l) => l.product_id));
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
   const set = (key) => (e) => setForm({ ...form, [key]: e.target.value });
   const toggleTax = (taxId) =>
     setForm((f) => ({
@@ -348,14 +366,6 @@ function InvoiceForm({
         </div>
       </div>
 
-      <datalist id={productListId}>
-        {products
-          .filter((p) => p.is_active)
-          .map((p) => (
-            <option key={p.id} value={productLabel(p)} />
-          ))}
-      </datalist>
-
       <div>
         <div className="mb-2 flex items-center justify-between">
           <span className="text-sm font-bold text-slate-600 dark:text-slate-400">
@@ -373,12 +383,13 @@ function InvoiceForm({
           return (
             <div key={index} className={`line-row ${index === 0 ? "line-row-first" : ""} mb-2 grid grid-cols-12 items-end gap-2 max-sm:grid-cols-1 max-sm:[&>*]:col-span-1`}>
               <div className="col-span-6">
-                <Input
-                  label="الصنف (اكتب للبحث)"
-                  list={productListId}
-                  placeholder="ابحث بالرمز أو الاسم..."
+                <ProductPicker
+                  listId={productListId}
+                  products={products}
                   value={line.product_label ?? ""}
-                  onChange={(e) => setProductLine(index, e.target.value)}
+                  loading={productsLoading}
+                  onQuery={onProductQuery}
+                  onSelect={(_product, text) => setProductLine(index, text)}
                   required
                 />
                 {product && (
@@ -497,11 +508,15 @@ function InvoiceForm({
   );
 }
 
-function ReturnForm({ invoice, products, onDone }) {
-  // Aggregate the invoice's batch lines into per-product sold totals.
+function ReturnForm({ invoice, onDone }) {
+  // Aggregate the invoice's batch lines into per-product sold totals. The names come
+  // from the lines themselves rather than the catalogue: this form is about what *this
+  // invoice* sold, and it should say so in the words the invoice used.
   const soldByProduct = {};
+  const named = {};
   for (const line of invoice.lines) {
     soldByProduct[line.product_id] = (soldByProduct[line.product_id] || 0) + Number(line.quantity);
+    named[line.product_id] = { name: line.product_name, unit: line.unit_name };
   }
   const productIds = Object.keys(soldByProduct);
 
@@ -551,13 +566,13 @@ function ReturnForm({ invoice, products, onDone }) {
         </p>
       )}
       {productIds.map((id) => {
-        const product = products.find((p) => p.id === Number(id));
+        const product = named[id];
         return (
           <div key={id} className="grid grid-cols-2 items-end gap-4">
             <div className="text-sm font-bold">
               {product?.name ?? `صنف ${id}`}
               <div className="text-xs font-normal text-slate-500 dark:text-slate-400">
-                المباع: {qty(soldByProduct[id])} {product?.base_unit_name ?? ""}
+                المباع: {qty(soldByProduct[id])} {product?.unit ?? ""}
               </div>
             </div>
             <Input
@@ -735,7 +750,14 @@ function CreditDecision({ credit, onDone }) {
 const QUOTATION_STATUS_LABELS = { draft: "مسودة", converted: "تم التحويل", cancelled: "ملغاة" };
 const QUOTATION_STATUS_TONE = { draft: "amber", converted: "green", cancelled: "red" };
 
-function QuotationForm({ customers, products, taxRates, onCreated }) {
+function QuotationForm({
+  customers,
+  products,
+  onProductQuery,
+  productsLoading = false,
+  taxRates,
+  onCreated,
+}) {
   const defaultTaxRate = taxRates.find((t) => t.is_default);
   const [form, setForm] = useState({
     customer_id: "",
@@ -828,14 +850,6 @@ function QuotationForm({ customers, products, taxRates, onCreated }) {
         </div>
       </div>
 
-      <datalist id="quotation-products">
-        {products
-          .filter((p) => p.is_active)
-          .map((p) => (
-            <option key={p.id} value={productLabel(p)} />
-          ))}
-      </datalist>
-
       <div>
         <div className="mb-2 flex items-center justify-between">
           <span className="text-sm font-bold text-slate-600 dark:text-slate-400">أسطر العرض</span>
@@ -846,12 +860,13 @@ function QuotationForm({ customers, products, taxRates, onCreated }) {
         {lines.map((line, index) => (
           <div key={index} className={`line-row ${index === 0 ? "line-row-first" : ""} mb-2 grid grid-cols-12 items-end gap-2 max-sm:grid-cols-1 max-sm:[&>*]:col-span-1`}>
             <div className="col-span-8">
-              <Input
-                label="الصنف (اكتب للبحث)"
-                list="quotation-products"
-                placeholder="ابحث بالرمز أو الاسم..."
+              <ProductPicker
+                listId="quotation-products"
+                products={products}
                 value={line.product_label ?? ""}
-                onChange={(e) => setProductLine(index, e.target.value)}
+                loading={productsLoading}
+                onQuery={onProductQuery}
+                onSelect={(_product, text) => setProductLine(index, text)}
                 required
               />
             </div>
@@ -929,7 +944,16 @@ function ConvertQuotationForm({ quotation, isAdmin, onConverted, onClose }) {
   );
 }
 
-function QuotationsTab({ customers, products, taxRates, canQuote, isAdmin, onInvoiceCreated }) {
+function QuotationsTab({
+  customers,
+  products,
+  onProductQuery,
+  productsLoading = false,
+  taxRates,
+  canQuote,
+  isAdmin,
+  onInvoiceCreated,
+}) {
   const quotations = useFetch(() => api.get("/sales/quotations"));
   const [creating, setCreating] = useState(false);
   const [converting, setConverting] = useState(null);
@@ -1005,6 +1029,8 @@ function QuotationsTab({ customers, products, taxRates, canQuote, isAdmin, onInv
         <QuotationForm
           customers={customers}
           products={products}
+          onProductQuery={onProductQuery}
+          productsLoading={productsLoading}
           taxRates={taxRates}
           onCreated={() => {
             setCreating(false);
@@ -1142,10 +1168,13 @@ export default function SalesPage() {
 
   const customers = useFetch(() => api.get("/sales/customers"));
   const warehouses = useFetch(() => api.get("/inventory/warehouses"));
-  const products = useFetch(() => api.get("/inventory/products/lookup"));
+  // Products arrive as they are searched for, not 1,060 up front. See
+  // useProductCatalog: the forms still receive a flat `products` array, so every
+  // existing `.find()` in this file keeps working.
+  const catalog = useProductCatalog();
   const taxRates = useFetch(() => api.get("/settings/tax-rates", { params: { active_only: true, in_scope_only: true } }));
 
-  if (customers.loading || warehouses.loading || products.loading || taxRates.loading) {
+  if (customers.loading || warehouses.loading || taxRates.loading) {
     return <Loading />;
   }
 
@@ -1227,7 +1256,10 @@ export default function SalesPage() {
               registry={draftGuards}
               customers={customers.data}
               warehouses={warehouses.data}
-              products={products.data}
+              products={catalog.products}
+              onProductQuery={catalog.setQuery}
+              productsLoading={catalog.loading}
+              ensureProducts={catalog.ensure}
               taxRates={taxRates.data || []}
               isAdmin={can("sales.credit_override")}
               onCreated={(invoice) => {
@@ -1422,7 +1454,9 @@ export default function SalesPage() {
       {tab === "quotations" && (
         <QuotationsTab
           customers={customers.data}
-          products={products.data}
+          products={catalog.products}
+          onProductQuery={catalog.setQuery}
+          productsLoading={catalog.loading}
           taxRates={taxRates.data || []}
           canQuote={canQuote}
           isAdmin={can("sales.credit_override")}
@@ -1449,7 +1483,8 @@ export default function SalesPage() {
                 {
                   key: "product_id",
                   label: "الصنف",
-                  render: (r) => products.data.find((p) => p.id === r.product_id)?.name ?? r.product_id,
+                  // Invoice lines carry the name they were sold under.
+                  render: (r) => r.product_name,
                 },
                 { key: "batch_number", label: "التشغيلة (FEFO)" },
                 { key: "quantity", label: "الكمية", render: (r) => qty(r.quantity) },
@@ -1492,8 +1527,7 @@ export default function SalesPage() {
                             {ret.lines.map((line) => (
                               <tr key={line.id}>
                                 <td>
-                                  {products.data.find((p) => p.id === line.product_id)?.name ??
-                                    line.product_id}
+                                  {line.product_name}
                                 </td>
                                 <td>{qty(line.quantity)}</td>
                                 <td>{money(line.line_total)}</td>
@@ -1614,7 +1648,10 @@ export default function SalesPage() {
             invoice={editing}
             customers={customers.data}
             warehouses={warehouses.data}
-            products={products.data}
+            products={catalog.products}
+            onProductQuery={catalog.setQuery}
+            productsLoading={catalog.loading}
+            ensureProducts={catalog.ensure}
             taxRates={taxRates.data || []}
             isAdmin={can("sales.credit_override")}
             onCreated={(invoice) => {
@@ -1635,7 +1672,6 @@ export default function SalesPage() {
         {returnFor && (
           <ReturnForm
             invoice={returnFor}
-            products={products.data}
             onDone={(ret) => {
               setReturnFor(null);
               setNotice(`تم تسجيل المرتجع رقم ${ret.id} بقيمة ${money(ret.total)} بنجاح.`);

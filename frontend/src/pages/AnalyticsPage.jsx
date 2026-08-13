@@ -434,7 +434,7 @@ function CustomerRfmTab({
         onClear={() => onProductChange("")}
         cleared={!productId}
       >
-        <ProductPicker
+        <ProductSlicer
           products={products}
           value={productId}
           onChange={onProductChange}
@@ -699,9 +699,12 @@ function RfmSlicer({ label, hint, children, onClear, cleared }) {
   );
 }
 
-// Over a thousand products, so the same type-to-search datalist the invoice form
-// uses rather than a dropdown nobody can scroll.
-function ProductPicker({ products, value, onChange }) {
+// Over a thousand products, so a type-to-search datalist rather than a dropdown
+// nobody can scroll. Named apart from the shared `components/ProductPicker` on
+// purpose: that one *chooses a product for a line* and reports the text as typed,
+// while this one *drives a report filter* and has to follow the filter when it is
+// cleared from outside. Same control, different contract.
+function ProductSlicer({ products, value, onChange }) {
   const selected = products.find((p) => String(p.id) === String(value));
   const [text, setText] = useState(selected ? productOptionLabel(selected) : "");
 

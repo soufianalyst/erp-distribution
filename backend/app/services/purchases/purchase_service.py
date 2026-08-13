@@ -251,6 +251,7 @@ class PurchaseService:
             invoice.lines.append(
                 PurchaseInvoiceLine(
                     product_id=line.product_id,
+                    product_name=product_obj.name,
                     batch_id=batch.id,
                     batch_number=line.batch_number,
                     expiry_date=line.expiry_date,
@@ -532,6 +533,7 @@ class PurchaseService:
             order.lines.append(
                 PurchaseOrderLine(
                     product_id=line.product_id,
+                    product_name=product.name,
                     quantity=base_quantity,
                     received_quantity=Decimal("0"),
                     unit_cost=base_unit_cost,
@@ -806,6 +808,10 @@ class PurchaseService:
                 purchase_return.lines.append(
                     PurchaseReturnLine(
                         product_id=line.product_id,
+                        # Copied from the invoice line, not re-read from the product:
+                        # a credit note must describe the goods the way the invoice it
+                        # reverses described them.
+                        product_name=inv_line.product_name,
                         batch_id=inv_line.batch_id,
                         quantity=take,
                         unit_cost=inv_line.unit_cost,

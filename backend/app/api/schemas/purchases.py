@@ -73,6 +73,8 @@ class PurchaseLineOut(BaseModel):
 
     id: int
     product_id: int
+    # Named on the line, so no consumer needs the product catalogue to read it.
+    product_name: str
     batch_id: int
     batch_number: str
     expiry_date: date
@@ -180,6 +182,8 @@ class PurchaseOrderLineOut(BaseModel):
 
     id: int
     product_id: int
+    # Named on the line, so no consumer needs the product catalogue to read it.
+    product_name: str
     # All quantities are in the product's base unit.
     quantity: Decimal
     received_quantity: Decimal
@@ -262,6 +266,8 @@ class PurchaseReturnLineOut(BaseModel):
 
     id: int
     product_id: int
+    # Named on the line, so no consumer needs the product catalogue to read it.
+    product_name: str
     batch_id: int
     quantity: Decimal
     unit_cost: Decimal

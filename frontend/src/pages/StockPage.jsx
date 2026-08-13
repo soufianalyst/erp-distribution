@@ -18,7 +18,9 @@ import {
   qty,
 } from "../components/Ui";
 import { useAuth } from "../context/AuthContext";
+import ProductPicker from "../components/ProductPicker";
 import useFetch from "../hooks/useFetch";
+import useProductCatalog from "../hooks/useProductCatalog";
 import api, { apiMessage } from "../services/api";
 
 const ADJUSTMENT_REASON_LABELS = {
@@ -43,9 +45,10 @@ function UnitOptions({ product }) {
   );
 }
 
-function TransferForm({ products, warehouses, onDone }) {
+function TransferForm({ products, onProductQuery, productsLoading = false, warehouses, onDone }) {
   const [form, setForm] = useState({
     product_id: "",
+    product_label: "",
     from_warehouse_id: "",
     to_warehouse_id: "",
     quantity: "",
@@ -82,16 +85,22 @@ function TransferForm({ products, warehouses, onDone }) {
         </Alert>
       )}
       <div className="grid grid-cols-1 gap-4 sm:grid-cols-3">
-        <Select label="الصنف" value={form.product_id} onChange={set("product_id")} required>
-          <option value="">— اختر الصنف —</option>
-          {products
-            .filter((p) => p.is_active)
-            .map((p) => (
-              <option key={p.id} value={p.id}>
-                {p.sku} — {p.name}
-              </option>
-            ))}
-        </Select>
+        <ProductPicker
+          listId="transfer-products"
+          products={products}
+          value={form.product_label}
+          loading={productsLoading}
+          onQuery={onProductQuery}
+          onSelect={(match, text) =>
+            setForm((f) => ({
+              ...f,
+              product_label: text,
+              product_id: match ? String(match.id) : "",
+              unit_id: "",
+            }))
+          }
+          required
+        />
         <Select label="من مستودع" value={form.from_warehouse_id} onChange={set("from_warehouse_id")} required>
           <option value="">—</option>
           {warehouses.map((w) => (
@@ -118,8 +127,9 @@ function TransferForm({ products, warehouses, onDone }) {
   );
 }
 
-function AdjustmentForm({ products, warehouses, onDone }) {
+function AdjustmentForm({ products, onProductQuery, productsLoading = false, warehouses, onDone }) {
   const [reason, setReason] = useState("damaged");
+  const [productLabelText, setProductLabelText] = useState("");
   const [notes, setNotes] = useState("");
   const [productId, setProductId] = useState("");
   const [batches, setBatches] = useState([]);
@@ -177,16 +187,20 @@ function AdjustmentForm({ products, warehouses, onDone }) {
             </option>
           ))}
         </Select>
-        <Select label="الصنف" value={productId} onChange={(e) => selectProduct(e.target.value)} required>
-          <option value="">— اختر الصنف —</option>
-          {products
-            .filter((p) => p.is_active)
-            .map((p) => (
-              <option key={p.id} value={p.id}>
-                {p.sku} — {p.name}
-              </option>
-            ))}
-        </Select>
+        <ProductPicker
+          listId="adjustment-products"
+          products={products}
+          value={productLabelText}
+          loading={productsLoading}
+          onQuery={onProductQuery}
+          onSelect={(match, text) => {
+            setProductLabelText(text);
+            // Only a resolved product has batches to count; a half-typed name clears
+            // the list rather than leaving last product's batches on screen.
+            selectProduct(match ? String(match.id) : "");
+          }}
+          required
+        />
       </div>
       <Input label="ملاحظات (اختياري)" value={notes} onChange={(e) => setNotes(e.target.value)} />
 
@@ -455,7 +469,8 @@ export default function StockPage() {
   const [sheet, setSheet] = useState(null);
   const [newCountWarehouse, setNewCountWarehouse] = useState("");
 
-  const products = useFetch(() => api.get("/inventory/products/lookup"));
+  // Searched rather than downloaded; see useProductCatalog.
+  const catalog = useProductCatalog();
   const warehouses = useFetch(() => api.get("/inventory/warehouses"));
   const levels = useFetch(() => api.get("/inventory/stock/levels"));
   const nearExpiry = useFetch(() => api.get("/inventory/stock/near-expiry", { params: { days: 60 } }));
@@ -526,7 +541,7 @@ export default function StockPage() {
     { id: "expiry", label: "قرب الانتهاء" },
   ];
 
-  if (products.loading || warehouses.loading) return <Loading />;
+  if (warehouses.loading) return <Loading />;
 
   return (
     <div className="space-y-6">
@@ -572,7 +587,13 @@ export default function StockPage() {
 
       {tab === "transfer" && canTransfer && (
         <Card title="تحويل بضاعة — يتم اختيار التشغيلات الأقرب انتهاءً أولاً (FEFO)">
-          <TransferForm products={products.data} warehouses={warehouses.data} onDone={reloadAll} />
+          <TransferForm
+              products={catalog.products}
+              onProductQuery={catalog.setQuery}
+              productsLoading={catalog.loading}
+              warehouses={warehouses.data}
+              onDone={reloadAll}
+            />
         </Card>
       )}
 
@@ -580,7 +601,9 @@ export default function StockPage() {
         <div className="space-y-6">
           <Card title="تعديل/إتلاف المخزون — يخرج نهائياً من المخزون خارج أي عملية بيع">
             <AdjustmentForm
-              products={products.data}
+              products={catalog.products}
+              onProductQuery={catalog.setQuery}
+              productsLoading={catalog.loading}
               warehouses={warehouses.data}
               onDone={(message) => {
                 setNotice(message);
