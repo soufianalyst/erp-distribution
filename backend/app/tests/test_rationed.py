@@ -17,6 +17,7 @@ day it was written and quietly wrong afterwards is the worst failure available, 
 tests drive each of those three events and check the register moved with them.
 """
 
+from datetime import datetime, timezone
 from decimal import Decimal
 
 from httpx import AsyncClient
@@ -28,6 +29,7 @@ from app.domain.models.sales import RationedLine, RationedRecord
 from app.tests.conftest import (
     TEST_ADMIN_PASSWORD,
     TEST_SALES_PASSWORD,
+    TEST_STORE_PASSWORD,
     login,
 )
 from app.tests.test_inventory import create_product, create_warehouse, receive
@@ -843,3 +845,237 @@ class TestTheTaxOnTheDeclaration:
             f"/api/v1/sales/rationed/{record_id}/taxes",
             headers=sales, json={"tax_rate_ids": []})
         assert response.status_code == 403
+
+
+class TestTheLog:
+    """The log of every declaration — what the office reprints from.
+
+    Two of its rules are the sort that look right while being wrong. The dates select
+    registers whose *period overlaps* the range, because a register is a span: one opened
+    in July and closed in September covers August, and a filter that hid it would hide
+    the very document the question was about. And the figures come from the same builder
+    the printed declaration uses, so a row in the log and the paper produced from that
+    row cannot disagree.
+    """
+
+    async def test_it_lists_open_and_closed_registers_together(
+        self, client: AsyncClient
+    ) -> None:
+        admin = await login(client, "admin", TEST_ADMIN_PASSWORD)
+        warehouse_id, product_id = await stocked(client, admin, "RAT-LOG")
+        customer_id = await create_customer(
+            client, admin, name="عميل السجل", credit_limit="90000")
+        await sell(client, admin, customer_id, warehouse_id,
+                   [{"product_id": product_id, "quantity": "10", "rationed": True}])
+        first = await register(client, admin, customer_id)
+        await client.post(
+            f"/api/v1/sales/rationed/{first['record_id']}/close",
+            headers=admin, json={"notes": "إقرار الشهر"})
+        # The successor, with something in it.
+        await sell(client, admin, customer_id, warehouse_id,
+                   [{"product_id": product_id, "quantity": "4", "rationed": True}])
+        second = await register(client, admin, customer_id)
+
+        response = await client.get(
+            "/api/v1/sales/rationed", headers=admin,
+            params={"customer_id": customer_id})
+        assert response.status_code == 200, response.text
+        page = response.json()["data"]
+        ids = [row["record_id"] for row in page["items"]]
+        assert ids == [second["record_id"], first["record_id"]], "open one first"
+        assert page["total"] == 2
+        assert [row["is_open"] for row in page["items"]] == [True, False]
+        # Read through to the invoices, not copied: the closed one's own figures.
+        closed_row = page["items"][1]
+        assert closed_row["line_count"] == 1
+        assert Decimal(closed_row["total_quantity"]) == Decimal("10")
+        assert closed_row["notes"] == "إقرار الشهر"
+
+    async def test_a_row_agrees_with_the_declaration_printed_from_it(
+        self, client: AsyncClient
+    ) -> None:
+        """One builder feeds the list and the document, so they cannot drift."""
+        admin = await login(client, "admin", TEST_ADMIN_PASSWORD)
+        warehouse_id, product_id = await stocked(client, admin, "RAT-LOGAGREE")
+        customer_id = await create_customer(
+            client, admin, name="عميل التطابق", credit_limit="90000")
+        invoice_id = (await sell(
+            client, admin, customer_id, warehouse_id,
+            [{"product_id": product_id, "quantity": "12", "rationed": True}]
+        )).json()["data"]["id"]
+        opened = await register(client, admin, customer_id)
+        rates = (await client.get(
+            "/api/v1/settings/tax-rates", headers=admin)).json()["data"]
+        chosen = next(r for r in rates if r["is_active"])
+        await client.put(
+            f"/api/v1/sales/rationed/{opened['record_id']}/taxes",
+            headers=admin, json={"tax_rate_ids": [chosen["id"]]})
+        # And a return, so the netting is exercised on both sides.
+        await client.post(
+            "/api/v1/sales/returns", headers=admin,
+            json={"invoice_id": invoice_id, "reason": "resellable",
+                  "lines": [{"product_id": product_id, "quantity": "2"}]})
+
+        row = [
+            r for r in (await client.get(
+                "/api/v1/sales/rationed", headers=admin,
+                params={"customer_id": customer_id})).json()["data"]["items"]
+            if r["record_id"] == opened["record_id"]
+        ][0]
+        document = (await client.get(
+            f"/api/v1/sales/rationed/{opened['record_id']}", headers=admin
+        )).json()["data"]
+
+        assert row["total_value"] == document["total_value"]
+        assert row["tax_total"] == document["tax_total"]
+        assert row["grand_total"] == document["grand_total"]
+        assert Decimal(row["total_quantity"]) == Decimal("10"), "12 sold, 2 returned"
+        assert Decimal(row["tax_total"]) > 0
+
+    async def test_the_log_does_not_carry_the_lines(
+        self, client: AsyncClient
+    ) -> None:
+        """A page of registers is a list, not fifty documents at once."""
+        admin = await login(client, "admin", TEST_ADMIN_PASSWORD)
+        warehouse_id, product_id = await stocked(client, admin, "RAT-LOGSLIM")
+        customer_id = await create_customer(
+            client, admin, name="عميل بلا أسطر", credit_limit="90000")
+        await sell(client, admin, customer_id, warehouse_id,
+                   [{"product_id": product_id, "quantity": "3", "rationed": True}])
+
+        row = (await client.get(
+            "/api/v1/sales/rationed", headers=admin,
+            params={"customer_id": customer_id})).json()["data"]["items"][0]
+        assert "entries" not in row
+        assert row["line_count"] == 1
+
+    async def test_a_register_spanning_the_period_is_not_hidden(
+        self, client: AsyncClient, db_session
+    ) -> None:
+        """Opened before the window and closed after it — it still covers the window."""
+        admin = await login(client, "admin", TEST_ADMIN_PASSWORD)
+        warehouse_id, product_id = await stocked(client, admin, "RAT-LOGSPAN")
+        customer_id = await create_customer(
+            client, admin, name="عميل الفترة", credit_limit="90000")
+        await sell(client, admin, customer_id, warehouse_id,
+                   [{"product_id": product_id, "quantity": "6", "rationed": True}])
+        opened = await register(client, admin, customer_id)
+        await client.post(
+            f"/api/v1/sales/rationed/{opened['record_id']}/close",
+            headers=admin, json={})
+
+        # Backdate it to span June–August, since the API cannot set these dates.
+        record = await db_session.get(RationedRecord, opened["record_id"])
+        record.opened_at = datetime(2026, 6, 1, tzinfo=timezone.utc)
+        record.closed_at = datetime(2026, 8, 31, tzinfo=timezone.utc)
+        await db_session.commit()
+
+        def ids(page):
+            return [r["record_id"] for r in page["items"]]
+
+        july = (await client.get(
+            "/api/v1/sales/rationed", headers=admin,
+            params={"customer_id": customer_id,
+                    "date_from": "2026-07-01", "date_to": "2026-07-31"})).json()["data"]
+        assert opened["record_id"] in ids(july), "July sits inside the register's period"
+
+        may = (await client.get(
+            "/api/v1/sales/rationed", headers=admin,
+            params={"customer_id": customer_id,
+                    "date_from": "2026-05-01", "date_to": "2026-05-31"})).json()["data"]
+        assert opened["record_id"] not in ids(may), "closed before May began"
+
+    async def test_the_status_filter_separates_them(
+        self, client: AsyncClient
+    ) -> None:
+        admin = await login(client, "admin", TEST_ADMIN_PASSWORD)
+        warehouse_id, product_id = await stocked(client, admin, "RAT-LOGSTATUS")
+        customer_id = await create_customer(
+            client, admin, name="عميل الحالة", credit_limit="90000")
+        await sell(client, admin, customer_id, warehouse_id,
+                   [{"product_id": product_id, "quantity": "5", "rationed": True}])
+        first = await register(client, admin, customer_id)
+        await client.post(
+            f"/api/v1/sales/rationed/{first['record_id']}/close",
+            headers=admin, json={})
+
+        async def fetch(state):
+            return (await client.get(
+                "/api/v1/sales/rationed", headers=admin,
+                params={"customer_id": customer_id, "status": state})).json()["data"]
+
+        assert [r["is_open"] for r in (await fetch("open"))["items"]] == [True]
+        assert [r["is_open"] for r in (await fetch("closed"))["items"]] == [False]
+
+    async def test_a_rep_sees_only_his_own_shops_in_the_log(
+        self, client: AsyncClient
+    ) -> None:
+        """The log is the whole book; a rep's copy of it is not."""
+        admin = await login(client, "admin", TEST_ADMIN_PASSWORD)
+        sales = await login(client, "salesman", TEST_SALES_PASSWORD)
+        me = (await client.get("/api/v1/auth/me", headers=sales)).json()["data"]
+        warehouse_id, product_id = await stocked(client, admin, "RAT-LOGSCOPE")
+
+        mine = await create_customer(
+            client, admin, name="محل المندوب", credit_limit="90000",
+            salesman_id=me["id"])
+        theirs = await create_customer(
+            client, admin, name="محل مندوب آخر", credit_limit="90000")
+        for customer_id in (mine, theirs):
+            await sell(client, admin, customer_id, warehouse_id,
+                       [{"product_id": product_id, "quantity": "2", "rationed": True}])
+
+        page = (await client.get("/api/v1/sales/rationed", headers=sales)).json()["data"]
+        customers = {row["customer_id"] for row in page["items"]}
+        assert mine in customers
+        assert theirs not in customers
+
+    async def test_the_log_needs_the_permission(self, client: AsyncClient) -> None:
+        storekeeper = await login(client, "storekeeper", TEST_STORE_PASSWORD)
+        response = await client.get("/api/v1/sales/rationed", headers=storekeeper)
+        assert response.status_code == 403
+
+    async def test_a_register_closed_just_after_local_midnight_stays_in_its_month(
+        self, client: AsyncClient, db_session
+    ) -> None:
+        """The period filter uses the company's midnight, not UTC's.
+
+        A register closed at 00:30 on 1 August in UTC+03 is stamped 21:30 on 31 July.
+        Filtered on the UTC date it would be filed under July and vanish from a search
+        for August — the month whose declaration it actually is. This is the third place
+        in this system that has had to learn the same lesson, so it gets a test rather
+        than a comment.
+        """
+        admin = await login(client, "admin", TEST_ADMIN_PASSWORD)
+        company = (await client.get(
+            "/api/v1/settings/company", headers=admin)).json()["data"]
+        saved = await client.put(
+            "/api/v1/settings/company", headers=admin,
+            json={"name": company["name"], "currency_code": company["currency_code"],
+                  "currency_symbol": company["currency_symbol"],
+                  "timezone": "Asia/Riyadh"})
+        assert saved.status_code == 200, saved.text
+
+        warehouse_id, product_id = await stocked(client, admin, "RAT-MIDNIGHT")
+        customer_id = await create_customer(
+            client, admin, name="عميل منتصف الليل", credit_limit="90000")
+        await sell(client, admin, customer_id, warehouse_id,
+                   [{"product_id": product_id, "quantity": "7", "rationed": True}])
+        opened = await register(client, admin, customer_id)
+        await client.post(
+            f"/api/v1/sales/rationed/{opened['record_id']}/close",
+            headers=admin, json={})
+
+        record = await db_session.get(RationedRecord, opened["record_id"])
+        record.opened_at = datetime(2026, 7, 1, tzinfo=timezone.utc)
+        # 00:30 on 1 August in Riyadh, expressed in UTC.
+        record.closed_at = datetime(2026, 7, 31, 21, 30, tzinfo=timezone.utc)
+        await db_session.commit()
+
+        august = (await client.get(
+            "/api/v1/sales/rationed", headers=admin,
+            params={"customer_id": customer_id,
+                    "date_from": "2026-08-01", "date_to": "2026-08-31"})).json()["data"]
+        assert opened["record_id"] in [r["record_id"] for r in august["items"]], (
+            "closed at 00:30 local on 1 August — it belongs to August"
+        )

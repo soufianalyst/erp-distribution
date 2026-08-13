@@ -27,11 +27,14 @@ from datetime import date, datetime, timezone
 from decimal import ROUND_HALF_UP, Decimal
 
 from sqlalchemy import delete as sa_delete
-from sqlalchemy import func, select
+from sqlalchemy import func, or_, select
 from sqlalchemy.orm import selectinload
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.api.schemas.pagination import PageParams, paginate
+from app.core import business_day
 from app.core.exceptions import AppException
+from app.core.permissions import has_permission
 from app.domain.models.sales import (
     Customer,
     RationedLine,
@@ -44,6 +47,7 @@ from app.domain.models.sales import (
 )
 from app.domain.models.settings import TaxRate
 from app.domain.models.user import User
+from app.services.settings.settings_service import SettingsService
 from app.services.sales.returns_query import posted
 
 ZERO = Decimal("0")
@@ -210,35 +214,144 @@ class RationedService:
         ).scalar_one_or_none()
         if record is None:
             raise AppException(404, "السجل غير موجود.")
+        built = await self._build([record])
+        return built[0]
 
-        closer = None
-        if record.closed_by is not None:
-            closer = await self.session.get(User, record.closed_by)
+    async def log(
+        self,
+        user: User,
+        customer_id: int | None = None,
+        date_from: date | None = None,
+        date_to: date | None = None,
+        status: str | None = None,
+        page: PageParams | None = None,
+    ) -> tuple[list[RationedRegister], int]:
+        """Every register, open and closed, newest first — the log of declarations.
 
-        entries = await self._entries(record_id)
-        goods = sum((e.net_total for e in entries), ZERO).quantize(TWO_PLACES)
-        taxes = await self._taxes(record_id, goods)
-        tax_total = sum((t.amount for t in taxes), ZERO).quantize(TWO_PLACES)
-        return RationedRegister(
-            record_id=record.id,
-            customer_id=record.customer_id,
-            customer_name=record.customer.name,
-            customer_phone=record.customer.phone,
-            opened_at=record.opened_at,
-            closed_at=record.closed_at,
-            closed_by_name=closer.full_name if closer else None,
-            notes=record.notes,
-            is_open=record.closed_at is None,
-            line_count=len(entries),
-            total_quantity=sum(
-                (e.net_quantity for e in entries), ZERO
-            ).quantize(THREE_PLACES),
-            total_value=goods,
-            taxes=taxes,
-            tax_total=tax_total,
-            grand_total=(goods + tax_total).quantize(TWO_PLACES),
-            entries=entries,
+        The dates match registers whose *period overlaps* the range rather than ones
+        opened inside it. A register is a span, not an event: a declaration opened in
+        July and closed in September covers August, and a screen asking for August that
+        hid it would be hiding the very document that answers the question.
+
+        Open registers sort to the top. They are the ones still accumulating, so they
+        are what somebody scanning this screen is deciding about.
+        """
+        stmt = (
+            select(RationedRecord)
+            .options(selectinload(RationedRecord.customer))
+            .where(self._visible_customers(user))
         )
+        if customer_id is not None:
+            stmt = stmt.where(RationedRecord.customer_id == customer_id)
+        # The window is built from the company's midnight, not UTC's. A register closed
+        # at 01:00 local in UTC+03 is stamped 22:00 the previous day, so a UTC-truncated
+        # comparison would file it under yesterday and drop it from a period that
+        # genuinely contains it — the same defect that once made the cashier's closing
+        # report read empty with cash in the drawer.
+        if date_from is not None or date_to is not None:
+            company = await SettingsService(self.session).get_company_settings()
+            start, end = business_day.utc_window(date_from, date_to, company.timezone)
+            if start is not None:
+                # Still open, or closed at/after the window opened: either way the
+                # register's period reaches into the range.
+                stmt = stmt.where(
+                    or_(
+                        RationedRecord.closed_at.is_(None),
+                        RationedRecord.closed_at >= start,
+                    )
+                )
+            if end is not None:
+                # Opened before the range ended. Exclusive, so a register opened at
+                # exactly the closing midnight belongs to the next period only.
+                stmt = stmt.where(RationedRecord.opened_at < end)
+        if status == "open":
+            stmt = stmt.where(RationedRecord.closed_at.is_(None))
+        elif status == "closed":
+            stmt = stmt.where(RationedRecord.closed_at.is_not(None))
+        stmt = stmt.order_by(
+            RationedRecord.closed_at.is_(None).desc(),
+            RationedRecord.closed_at.desc(),
+            RationedRecord.id.desc(),
+        )
+
+        records, total = await paginate(self.session, stmt, page or PageParams())
+        return await self._build(records), total
+
+    @staticmethod
+    def _visible_customers(user: User):
+        """A rep sees his own shops' registers; everyone else sees all of them.
+
+        The same rule the customer list and the collections worklist already apply, so
+        a rep cannot read what another rep's client declared.
+        """
+        if has_permission(user, "sales.all_customers"):
+            return RationedRecord.customer_id.in_(select(Customer.id))
+        return RationedRecord.customer_id.in_(
+            select(Customer.id).where(Customer.salesman_id == user.id)
+        )
+
+    async def _build(self, records: list[RationedRecord]) -> list[RationedRegister]:
+        """Turn records into registers, reading the figures for all of them at once.
+
+        One builder for the document and for the log, so the total on the screen and
+        the total on the paper cannot drift apart. `records` must arrive with `customer`
+        loaded — async SQLAlchemy raises rather than lazy-loading it here.
+        """
+        if not records:
+            return []
+        ids = [r.id for r in records]
+        entries_by_record = await self._entries_by_record(ids)
+
+        goods_by_record: dict[int, Decimal] = {}
+        for record_id in ids:
+            entries = entries_by_record.get(record_id, [])
+            goods_by_record[record_id] = sum(
+                (e.net_total for e in entries), ZERO
+            ).quantize(TWO_PLACES)
+        taxes_by_record = await self._taxes_by_record(goods_by_record)
+
+        closers = await self._closer_names([r.closed_by for r in records])
+
+        built: list[RationedRegister] = []
+        for record in records:
+            entries = entries_by_record.get(record.id, [])
+            goods = goods_by_record[record.id]
+            taxes = taxes_by_record.get(record.id, [])
+            tax_total = sum((t.amount for t in taxes), ZERO).quantize(TWO_PLACES)
+            built.append(
+                RationedRegister(
+                    record_id=record.id,
+                    customer_id=record.customer_id,
+                    customer_name=record.customer.name,
+                    customer_phone=record.customer.phone,
+                    opened_at=record.opened_at,
+                    closed_at=record.closed_at,
+                    closed_by_name=closers.get(record.closed_by),
+                    notes=record.notes,
+                    is_open=record.closed_at is None,
+                    line_count=len(entries),
+                    total_quantity=sum(
+                        (e.net_quantity for e in entries), ZERO
+                    ).quantize(THREE_PLACES),
+                    total_value=goods,
+                    taxes=taxes,
+                    tax_total=tax_total,
+                    grand_total=(goods + tax_total).quantize(TWO_PLACES),
+                    entries=entries,
+                )
+            )
+        return built
+
+    async def _closer_names(self, user_ids: list[int | None]) -> dict[int, str]:
+        wanted = {uid for uid in user_ids if uid is not None}
+        if not wanted:
+            return {}
+        rows = (
+            await self.session.execute(
+                select(User.id, User.full_name).where(User.id.in_(wanted))
+            )
+        ).all()
+        return {uid: name for uid, name in rows}
 
     async def history(self, customer_id: int) -> list[RationedRecord]:
         """Closed registers, newest first — the declarations already issued."""
@@ -434,27 +547,53 @@ class RationedService:
         rounded half up to the currency — so a declaration and an invoice covering the
         same goods agree to the last unit.
         """
+        return (await self._taxes_by_record({record_id: goods})).get(record_id, [])
+
+    async def _taxes_by_record(
+        self, goods_by_record: dict[int, Decimal]
+    ) -> dict[int, list[RationedTaxLine]]:
+        """The tax lines of several registers, each against its own goods total."""
+        if not goods_by_record:
+            return {}
         rows = (
             await self.session.execute(
                 select(RationedRecordTax)
-                .where(RationedRecordTax.record_id == record_id)
+                .where(RationedRecordTax.record_id.in_(goods_by_record))
                 .order_by(RationedRecordTax.id)
             )
         ).scalars().all()
-        return [
-            RationedTaxLine(
-                tax_rate_id=row.tax_rate_id,
-                name=row.name,
-                rate=Decimal(str(row.rate)),
-                amount=(goods * Decimal(str(row.rate)) / Decimal("100")).quantize(
-                    TWO_PLACES, rounding=ROUND_HALF_UP
-                ),
+        grouped: dict[int, list[RationedTaxLine]] = {}
+        for row in rows:
+            goods = goods_by_record[row.record_id]
+            grouped.setdefault(row.record_id, []).append(
+                RationedTaxLine(
+                    tax_rate_id=row.tax_rate_id,
+                    name=row.name,
+                    rate=Decimal(str(row.rate)),
+                    amount=(goods * Decimal(str(row.rate)) / Decimal("100")).quantize(
+                        TWO_PLACES, rounding=ROUND_HALF_UP
+                    ),
+                )
             )
-            for row in rows
-        ]
+        return grouped
 
     async def _entries(self, record_id: int) -> list[RationedEntry]:
-        """Every filed line, read through to the invoice as it stands now."""
+        """Every filed line of one register, read through to the invoice as it stands."""
+        return (await self._entries_by_record([record_id])).get(record_id, [])
+
+    async def _entries_by_record(
+        self, record_ids: list[int]
+    ) -> dict[int, list[RationedEntry]]:
+        """The same read for many registers at once, grouped by register.
+
+        Batched because the log lists a page of registers and each one needs its
+        figures. Done one register at a time that is three queries per row; done this
+        way it is two for the page. The alternative — a SQL aggregate for the list and
+        this loop for the document — would compute the same total twice, and the day
+        they disagree is the day a client is handed a declaration the log denies.
+        """
+        if not record_ids:
+            return {}
         rows = (
             await self.session.execute(
                 select(RationedLine, SalesInvoiceLine, SalesInvoice)
@@ -463,27 +602,31 @@ class RationedService:
                     SalesInvoiceLine.id == RationedLine.sales_invoice_line_id,
                 )
                 .join(SalesInvoice, SalesInvoice.id == SalesInvoiceLine.invoice_id)
-                .where(RationedLine.record_id == record_id)
+                .where(RationedLine.record_id.in_(record_ids))
                 .order_by(SalesInvoice.invoice_date, SalesInvoice.id, SalesInvoiceLine.id)
             )
         ).all()
         if not rows:
-            return []
+            return {}
 
         returned = await self._returned_quantities(
             {(invoice.id, line.product_id) for _, line, invoice in rows}
         )
 
-        entries: list[RationedEntry] = []
+        grouped: dict[int, list[RationedEntry]] = {}
         for tag, line, invoice in rows:
             # Returns are recorded per product per invoice, not per batch line, so a
             # product split across batches has its credit apportioned by share of the
             # quantity sold. Assigning the whole return to the first line would make
             # one row negative and another overstated while the total stayed right.
+            # Scoped to this register: two registers holding lines of the same invoice
+            # each apportion that invoice's credit over their own lines.
             sold_for_product = sum(
                 Decimal(str(other.quantity))
-                for _, other, other_invoice in rows
-                if other_invoice.id == invoice.id and other.product_id == line.product_id
+                for other_tag, other, other_invoice in rows
+                if other_tag.record_id == tag.record_id
+                and other_invoice.id == invoice.id
+                and other.product_id == line.product_id
             )
             credited = returned.get((invoice.id, line.product_id), ZERO)
             share = (
@@ -493,7 +636,7 @@ class RationedService:
             )
             mine = (credited * share).quantize(THREE_PLACES)
             net = max(Decimal(str(line.quantity)) - mine, ZERO)
-            entries.append(
+            grouped.setdefault(tag.record_id, []).append(
                 RationedEntry(
                     line_id=line.id,
                     invoice_id=invoice.id,
@@ -510,7 +653,7 @@ class RationedService:
                     added_at=tag.added_at,
                 )
             )
-        return entries
+        return grouped
 
     async def _returned_quantities(
         self, keys: set[tuple[int, int]]

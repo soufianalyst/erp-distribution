@@ -1,6 +1,7 @@
 """Sales endpoints: customers, FEFO invoices, returns, receipts, and statements."""
 
 from datetime import date
+from typing import Literal
 
 from fastapi import APIRouter, Depends, Query, status
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -11,6 +12,7 @@ from app.api.schemas.pagination import Page, PageParams
 from app.api.schemas.sales import (
     RationedCloseIn,
     RationedCloseOut,
+    RationedLogRowOut,
     RationedRecordSummaryOut,
     RationedTaxesIn,
     RationedRegisterOut,
@@ -670,6 +672,47 @@ async def customer_rationed_register(
     SalesService(db).ensure_customer_access(current_user, customer)
     register = await service.register_for(customer_id)
     return APIResponse(data=RationedRegisterOut.model_validate(register))
+
+
+@router.get(
+    "/rationed",
+    response_model=APIResponse[Page[RationedLogRowOut]],
+)
+async def rationed_log(
+    customer_id: int | None = None,
+    date_from: date | None = None,
+    date_to: date | None = None,
+    # Aliased: the query parameter is `status`, but a parameter of that name here would
+    # shadow FastAPI's `status` module that the rest of this file uses for status codes.
+    record_status: Literal["open", "closed"] | None = Query(default=None, alias="status"),
+    page: PageParams = Depends(),
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(require_permissions("sales.rationed_view")),
+) -> APIResponse[Page[RationedLogRowOut]]:
+    """سجل بيانات المواد المقننة كلها — المفتوحة والمقفلة — للعرض وإعادة الطباعة.
+
+    التاريخان يختاران السجلات التي **تتقاطع فترتها** مع المدة المطلوبة، لا التي فُتحت
+    خلالها: السجل مدة وليس حدثاً، فسجل فُتح في تموز وأُقفل في أيلول يغطي آب، وإخفاؤه عن
+    من يسأل عن آب هو إخفاء الورقة التي تجيب سؤاله.
+
+    السجلات المفتوحة أولاً، فهي التي ما زالت تتراكم وعليها يُتخذ القرار.
+    """
+    registers, total = await RationedService(db).log(
+        current_user,
+        customer_id=customer_id,
+        date_from=date_from,
+        date_to=date_to,
+        status=record_status,
+        page=page,
+    )
+    return APIResponse(
+        data=Page(
+            items=[RationedLogRowOut.model_validate(r) for r in registers],
+            total=total,
+            limit=page.limit,
+            offset=page.offset,
+        )
+    )
 
 
 @router.get(

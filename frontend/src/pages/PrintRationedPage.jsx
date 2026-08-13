@@ -8,11 +8,10 @@ import api from "../services/api";
 //
 // Laid out like the sales invoice on purpose: it is handed to the same people, and a
 // document that looks unlike everything else the company issues invites questions about
-// whether it is genuine. But it is *not* an invoice, and the difference has to survive
-// being photocopied: the title says بيان مواد مقننة, the number is prefixed so it can
-// never be read as a sales-invoice number, and a line under the total says in words
-// that the goods were already billed on their own invoices. Without that line a client
-// could reasonably pay this document twice.
+// whether it is genuine. What tells the two apart on paper is the title (بيان مواد
+// مقننة) and the ق- prefix on the number, so it cannot be read as a sales-invoice
+// number. There is no printed disclaimer: the register posts nothing either way, and
+// the owner does not want the document arguing with itself about what it is.
 //
 // Every figure here is read from the register, which reads through to the live invoice
 // lines. Reprinting after a correction produces the corrected declaration rather than
@@ -39,8 +38,11 @@ export default function PrintRationedPage() {
   return (
     <div className="min-h-screen bg-slate-200 py-8 print:bg-white print:py-0">
       <div className="mx-auto mb-4 flex max-w-[210mm] justify-between gap-2 print:hidden">
-        <Button variant="secondary" onClick={() => navigate("/customers")}>
-          ← العودة إلى العملاء
+        {/* Back to wherever this was opened from — the customer's account or the log in
+            the reports module. A fixed destination sent half the visitors to the wrong
+            screen once the log existed. */}
+        <Button variant="secondary" onClick={() => navigate(-1)}>
+          ← رجوع
         </Button>
         <Button onClick={() => window.print()}>🖨️ طباعة</Button>
       </div>
@@ -183,13 +185,6 @@ export default function PrintRationedPage() {
               </tr>
             </tbody>
           </table>
-        </div>
-
-        {/* The one sentence that keeps this document from being paid. It is printed,
-            not shown on screen only, because the paper is what leaves the building. */}
-        <div className="mt-4 rounded-lg border-2 border-slate-800 p-3 text-sm font-bold">
-          هذا بيان بالمواد المقننة التي استلمها العميل، وليس فاتورة ولا مطالبة مالية.
-          المواد الواردة فيه محسوبة ومحصّلة على فواتير البيع المذكورة أمام كل سطر.
         </div>
 
         {reg.notes && (

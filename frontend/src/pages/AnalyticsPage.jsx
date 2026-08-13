@@ -28,10 +28,15 @@ import {
 } from "recharts";
 import { useNavigate } from "react-router-dom";
 import { Alert, Badge, Button, Card, Input, Loading, Select, Table, money, qty } from "../components/Ui";
+import { useAuth } from "../context/AuthContext";
 import useFetch from "../hooks/useFetch";
 import api from "../services/api";
 
 const TIER_LABELS = { wholesale: "جملة", half_wholesale: "نصف جملة", retail: "تجزئة" };
+
+// Server-paged lists ask for exactly what the shared Table shows. Any other number and
+// the pager's arithmetic and the server's disagree about where page two starts.
+const PAGE_SIZE = 15;
 
 // Chart fill colors (bars/scatter dots) — kept vivid/saturated for visibility
 // against grid lines. Badge text uses a separate light-bg/dark-text palette
@@ -114,6 +119,8 @@ function Kpi({ label, value, tone = "slate", hint }) {
   );
 }
 
+// `permission` gates a tab that its data needs: a tab whose only possible outcome is a
+// 403 in the panel is worse than no tab at all.
 const TABS = [
   { id: "overview", label: "📊 نظرة عامة" },
   { id: "customers", label: "🧑‍💼 تحليل العملاء (RFM)" },
@@ -121,6 +128,11 @@ const TABS = [
   { id: "inventory", label: "🗑️ المخزون والهدر" },
   { id: "pareto", label: "⚖️ تحليل 20/80" },
   { id: "discounts", label: "🏷️ الخصومات" },
+  {
+    id: "rationed",
+    label: "🗂️ سجل المواد المقننة",
+    permission: "sales.rationed_view",
+  },
   { id: "lapsing", label: "📞 عملاء توقفوا عن الشراء" },
   { id: "credit", label: "💳 الذمم والمخاطر الائتمانية" },
   { id: "delivery", label: "🚛 التوزيع والاستلام" },
@@ -128,6 +140,7 @@ const TABS = [
 ];
 
 export default function AnalyticsPage() {
+  const { can } = useAuth();
   const [tab, setTab] = useState("overview");
   // RFM slicers. "" means no filter — the params are omitted rather than sent
   // empty, because the API types them as optional integers and rejects "".
@@ -176,7 +189,7 @@ export default function AnalyticsPage() {
       </div>
 
       <div className="flex flex-wrap gap-2">
-        {TABS.map((t) => (
+        {TABS.filter((t) => !t.permission || can(t.permission)).map((t) => (
           <Button
             key={t.id}
             variant={tab === t.id ? "primary" : "secondary"}
@@ -230,6 +243,8 @@ export default function AnalyticsPage() {
       {tab === "pareto" && <ParetoCard />}
 
       {tab === "discounts" && <DiscountReportCard />}
+
+      {tab === "rationed" && can("sales.rationed_view") && <RationedLogCard />}
 
       {tab === "lapsing" && (
         <LapsingTab report={lapsing.data} loading={lapsing.loading} />
@@ -1148,6 +1163,201 @@ function DiscountReportCard() {
               empty="لا توجد خصومات في هذه الفترة."
             />
           </div>
+        </div>
+      )}
+    </Card>
+  );
+}
+
+// The log of every المواد المقننة declaration — open and closed, all customers.
+//
+// Its reason for existing is reprinting: the register on a customer's account shows that
+// customer's, and finding last quarter's declaration for a client whose name you half
+// remember meant opening accounts one at a time. Here they are one list, filtered.
+//
+// The period filter selects registers whose span *overlaps* the dates rather than ones
+// opened inside them, because a register is a period and not an event — one opened in
+// July and closed in September covers August, and hiding it from a question about August
+// would hide the document that answers it. The label says so, since "من/إلى" alone would
+// let someone conclude the wrong thing from an empty result.
+function RationedLogCard() {
+  const navigate = useNavigate();
+  const [customerId, setCustomerId] = useState("");
+  const [dateFrom, setDateFrom] = useState("");
+  const [dateTo, setDateTo] = useState("");
+  const [state, setState] = useState("");
+  const [page, setPage] = useState(1);
+
+  const customers = useFetch(() => api.get("/sales/customers"));
+  const log = useFetch(
+    () =>
+      api.get("/sales/rationed", {
+        params: {
+          customer_id: customerId || undefined,
+          date_from: dateFrom || undefined,
+          date_to: dateTo || undefined,
+          status: state || undefined,
+          limit: PAGE_SIZE,
+          offset: (page - 1) * PAGE_SIZE,
+        },
+      }),
+    [customerId, dateFrom, dateTo, state, page]
+  );
+
+  // Any filter change puts you back on page one; staying on page 4 of a narrower
+  // result shows an empty table that looks like "nothing found".
+  useEffect(() => {
+    setPage(1);
+  }, [customerId, dateFrom, dateTo, state]);
+
+  const rows = log.data?.items ?? [];
+  const totals = rows.reduce(
+    (acc, r) => ({
+      value: acc.value + Number(r.total_value),
+      grand: acc.grand + Number(r.grand_total),
+    }),
+    { value: 0, grand: 0 }
+  );
+
+  return (
+    <Card title="🗂️ سجل بيانات المواد المقننة — المفتوحة والمقفلة">
+      <div className="mb-4 grid grid-cols-1 items-end gap-3 sm:grid-cols-2 lg:grid-cols-4">
+        <Select
+          label="العميل"
+          value={customerId}
+          onChange={(e) => setCustomerId(e.target.value)}
+        >
+          <option value="">— كل العملاء —</option>
+          {(customers.data ?? []).map((c) => (
+            <option key={c.id} value={c.id}>
+              {c.name}
+            </option>
+          ))}
+        </Select>
+        <Input
+          label="من تاريخ (السجلات التي تغطي الفترة)"
+          type="date"
+          value={dateFrom}
+          onChange={(e) => setDateFrom(e.target.value)}
+        />
+        <Input
+          label="إلى تاريخ"
+          type="date"
+          value={dateTo}
+          onChange={(e) => setDateTo(e.target.value)}
+        />
+        <Select label="الحالة" value={state} onChange={(e) => setState(e.target.value)}>
+          <option value="">الكل</option>
+          <option value="open">مفتوح</option>
+          <option value="closed">مقفل</option>
+        </Select>
+      </div>
+
+      <Alert>{log.error}</Alert>
+      {log.loading ? (
+        <Loading />
+      ) : (
+        <div className="space-y-4">
+          <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
+            <div className="rounded-lg bg-slate-50 dark:bg-slate-800/60 p-3 text-sm">
+              <div className="font-extrabold text-slate-500 dark:text-slate-400">
+                عدد السجلات
+              </div>
+              <div className="text-lg font-extrabold">{log.data?.total ?? 0}</div>
+            </div>
+            {/* Said to be this page's sum, not the filter's: adding up a page and
+                labelling it a total is how a report starts lying quietly. */}
+            <div className="rounded-lg bg-slate-50 dark:bg-slate-800/60 p-3 text-sm">
+              <div className="font-extrabold text-slate-500 dark:text-slate-400">
+                قيمة المواد (هذه الصفحة)
+              </div>
+              <div className="text-lg font-extrabold">{money(totals.value)}</div>
+            </div>
+            <div className="rounded-lg bg-indigo-50 dark:bg-indigo-950/40 p-3 text-sm">
+              <div className="font-extrabold text-indigo-700 dark:text-indigo-300">
+                إجمالي البيانات مع الضرائب (هذه الصفحة)
+              </div>
+              <div className="text-lg font-extrabold text-indigo-800 dark:text-indigo-200">
+                {money(totals.grand)}
+              </div>
+            </div>
+          </div>
+
+          <Table
+            columns={[
+              {
+                key: "record_id",
+                label: "رقم البيان",
+                render: (r) => <b>ق-{r.record_id}</b>,
+              },
+              { key: "customer_name", label: "العميل" },
+              {
+                key: "is_open",
+                label: "الحالة",
+                render: (r) =>
+                  r.is_open ? (
+                    <Badge tone="green">مفتوح</Badge>
+                  ) : (
+                    <Badge tone="slate">مقفل</Badge>
+                  ),
+              },
+              {
+                key: "opened_at",
+                label: "الفترة",
+                render: (r) =>
+                  `${r.opened_at.slice(0, 10)} — ${
+                    r.closed_at ? r.closed_at.slice(0, 10) : "حتى تاريخه"
+                  }`,
+              },
+              { key: "line_count", label: "الأسطر" },
+              {
+                key: "total_quantity",
+                label: "الكميات",
+                render: (r) => qty(r.total_quantity),
+              },
+              {
+                key: "total_value",
+                label: "قيمة المواد",
+                render: (r) => money(r.total_value),
+              },
+              {
+                key: "tax_total",
+                label: "الضرائب",
+                render: (r) =>
+                  Number(r.tax_total) > 0 ? money(r.tax_total) : "—",
+              },
+              {
+                key: "grand_total",
+                label: "الإجمالي",
+                render: (r) => <b>{money(r.grand_total)}</b>,
+              },
+              {
+                key: "closed_by_name",
+                label: "أقفله",
+                render: (r) => r.closed_by_name ?? "—",
+              },
+              {
+                key: "actions",
+                label: "",
+                render: (r) => (
+                  <Button
+                    variant="secondary"
+                    onClick={() => navigate(`/print/rationed/${r.record_id}`)}
+                  >
+                    🖨️ طباعة
+                  </Button>
+                ),
+              },
+            ]}
+            rows={rows}
+            keyField="record_id"
+            serverPaged={{
+              total: log.data?.total || 0,
+              page,
+              onPageChange: setPage,
+            }}
+            empty="لا توجد سجلات مواد مقننة مطابقة."
+          />
         </div>
       )}
     </Card>

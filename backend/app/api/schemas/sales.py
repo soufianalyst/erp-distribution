@@ -711,6 +711,33 @@ class RationedRegisterOut(BaseModel):
     entries: list[RationedEntryOut]
 
 
+class RationedLogRowOut(BaseModel):
+    """One register in the log — everything but its lines.
+
+    Deliberately the same fields as `RationedRegisterOut` minus `entries`: the log lists
+    a page of registers and does not need every filed line of each, and the service
+    builds both from one function, so `response_model` dropping the lines here is what
+    keeps the two views from being two different calculations.
+    """
+
+    model_config = ConfigDict(from_attributes=True)
+
+    record_id: int
+    customer_id: int
+    customer_name: str
+    opened_at: datetime
+    closed_at: datetime | None
+    closed_by_name: str | None
+    notes: str | None
+    is_open: bool
+    line_count: int
+    total_quantity: Decimal
+    total_value: Decimal
+    taxes: list[RationedTaxLineOut]
+    tax_total: Decimal
+    grand_total: Decimal
+
+
 class RationedRecordSummaryOut(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
