@@ -131,7 +131,7 @@ export default function DataImportPage() {
       <div>
         <h1 className="text-2xl font-extrabold">استيراد البيانات من النظام القديم</h1>
         <p className="mt-1 text-sm text-slate-500 dark:text-slate-400">
-          رفع الأصناف والمخزون والعملاء والفواتير وسندات القبض دفعة واحدة. متاح للمدير فقط.
+          رفع الأصناف والمخزون والعملاء والموردين وفواتير البيع والشراء وسندات القبض والصرف دفعة واحدة. متاح للمدير فقط.
         </p>
       </div>
 
@@ -286,7 +286,19 @@ function ImportReport({ report }) {
           </p>
           <Table
             columns={[
-              { key: "customer_name", label: "العميل" },
+              {
+                key: "party_name",
+                label: "الطرف",
+                render: (r) => (
+                  <span className="flex flex-wrap items-center gap-2">
+                    {r.party_name}
+                    <Badge tone={r.party_kind === "supplier" ? "blue" : "slate"}>
+                      {r.party_kind === "supplier" ? "مورد" : "عميل"}
+                    </Badge>
+                  </span>
+                ),
+                search: (r) => r.party_name,
+              },
               {
                 key: "expected_balance",
                 label: "حسب النظام القديم",
@@ -314,7 +326,7 @@ function ImportReport({ report }) {
               },
             ]}
             rows={report.reconciliation}
-            keyField="customer_name"
+            keyField={(r) => `${r.party_kind}:${r.party_name}`}
             empty="لا توجد أرصدة للمطابقة."
           />
         </div>

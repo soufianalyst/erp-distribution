@@ -252,6 +252,139 @@ CUSTOMER_PAYMENTS = Sheet(
     ),
 )
 
+SUPPLIERS = Sheet(
+    name="suppliers",
+    title="الموردون",
+    purpose=(
+        "بطاقة المورد ورصيده. الاسم هو المفتاح: إعادة الرفع تحدّث المورد الموجود "
+        "بنفس الاسم ولا تنشئ مورداً مكرراً."
+    ),
+    columns=(
+        Column("name", "اسم المورد", "text", required=True,
+               examples=("شركة الغذاء الوطنية", "مؤسسة البركة للتوريد"),
+               note="مفتاح فريد. لو تكرر داخل الملف يُرفض الملف."),
+        Column("phone", "الهاتف", "text", examples=("0551234567", "")),
+        Column("address", "العنوان", "text", examples=("الرياض", "")),
+        Column("opening_balance", "رصيد افتتاحي (مستحق للمورد)", "decimal",
+               examples=("0", "0"),
+               note=(
+                   "ما كان مستحقاً للمورد قبل أول فاتورة تستوردها. "
+                   "إن استوردت كل فواتيره فاتركه صفراً، وإلا حُسب الدين مرتين."
+               )),
+        Column("lead_time_days", "مهلة التوريد (يوم)", "int",
+               examples=("7", "14"),
+               note="عدد الأيام المعتادة بين الطلب والاستلام. يُستخدم في نقطة إعادة الطلب."),
+        Column("is_active", "مُفعّل", "bool", examples=("نعم", "نعم")),
+        Column("legacy_balance", "الرصيد حسب النظام القديم", "decimal",
+               examples=("", ""),
+               note=(
+                   "اختياري لكنه مُوصى به بشدة: بعد الاستيراد يُقارن بما حسبه النظام "
+                   "ويُعرض أي اختلاف في جدول المطابقة."
+               )),
+    ),
+)
+
+PURCHASE_INVOICES = Sheet(
+    name="purchase_invoices",
+    title="فواتير المشتريات — الرؤوس",
+    purpose=(
+        "رأس كل فاتورة شراء. تُرحّل محاسبياً (مدين تكلفة البضاعة والضريبة / دائن ذمم "
+        "الموردين) ولكنها **لا تزيد المخزون**، لأن المخزون الحالي مأخوذ من ورقة "
+        "المخزون الافتتاحي — ولو زادته الفواتير التاريخية أيضاً لتضاعف."
+    ),
+    columns=(
+        Column("invoice_ref", "رقم الفاتورة القديم", "text", required=True,
+               examples=("PINV-2026-0001", "PINV-2026-0002"),
+               note="مفتاح الربط مع الأسطر، ويمنع تكرار الاستيراد عند إعادة الرفع."),
+        Column("supplier_name", "اسم المورد", "text", required=True,
+               examples=("شركة الغذاء الوطنية", "مؤسسة البركة للتوريد"),
+               note="يجب أن يطابق اسماً في ورقة الموردين أو مورداً موجوداً."),
+        Column("invoice_date", "تاريخ الفاتورة", "date", required=True,
+               examples=("2026-01-15", "2026-02-02")),
+        Column("payment_method", "طريقة الدفع", "choice", required=True,
+               choices=("cash", "card", "credit"),
+               examples=("credit", "cash"),
+               note="cash = نقدي، card = بطاقة، credit = آجل."),
+        Column("supplier_invoice_number", "رقم فاتورة المورد", "text",
+               examples=("SUP-9911", "")),
+        Column("subtotal", "المجموع قبل الضريبة", "decimal", required=True,
+               examples=("1640.00", "820.00"),
+               note="يجب أن يساوي مجموع أسطر الفاتورة، وإلا رُفض الملف."),
+        Column("shipping_cost", "الشحن", "decimal",
+               examples=("0", "25.00"),
+               note="يُضاف إلى التكلفة ويدخل في الإجمالي."),
+        Column("tax_amount", "قيمة الضريبة", "decimal",
+               examples=("262.40", "135.20")),
+        Column("total", "الإجمالي", "decimal", required=True,
+               examples=("1902.40", "980.20"),
+               note="يجب أن يساوي (المجموع + الشحن + الضريبة)، وإلا رُفض الملف."),
+        Column("paid_amount", "المدفوع من الفاتورة", "decimal",
+               examples=("0", "980.20"),
+               note="ما سُدّد على هذه الفاتورة تحديداً. لا يمكن أن يتجاوز الإجمالي."),
+        Column("warehouse", "المستودع", "text",
+               examples=("المستودع الرئيسي", "المستودع الرئيسي")),
+        Column("notes", "ملاحظات", "text", examples=("", "")),
+    ),
+)
+
+PURCHASE_INVOICE_LINES = Sheet(
+    name="purchase_invoice_lines",
+    title="فواتير المشتريات — الأسطر",
+    purpose=(
+        "أسطر فواتير الشراء. تُوثّق ما شُتري وبأي تكلفة، ولا تُضاف كميتها إلى المخزون."
+    ),
+    columns=(
+        Column("invoice_ref", "رقم الفاتورة القديم", "text", required=True,
+               examples=("PINV-2026-0001", "PINV-2026-0001"),
+               note="يجب أن يوجد في ورقة رؤوس فواتير الشراء."),
+        Column("sku", "رمز الصنف", "text", required=True,
+               examples=("P-1001", "P-1002")),
+        Column("quantity", "الكمية", "decimal", required=True,
+               examples=("200", "100"),
+               note="بالوحدة الأساسية. للتوثيق فقط — لا تُضاف إلى الرصيد."),
+        Column("unit_cost", "تكلفة الوحدة", "decimal", required=True,
+               examples=("8.20", "0"),
+               note="تكلفة الشراء الفعلية للوحدة."),
+        Column("batch_number", "رقم التشغيلة", "text",
+               examples=("B-2026-01", ""),
+               note=(
+                   "اختياري وللتوثيق فقط. إن تُركت فارغة يُربط السطر بتشغيلة "
+                   "أرشيفية باسم LEGACY كميتها صفر."
+               )),
+        Column("expiry_date", "تاريخ الانتهاء", "date",
+               examples=("2026-12-31", ""),
+               note="اختياري. للتوثيق التاريخي فقط."),
+    ),
+)
+
+SUPPLIER_PAYMENTS = Sheet(
+    name="supplier_payments",
+    title="سندات الصرف للموردين",
+    purpose=(
+        "المبالغ المدفوعة للموردين. تُرحّل محاسبياً (مدين ذمم الموردين / دائن صندوق "
+        "أو بنك) وتُخفّض المستحق عليهم."
+    ),
+    columns=(
+        Column("payment_ref", "رقم السند القديم", "text", required=True,
+               examples=("PV-2026-0001", "PV-2026-0002"),
+               note="يمنع تكرار الاستيراد عند إعادة الرفع."),
+        Column("supplier_name", "اسم المورد", "text", required=True,
+               examples=("شركة الغذاء الوطنية", "مؤسسة البركة للتوريد")),
+        Column("payment_date", "تاريخ السند", "date", required=True,
+               examples=("2026-01-30", "2026-02-15")),
+        Column("amount", "المبلغ", "decimal", required=True,
+               examples=("900.00", "980.20"),
+               note="أكبر من صفر."),
+        Column("method", "طريقة الصرف", "choice", required=True,
+               choices=("cash", "bank", "card"),
+               examples=("bank", "cash"),
+               note="cash = صندوق، bank = بنك، card = بطاقة."),
+        Column("reference", "مرجع", "text", examples=("حوالة 8821", "")),
+        Column("notes", "ملاحظات", "text", examples=("", "")),
+    ),
+)
+
+
 # Order matters: it is the order the importer processes them, and each depends only
 # on those before it. Products before stock, customers before invoices, invoice
 # headers before their lines.
@@ -262,6 +395,10 @@ SHEETS: tuple[Sheet, ...] = (
     SALES_INVOICES,
     SALES_INVOICE_LINES,
     CUSTOMER_PAYMENTS,
+    SUPPLIERS,
+    PURCHASE_INVOICES,
+    PURCHASE_INVOICE_LINES,
+    SUPPLIER_PAYMENTS,
 )
 
 SHEETS_BY_NAME: dict[str, Sheet] = {sheet.name: sheet for sheet in SHEETS}
@@ -273,12 +410,21 @@ GUIDE_RULES: tuple[str, ...] = (
     "كل الكميات بالوحدة الأساسية للصنف (لا بالكرتونة).",
     "كل التواريخ بصيغة YYYY-MM-DD، مثال 2026-03-31.",
     "الأرقام بدون فواصل آلاف وبنقطة عشرية، مثال 1234.50 وليس 1,234.50.",
-    "المخزون الحالي يأتي من ورقة «المخزون الافتتاحي» فقط. الفواتير التاريخية لا تُنقص المخزون.",
+    (
+        "المخزون الحالي يأتي من ورقة «المخزون الافتتاحي» فقط: فواتير المبيعات "
+        "التاريخية لا تُنقصه، وفواتير المشتريات التاريخية لا تزيده. لو فعلت الاثنتان "
+        "لتضاعف المخزون — الكمية الموجودة على الرف مُدخلة مرة واحدة بالفعل."
+    ),
+    (
+        "فواتير المشتريات التاريخية تُرحَّل كتكلفة بضاعة مباعة لا كأصل مخزني، "
+        "والمخزون الافتتاحي هو ما يُثبت الأصل مقابل رأس المال. هذه طريقة الجرد "
+        "الدوري، وهي الوحيدة الصحيحة عند استيراد تاريخ جزئي."
+    ),
     (
         "إذا استوردت كل فواتير العميل فاترك «رصيد افتتاحي» صفراً، "
-        "وإلا حُسبت مديونيته مرتين."
+        "وإلا حُسبت مديونيته مرتين. والقاعدة نفسها تنطبق على الموردين."
     ),
-    "لا يمكن تكرار استيراد نفس رقم الفاتورة أو نفس رقم السند مرتين.",
+    "لا يمكن تكرار استيراد نفس رقم الفاتورة أو نفس رقم السند مرتين — بيعاً أو شراءً.",
     (
         "المبلغ المحصّل يُسجَّل في مكان واحد فقط: إمّا في «المدفوع من الفاتورة» "
         "إن سُدّد عند البيع، أو في ورقة سندات القبض إن حُصّل لاحقاً — لا في الاثنين."

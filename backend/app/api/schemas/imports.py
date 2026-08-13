@@ -1,6 +1,7 @@
 """Shapes the data-import screen speaks in."""
 
 from decimal import Decimal
+from typing import Literal
 
 from pydantic import BaseModel
 
@@ -26,9 +27,16 @@ class SheetResultOut(BaseModel):
 
 
 class ReconciliationRowOut(BaseModel):
-    """One customer's balance, as this system computes it against what the old one said."""
+    """One party's balance, as this system computes it against what the old one said.
 
-    customer_name: str
+    Renamed from `customer_name` when suppliers joined the import: a supplier balance
+    that silently fails to reconcile is exactly the class of error this table exists
+    to catch, and leaving it customer-only would have made the guide's promise —
+    "the same rule applies to suppliers" — untrue.
+    """
+
+    party_kind: Literal["customer", "supplier"]
+    party_name: str
     expected_balance: Decimal
     actual_balance: Decimal
     # Positive means this system thinks they owe more than the legacy figure.

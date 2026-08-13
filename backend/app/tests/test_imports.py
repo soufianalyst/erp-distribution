@@ -404,7 +404,7 @@ class TestTheMigrationIsProved:
             client, admin, a_full_migration(), commit=True)).json()["data"]
 
         row = next(r for r in data["reconciliation"]
-                   if r["customer_name"] == "بقالة الاستيراد")
+                   if r["party_name"] == "بقالة الاستيراد")
         assert Decimal(row["actual_balance"]) == Decimal("50.00")
         assert row["matches"] is True
         assert data["reconciliation_mismatches"] == 0
@@ -443,3 +443,263 @@ class TestOnlyAdminsMayDoThis:
         salesman = await login(client, "salesman", TEST_SALES_PASSWORD)
         refused = await client.get("/api/v1/imports/template.xlsx", headers=salesman)
         assert refused.status_code == 403
+
+
+# The purchase half of a migration: one supplier, one invoice with two lines, and a
+# payment against it. Deliberately separate from `a_full_migration` so a test can
+# import purchases without sales and see the ledger halves in isolation.
+def a_purchase_migration() -> list:
+    return [
+        csv_bytes("suppliers", [{
+            "name": "شركة التوريد الوطنية", "phone": "0551112222",
+            "opening_balance": "0", "lead_time_days": "7", "is_active": "نعم",
+            "legacy_balance": "260.00",
+        }]),
+        csv_bytes("purchase_invoices", [{
+            "invoice_ref": "OLD-PINV-1", "supplier_name": "شركة التوريد الوطنية",
+            "invoice_date": "2026-01-05", "payment_method": "credit",
+            "subtotal": "800.00", "shipping_cost": "20.00", "tax_amount": "40.00",
+            "total": "860.00", "paid_amount": "0",
+            "warehouse": "مستودع الاستيراد",
+        }]),
+        csv_bytes("purchase_invoice_lines", [
+            {"invoice_ref": "OLD-PINV-1", "sku": "M-1", "quantity": "50",
+             "unit_cost": "8.00"},
+            {"invoice_ref": "OLD-PINV-1", "sku": "M-1", "quantity": "50",
+             "unit_cost": "8.00", "batch_number": "OPENING"},
+        ]),
+        csv_bytes("supplier_payments", [{
+            "payment_ref": "OLD-PV-1", "supplier_name": "شركة التوريد الوطنية",
+            "payment_date": "2026-01-20", "amount": "600.00", "method": "bank",
+        }]),
+    ]
+
+
+async def balance_of(db_session, code: str) -> Decimal:
+    """A ledger account's balance, debits less credits."""
+    from sqlalchemy import func, select
+
+    from app.domain.models.accounting import Account, JournalItem
+
+    total = await db_session.scalar(
+        select(func.coalesce(func.sum(JournalItem.debit - JournalItem.credit), 0))
+        .join(Account, Account.id == JournalItem.account_id)
+        .where(Account.code == code)
+    )
+    return Decimal(str(total or 0))
+
+
+class TestThePurchaseSideOfTheLedger:
+    """Before this, an imported business had receivables and revenue but no payables,
+    no cost of sales, and — worst — no inventory.
+
+    The importer set batch quantities without ever posting the inventory account, so a
+    migrated company's balance sheet omitted the largest asset a distributor owns. The
+    trial balance still balanced, which is exactly what made it easy to miss: it
+    balanced perfectly, around a hole.
+    """
+
+    async def test_opening_stock_puts_inventory_on_the_balance_sheet(
+        self, client: AsyncClient, db_session
+    ) -> None:
+        admin = await login(client, "admin", TEST_ADMIN_PASSWORD)
+        response = await upload(client, admin, a_full_migration(), commit=True)
+        assert response.status_code == 200, response.text
+
+        # 500 units at 8.00 — the opening-stock sheet's own figures.
+        assert await balance_of(db_session, "1030") == Decimal("4000.00")
+        # Against capital, because that is what an opening balance sheet is: the
+        # owner's stake in goods bought with money predating this ledger.
+        assert await balance_of(db_session, "3010") == Decimal("-4000.00")
+
+    async def test_a_purchase_invoice_creates_the_payable(
+        self, client: AsyncClient, db_session
+    ) -> None:
+        admin = await login(client, "admin", TEST_ADMIN_PASSWORD)
+        files = a_full_migration() + a_purchase_migration()
+        response = await upload(client, admin, files, commit=True)
+        assert response.status_code == 200, response.text
+        assert response.json()["data"]["error_count"] == 0
+
+        from app.domain.models.purchases import PurchaseInvoice
+
+        invoice = (await db_session.execute(
+            select(PurchaseInvoice).where(PurchaseInvoice.legacy_ref == "OLD-PINV-1")
+        )).scalar_one()
+        assert invoice.total == Decimal("860.00")
+        assert len(await self._lines(db_session, invoice.id)) == 2
+
+        # 860 owed less the 600 paid by the supplier payment sheet.
+        assert await balance_of(db_session, "2010") == Decimal("-260.00")
+
+    @staticmethod
+    async def _lines(db_session, invoice_id: int) -> list:
+        from app.domain.models.purchases import PurchaseInvoiceLine
+
+        rows = await db_session.execute(
+            select(PurchaseInvoiceLine).where(
+                PurchaseInvoiceLine.invoice_id == invoice_id
+            )
+        )
+        return list(rows.scalars().all())
+
+    async def test_a_historical_purchase_is_a_cost_not_an_asset(
+        self, client: AsyncClient, db_session
+    ) -> None:
+        """The decision that keeps inventory from doubling.
+
+        The live purchase flow debits INVENTORY, because there the goods really do
+        arrive on a shelf. An imported historical purchase must not: the shelf was
+        already established once from the physical count, and capitalising the whole
+        purchase history on top of it would inflate the asset by everything the
+        business ever bought.
+        """
+        admin = await login(client, "admin", TEST_ADMIN_PASSWORD)
+        files = a_full_migration() + a_purchase_migration()
+        await upload(client, admin, files, commit=True)
+
+        # 800 of goods + 20 shipping went to cost of sales, and inventory is still
+        # exactly the opening count — not opening plus purchases.
+        assert await balance_of(db_session, "5010") == Decimal("820.00")
+        assert await balance_of(db_session, "1030") == Decimal("4000.00")
+
+    async def test_the_quantities_bought_do_not_reach_the_shelf(
+        self, client: AsyncClient, db_session
+    ) -> None:
+        """100 units on a historical purchase must not add to today's count.
+
+        The count is today's count. A purchase from January that also topped up the
+        batch would have the same carton on the shelf twice — once when it arrived and
+        once when it was counted.
+        """
+        admin = await login(client, "admin", TEST_ADMIN_PASSWORD)
+        files = a_full_migration() + a_purchase_migration()
+        await upload(client, admin, files, commit=True)
+
+        from app.domain.models.inventory import Product, ProductBatch
+
+        product = (await db_session.execute(
+            select(Product).where(Product.sku == "M-1")
+        )).scalar_one()
+        total = await db_session.scalar(
+            select(func.coalesce(func.sum(ProductBatch.quantity), 0)).where(
+                ProductBatch.product_id == product.id
+            )
+        )
+        # The opening 500, untouched by either the sales or the purchase history.
+        assert Decimal(str(total)) == Decimal("500.000")
+
+    async def test_the_trial_balance_still_balances(
+        self, client: AsyncClient, db_session
+    ) -> None:
+        """Every new entry is double-entry or the whole ledger is worthless."""
+        admin = await login(client, "admin", TEST_ADMIN_PASSWORD)
+        files = a_full_migration() + a_purchase_migration()
+        await upload(client, admin, files, commit=True)
+
+        from app.domain.models.accounting import JournalItem
+
+        debits = await db_session.scalar(
+            select(func.coalesce(func.sum(JournalItem.debit), 0))
+        )
+        credits = await db_session.scalar(
+            select(func.coalesce(func.sum(JournalItem.credit), 0))
+        )
+        assert Decimal(str(debits)) == Decimal(str(credits))
+
+    async def test_a_supplier_balance_is_reconciled_like_a_customer_one(
+        self, client: AsyncClient
+    ) -> None:
+        """The guide promises suppliers the same protection; this is that promise.
+
+        The reconciliation table was customer-only, so a supplier balance that failed
+        to agree with the legacy books had nowhere to show up — the exact silent error
+        the table exists to catch.
+        """
+        admin = await login(client, "admin", TEST_ADMIN_PASSWORD)
+        files = a_full_migration() + a_purchase_migration()
+        data = (await upload(client, admin, files, commit=True)).json()["data"]
+
+        row = next(
+            r for r in data["reconciliation"]
+            if r["party_name"] == "شركة التوريد الوطنية"
+        )
+        assert row["party_kind"] == "supplier"
+        # 860 invoiced less 600 paid, matching the legacy_balance in the sheet.
+        assert Decimal(row["actual_balance"]) == Decimal("260.00")
+        assert row["matches"] is True
+
+        # And the customer row is still there, labelled as such.
+        customer = next(
+            r for r in data["reconciliation"]
+            if r["party_name"] == "بقالة الاستيراد"
+        )
+        assert customer["party_kind"] == "customer"
+
+    async def test_re_uploading_a_purchase_file_is_refused(
+        self, client: AsyncClient
+    ) -> None:
+        """Otherwise the second run pays the supplier twice and looks just as clean."""
+        admin = await login(client, "admin", TEST_ADMIN_PASSWORD)
+        files = a_full_migration() + a_purchase_migration()
+        first = await upload(client, admin, files, commit=True)
+        assert first.json()["data"]["error_count"] == 0
+
+        again = await upload(client, admin, a_purchase_migration(), commit=True)
+        data = again.json()["data"]
+        assert data["applied"] is False
+        assert data["error_count"] > 0
+
+        # Both refs by name, not merely "something was rejected". A test that only
+        # asserted the file was refused passed happily with the invoice check
+        # disabled, because the payment duplicate refused it on its own — and a
+        # re-imported invoice is the half that doubles the payable.
+        messages = " ".join(e["message"] for e in data["errors"])
+        assert "OLD-PINV-1" in messages, "the duplicate purchase invoice must be named"
+        assert "OLD-PV-1" in messages, "the duplicate supplier payment must be named"
+        assert "مستوردة من قبل" in messages
+
+    async def test_a_purchase_header_that_disagrees_with_its_lines_is_refused(
+        self, client: AsyncClient
+    ) -> None:
+        """Shipping is *added* to a purchase where a discount is *subtracted* from a
+        sale, which is why the two arithmetic checks are separate functions."""
+        admin = await login(client, "admin", TEST_ADMIN_PASSWORD)
+        broken = [
+            f for f in a_purchase_migration()
+            if not f[0].startswith("purchase_invoices")
+        ] + [
+            csv_bytes("purchase_invoices", [{
+                "invoice_ref": "OLD-PINV-1", "supplier_name": "شركة التوريد الوطنية",
+                "invoice_date": "2026-01-05", "payment_method": "credit",
+                "subtotal": "800.00", "shipping_cost": "20.00", "tax_amount": "40.00",
+                # Should be 860; the shipping has been dropped from the total.
+                "total": "840.00", "paid_amount": "0",
+                "warehouse": "مستودع الاستيراد",
+            }])
+        ]
+        data = (await upload(
+            client, admin, a_full_migration() + broken, commit=True)).json()["data"]
+        assert data["applied"] is False
+        assert any("الإجمالي" in e["message"] for e in data["errors"])
+
+    async def test_an_unknown_supplier_is_refused(
+        self, client: AsyncClient
+    ) -> None:
+        admin = await login(client, "admin", TEST_ADMIN_PASSWORD)
+        orphan = [
+            csv_bytes("purchase_invoices", [{
+                "invoice_ref": "OLD-PINV-9", "supplier_name": "مورد لا وجود له",
+                "invoice_date": "2026-01-05", "payment_method": "credit",
+                "subtotal": "10.00", "shipping_cost": "0", "tax_amount": "0",
+                "total": "10.00", "paid_amount": "0",
+            }]),
+            csv_bytes("purchase_invoice_lines", [{
+                "invoice_ref": "OLD-PINV-9", "sku": "M-1", "quantity": "1",
+                "unit_cost": "10.00",
+            }]),
+        ]
+        data = (await upload(
+            client, admin, a_full_migration() + orphan, commit=True)).json()["data"]
+        assert data["applied"] is False
+        assert any("غير موجود في ورقة الموردين" in e["message"] for e in data["errors"])

@@ -19,7 +19,7 @@ this system computes. A migration nobody reconciled is a migration nobody can tr
 
 from collections import defaultdict
 from dataclasses import dataclass, field
-from datetime import datetime, time, timezone
+from datetime import date, datetime, time, timezone
 from decimal import Decimal
 from typing import Any
 
@@ -43,9 +43,20 @@ from app.domain.models.sales import (
     SalesInvoiceTax,
     SalesPaymentMethod,
 )
+from app.domain.models.purchases import (
+    PurchaseInvoice,
+    PurchaseInvoiceLine,
+    PurchasePaymentMethod,
+    Supplier,
+    SupplierPayment,
+)
 from app.domain.models.user import User
 from app.services.accounting.accounting_service import (
+    ACCOUNTS_PAYABLE,
     ACCOUNTS_RECEIVABLE,
+    CAPITAL,
+    COGS,
+    INVENTORY,
     SALES_DISCOUNT,
     SALES_REVENUE,
     VAT,
@@ -226,8 +237,19 @@ class ImportService:
         headers = parsed.rows.get("sales_invoices", [])
         lines = parsed.rows.get("sales_invoice_lines", [])
         payments = parsed.rows.get("customer_payments", [])
+        suppliers = parsed.rows.get("suppliers", [])
+        purchases = parsed.rows.get("purchase_invoices", [])
+        purchase_lines = parsed.rows.get("purchase_invoice_lines", [])
+        supplier_payments = parsed.rows.get("supplier_payments", [])
 
         self._reject_duplicates(parsed, "products", products, "sku", "رمز الصنف")
+        self._reject_duplicates(parsed, "suppliers", suppliers, "name", "اسم المورد")
+        self._reject_duplicates(
+            parsed, "purchase_invoices", purchases, "invoice_ref", "رقم فاتورة الشراء"
+        )
+        self._reject_duplicates(
+            parsed, "supplier_payments", supplier_payments, "payment_ref", "رقم سند الصرف"
+        )
         self._reject_duplicates(parsed, "customers", customers, "name", "اسم العميل")
         self._reject_duplicates(
             parsed, "sales_invoices", headers, "invoice_ref", "رقم الفاتورة"
@@ -257,7 +279,11 @@ class ImportService:
 
         sku_in_file = {p["sku"] for p in products if p.get("sku")}
         known_skus = sku_in_file | await self._existing(Product.sku)
-        for sheet_name, rows in (("opening_stock", stock), ("sales_invoice_lines", lines)):
+        for sheet_name, rows in (
+            ("opening_stock", stock),
+            ("sales_invoice_lines", lines),
+            ("purchase_invoice_lines", purchase_lines),
+        ):
             for row in rows:
                 sku = row.get("sku")
                 if sku and sku not in known_skus:
@@ -279,6 +305,19 @@ class ImportService:
                         f"العميل «{name}» غير موجود في ورقة العملاء ولا في النظام.",
                     )
 
+        supplier_names_in_file = {r["name"] for r in suppliers if r.get("name")}
+        known_suppliers = supplier_names_in_file | await self._existing(Supplier.name)
+        for sheet_name, rows in (
+            ("purchase_invoices", purchases), ("supplier_payments", supplier_payments)
+        ):
+            for row in rows:
+                name = row.get("supplier_name")
+                if name and name not in known_suppliers:
+                    parsed.add(
+                        sheet_name, row["__row__"], "supplier_name",
+                        f"المورد «{name}» غير موجود في ورقة الموردين ولا في النظام.",
+                    )
+
         usernames = await self._existing(User.username)
         for sheet_name, rows in (("customers", customers), ("sales_invoices", headers)):
             for row in rows:
@@ -290,7 +329,11 @@ class ImportService:
                     )
 
         await self._reject_already_imported(parsed, headers, payments)
+        await self._reject_already_imported_purchases(
+            parsed, purchases, supplier_payments
+        )
         self._check_invoice_arithmetic(parsed, headers, lines)
+        self._check_purchase_arithmetic(parsed, purchases, purchase_lines)
 
         for row in stock:
             quantity = row.get("quantity")
@@ -299,13 +342,16 @@ class ImportService:
                     "opening_stock", row["__row__"], "quantity",
                     "الكمية لا يمكن أن تكون سالبة.",
                 )
-        for row in payments:
-            amount = row.get("amount")
-            if amount is not None and amount <= 0:
-                parsed.add(
-                    "customer_payments", row["__row__"], "amount",
-                    "المبلغ يجب أن يكون أكبر من صفر.",
-                )
+        for sheet_name, rows in (
+            ("customer_payments", payments), ("supplier_payments", supplier_payments)
+        ):
+            for row in rows:
+                amount = row.get("amount")
+                if amount is not None and amount <= 0:
+                    parsed.add(
+                        sheet_name, row["__row__"], "amount",
+                        "المبلغ يجب أن يكون أكبر من صفر.",
+                    )
 
     def _check_invoice_arithmetic(
         self, parsed: Parsed, headers: list[dict], lines: list[dict]
@@ -379,6 +425,108 @@ class ImportService:
                     f"المدفوع {paid} يتجاوز إجمالي الفاتورة {total}.",
                 )
 
+    def _check_purchase_arithmetic(
+        self, parsed: Parsed, headers: list[dict], lines: list[dict]
+    ) -> None:
+        """The purchase file must agree with itself, same as the sales file.
+
+        Deliberately a separate method rather than a parameterised version of the
+        sales check: the two totals are built differently — a purchase *adds* shipping
+        where a sale *subtracts* a discount — and folding them into one function with
+        a sign flag is how a shipping cost eventually gets deducted from a supplier
+        invoice by a refactor nobody re-read.
+        """
+        by_ref: dict[str, list[dict]] = defaultdict(list)
+        for line in lines:
+            if line.get("invoice_ref"):
+                by_ref[line["invoice_ref"]].append(line)
+
+        refs = {h["invoice_ref"] for h in headers if h.get("invoice_ref")}
+        for line in lines:
+            ref = line.get("invoice_ref")
+            if ref and ref not in refs:
+                parsed.add(
+                    "purchase_invoice_lines", line["__row__"], "invoice_ref",
+                    f"لا يوجد رأس فاتورة شراء بالرقم «{ref}».",
+                )
+
+        for header in headers:
+            ref = header.get("invoice_ref")
+            row = header["__row__"]
+            if not ref:
+                continue
+            invoice_lines = by_ref.get(ref, [])
+            if not invoice_lines:
+                parsed.add(
+                    "purchase_invoices", row, "invoice_ref",
+                    f"فاتورة الشراء «{ref}» بلا أسطر في ورقة الأسطر.",
+                )
+                continue
+
+            computed = sum(
+                (
+                    (line["quantity"] * line["unit_cost"]).quantize(TWO_PLACES)
+                    for line in invoice_lines
+                    if line.get("quantity") is not None and line.get("unit_cost") is not None
+                ),
+                ZERO,
+            )
+            subtotal = header.get("subtotal") or ZERO
+            if abs(computed - subtotal) > TOLERANCE:
+                parsed.add(
+                    "purchase_invoices", row, "subtotal",
+                    f"المجموع المكتوب {subtotal} لا يساوي مجموع الأسطر {computed} "
+                    f"لفاتورة الشراء «{ref}».",
+                )
+
+            shipping = header.get("shipping_cost") or ZERO
+            tax = header.get("tax_amount") or ZERO
+            total = header.get("total") or ZERO
+            expected = subtotal + shipping + tax
+            if abs(expected - total) > TOLERANCE:
+                parsed.add(
+                    "purchase_invoices", row, "total",
+                    f"الإجمالي {total} لا يساوي (المجموع {subtotal} + الشحن {shipping} "
+                    f"+ الضريبة {tax}) = {expected}.",
+                )
+
+            paid = header.get("paid_amount") or ZERO
+            if paid < 0:
+                parsed.add(
+                    "purchase_invoices", row, "paid_amount", "المدفوع لا يكون سالباً."
+                )
+            elif paid - total > TOLERANCE:
+                parsed.add(
+                    "purchase_invoices", row, "paid_amount",
+                    f"المدفوع {paid} يتجاوز إجمالي الفاتورة {total}.",
+                )
+
+    async def _reject_already_imported_purchases(
+        self, parsed: Parsed, headers: list[dict], payments: list[dict]
+    ) -> None:
+        """Re-uploading a purchase file must not pay a supplier twice."""
+        for sheet, rows, key, model, label in (
+            ("purchase_invoices", headers, "invoice_ref", PurchaseInvoice, "فاتورة الشراء"),
+            ("supplier_payments", payments, "payment_ref", SupplierPayment, "سند الصرف"),
+        ):
+            refs = [r[key] for r in rows if r.get(key)]
+            if not refs:
+                continue
+            existing = set(
+                (
+                    await self.session.execute(
+                        select(model.legacy_ref).where(model.legacy_ref.in_(refs))
+                    )
+                ).scalars()
+            )
+            for row in rows:
+                if row.get(key) in existing:
+                    parsed.add(
+                        sheet, row["__row__"], key,
+                        f"{label} «{row[key]}» مستوردة من قبل. "
+                        "احذفها من الملف أو استخدم رقماً مختلفاً.",
+                    )
+
     async def _reject_already_imported(
         self, parsed: Parsed, headers: list[dict], payments: list[dict]
     ) -> None:
@@ -447,8 +595,15 @@ class ImportService:
         products = await self._upsert_products(parsed, warehouses)
         await self._upsert_opening_stock(parsed, products, warehouses)
         customers = await self._upsert_customers(parsed)
+        suppliers = await self._upsert_suppliers(parsed)
         await self._create_invoices(parsed, products, customers, warehouses, user)
         await self._create_payments(parsed, customers, user)
+        await self._create_purchase_invoices(
+            parsed, products, suppliers, warehouses, user
+        )
+        await self._create_supplier_payments(parsed, suppliers, user)
+        # Last, because it reads the batches every other step may have created.
+        await self._post_opening_inventory(parsed, user)
         await self.session.commit()
         return await self._reconcile(parsed)
 
@@ -554,6 +709,222 @@ class ImportService:
             batch.quantity = row["quantity"]
             batch.unit_cost = row.get("unit_cost")
         await self.session.flush()
+
+    async def _upsert_suppliers(self, parsed: Parsed) -> dict[str, Supplier]:
+        rows = parsed.rows.get("suppliers", [])
+        existing = {
+            supplier.name: supplier
+            for supplier in (await self.session.execute(select(Supplier))).scalars()
+        }
+        for row in rows:
+            supplier = existing.get(row["name"])
+            if supplier is None:
+                supplier = Supplier(name=row["name"])
+                self.session.add(supplier)
+                existing[row["name"]] = supplier
+            supplier.phone = row.get("phone")
+            supplier.address = row.get("address")
+            supplier.opening_balance = row.get("opening_balance") or ZERO
+            if row.get("lead_time_days") is not None:
+                supplier.lead_time_days = row["lead_time_days"]
+            supplier.is_active = row.get("is_active", True)
+        await self.session.flush()
+        return existing
+
+    async def _create_purchase_invoices(
+        self,
+        parsed: Parsed,
+        products: dict[str, Product],
+        suppliers: dict[str, Supplier],
+        warehouses: dict[str, Warehouse],
+        user: User,
+    ) -> None:
+        """Historical purchases: the payable and the cost, never the stock.
+
+        The quantities are recorded on the lines for the record and are *not* added to
+        any batch. That is not an omission — the current shelf comes from the
+        opening-stock sheet, so a historical purchase that also topped up a batch would
+        count the same carton twice: once when it arrived years ago and once in the
+        count taken last week.
+        """
+        rows = parsed.rows.get("purchase_invoices", [])
+        if not rows:
+            return
+        lines_by_ref: dict[str, list[dict]] = defaultdict(list)
+        for line in parsed.rows.get("purchase_invoice_lines", []):
+            lines_by_ref[line["invoice_ref"]].append(line)
+        # A line needs *some* warehouse for its placeholder batch even when the header
+        # named none; the goods are not being counted anywhere, only recorded.
+        fallback_warehouse = next(iter(warehouses.values()), None)
+
+        for row in rows:
+            supplier = suppliers[row["supplier_name"]]
+            warehouse = warehouses[row["warehouse"]] if row.get("warehouse") else None
+            invoice = PurchaseInvoice(
+                legacy_ref=row["invoice_ref"],
+                supplier_id=supplier.id,
+                warehouse_id=warehouse.id if warehouse else None,
+                supplier_invoice_number=row.get("supplier_invoice_number"),
+                invoice_date=row["invoice_date"],
+                payment_method=PurchasePaymentMethod(row["payment_method"]),
+                subtotal=row["subtotal"],
+                shipping_cost=row.get("shipping_cost") or ZERO,
+                vat_amount=row.get("tax_amount") or ZERO,
+                total=row["total"],
+                paid_amount=row.get("paid_amount") or ZERO,
+                notes=row.get("notes"),
+                created_by=user.id,
+            )
+            # Imported invoices are historical fact, so the cashier gate is already
+            # behind them: leaving them unconfirmed would drop years of purchases into
+            # today's payables queue for someone to approve.
+            invoice.payment_confirmed_at = datetime.now(timezone.utc)
+            invoice.payment_confirmed_by = user.id
+            self.session.add(invoice)
+            await self.session.flush()
+
+            for line in lines_by_ref.get(row["invoice_ref"], []):
+                product = products[line["sku"]]
+                batch = await self._archive_batch(
+                    product,
+                    warehouse or fallback_warehouse,
+                    line.get("batch_number") or ARCHIVE_BATCH,
+                    # The invoice's own date, like the sales side: a placeholder that
+                    # expired when the goods were bought can never be picked by FEFO,
+                    # which is the whole point of it.
+                    line.get("expiry_date") or row["invoice_date"],
+                )
+                self.session.add(
+                    PurchaseInvoiceLine(
+                        invoice_id=invoice.id,
+                        product_id=product.id,
+                        batch_id=batch.id,
+                        batch_number=batch.batch_number,
+                        expiry_date=line.get("expiry_date") or batch.expiry_date,
+                        quantity=line["quantity"],
+                        unit_cost=line["unit_cost"],
+                        line_total=(line["quantity"] * line["unit_cost"]).quantize(
+                            TWO_PLACES
+                        ),
+                    )
+                )
+            await self._post_purchase(invoice, supplier, user)
+
+    async def _post_purchase(
+        self, invoice: PurchaseInvoice, supplier: Supplier, user: User
+    ) -> None:
+        """Cost and VAT against the supplier's payable — cost, not inventory.
+
+        The live purchase flow debits INVENTORY here, because there the goods really do
+        arrive on the shelf. An imported historical purchase must not: the shelf is
+        established once by the opening-stock entry, and capitalising these as well
+        would inflate the inventory asset by the entire purchase history.
+
+        Expensing them to COGS is the periodic-inventory treatment, and it is the only
+        arithmetic that works when the history is partial: revenue less purchases gives
+        a defensible gross profit for whatever window was imported, while the closing
+        asset is asserted from the physical count rather than derived from a chain of
+        movements that does not go back to the day the business opened.
+        """
+        goods = invoice.subtotal + invoice.shipping_cost
+        items = [
+            (COGS, goods, ZERO),
+            (ACCOUNTS_PAYABLE, ZERO, invoice.total),
+        ]
+        if invoice.vat_amount > 0:
+            items.insert(1, (VAT, invoice.vat_amount, ZERO))
+        await self.accounting.add_entry_no_commit(
+            entry_date=invoice.invoice_date,
+            description=(
+                f"فاتورة شراء مستوردة {invoice.legacy_ref} من المورد ({supplier.name})"
+            ),
+            items=items,
+            reference_type="purchase_invoice",
+            reference_id=invoice.id,
+            created_by=user.id,
+        )
+        if invoice.paid_amount > 0:
+            await self.accounting.add_entry_no_commit(
+                entry_date=invoice.invoice_date,
+                description=f"سداد فاتورة شراء مستوردة {invoice.legacy_ref}",
+                items=[
+                    (ACCOUNTS_PAYABLE, invoice.paid_amount, ZERO),
+                    (cash_or_bank(invoice.payment_method.value), ZERO, invoice.paid_amount),
+                ],
+                reference_type="purchase_invoice_payment",
+                reference_id=invoice.id,
+                created_by=user.id,
+            )
+
+    async def _create_supplier_payments(
+        self, parsed: Parsed, suppliers: dict[str, Supplier], user: User
+    ) -> None:
+        for row in parsed.rows.get("supplier_payments", []):
+            supplier = suppliers[row["supplier_name"]]
+            payment = SupplierPayment(
+                legacy_ref=row["payment_ref"],
+                supplier_id=supplier.id,
+                amount=row["amount"],
+                payment_date=row["payment_date"],
+                method=row["method"],
+                reference=row.get("reference"),
+                notes=row.get("notes"),
+                created_by=user.id,
+            )
+            self.session.add(payment)
+            await self.session.flush()
+            await self.accounting.add_entry_no_commit(
+                entry_date=payment.payment_date,
+                description=(
+                    f"سند صرف مستورد {payment.legacy_ref} للمورد ({supplier.name})"
+                ),
+                items=[
+                    (ACCOUNTS_PAYABLE, payment.amount, ZERO),
+                    (cash_or_bank(payment.method), ZERO, payment.amount),
+                ],
+                reference_type="supplier_payment",
+                reference_id=payment.id,
+                created_by=user.id,
+            )
+
+    async def _post_opening_inventory(self, parsed: Parsed, user: User) -> None:
+        """Put the stock on the balance sheet, against capital.
+
+        Until this existed the importer left the inventory account at zero while the
+        warehouse held real goods — the single largest asset in a distribution business,
+        absent from its own balance sheet. Nothing was wrong with the trial balance,
+        which is what made it easy to miss: it balanced perfectly, around a hole.
+
+        Capital is the counterpart because that is what an opening balance sheet is —
+        the owner's stake in what the business already holds. It is not revenue and it
+        is not a purchase; the goods were bought with money that predates this ledger.
+        """
+        rows = parsed.rows.get("opening_stock", [])
+        if not rows:
+            return
+        value = sum(
+            (
+                (row["quantity"] * (row.get("unit_cost") or ZERO)).quantize(TWO_PLACES)
+                for row in rows
+                if row.get("quantity") is not None
+            ),
+            ZERO,
+        )
+        if value <= ZERO:
+            # Stock with no cost recorded is real stock the ledger cannot value.
+            # Posting zero is honest; inventing a cost would not be.
+            return
+        await self.accounting.add_entry_no_commit(
+            # Dated today, not at the oldest batch: this is the cutover balance
+            # sheet, and backdating it into a period the ledger does not cover would
+            # put an asset before the books that hold it.
+            entry_date=date.today(),
+            description="إثبات المخزون الافتتاحي المستورد مقابل رأس المال",
+            items=[(INVENTORY, value, ZERO), (CAPITAL, ZERO, value)],
+            reference_type="opening_stock",
+            reference_id=None,
+            created_by=user.id,
+        )
 
     async def _upsert_customers(self, parsed: Parsed) -> dict[str, Customer]:
         rows = parsed.rows.get("customers", [])
@@ -797,10 +1168,13 @@ class ImportService:
         that matters — a double-counted opening balance, a missing invoice, a receipt
         entered twice — shows up here as a customer whose two numbers disagree.
         """
+        from app.services.purchases.purchase_service import PurchaseService
         from app.services.sales.sales_service import SalesService
 
         sales = SalesService(self.session)
+        purchases = PurchaseService(self.session)
         rows: list[ReconciliationRowOut] = []
+
         for row in parsed.rows.get("customers", []):
             expected = row.get("expected_balance")
             if expected is None:
@@ -810,19 +1184,45 @@ class ImportService:
                     select(Customer).where(Customer.name == row["name"])
                 )
             ).scalar_one()
-            actual = await sales.customer_balance(customer.id)
-            difference = (actual - expected).quantize(TWO_PLACES)
             rows.append(
-                ReconciliationRowOut(
-                    customer_name=customer.name,
-                    expected_balance=expected.quantize(TWO_PLACES),
-                    actual_balance=actual.quantize(TWO_PLACES),
-                    difference=difference,
-                    matches=abs(difference) <= TOLERANCE,
+                self._reconciliation_row(
+                    "customer", customer.name, expected,
+                    await sales.customer_balance(customer.id),
                 )
             )
+
+        for row in parsed.rows.get("suppliers", []):
+            expected = row.get("legacy_balance")
+            if expected is None:
+                continue
+            supplier = (
+                await self.session.execute(
+                    select(Supplier).where(Supplier.name == row["name"])
+                )
+            ).scalar_one()
+            rows.append(
+                self._reconciliation_row(
+                    "supplier", supplier.name, expected,
+                    await purchases.supplier_balance(supplier.id),
+                )
+            )
+
         rows.sort(key=lambda r: abs(r.difference), reverse=True)
         return rows
+
+    @staticmethod
+    def _reconciliation_row(
+        kind: str, name: str, expected: Decimal, actual: Decimal
+    ) -> ReconciliationRowOut:
+        difference = (actual - expected).quantize(TWO_PLACES)
+        return ReconciliationRowOut(
+            party_kind=kind,
+            party_name=name,
+            expected_balance=expected.quantize(TWO_PLACES),
+            actual_balance=actual.quantize(TWO_PLACES),
+            difference=difference,
+            matches=abs(difference) <= TOLERANCE,
+        )
 
     def _report(
         self,

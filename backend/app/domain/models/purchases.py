@@ -196,6 +196,12 @@ class PurchaseInvoice(Base):
     payment_confirmed_by: Mapped[int | None] = mapped_column(
         ForeignKey("users.id"), nullable=True
     )
+    # Reference from the system this was migrated from; unique so a repeated
+    # import is refused instead of billing the supplier twice. Mirrors
+    # SalesInvoice.legacy_ref.
+    legacy_ref: Mapped[str | None] = mapped_column(
+        String(60), unique=True, nullable=True, index=True
+    )
     notes: Mapped[str | None] = mapped_column(String(300))
     created_by: Mapped[int | None] = mapped_column(ForeignKey("users.id"))
     created_at: Mapped[datetime] = mapped_column(
@@ -322,6 +328,12 @@ class SupplierPayment(Base):
     payment_date: Mapped[date] = mapped_column(Date, nullable=False)
     method: Mapped[str] = mapped_column(String(20), nullable=False)
     reference: Mapped[str | None] = mapped_column(String(50))
+    # Reference from the system this was migrated from; unique so a repeated
+    # import is refused instead of billing the supplier twice. Mirrors
+    # SalesInvoice.legacy_ref.
+    legacy_ref: Mapped[str | None] = mapped_column(
+        String(60), unique=True, nullable=True, index=True
+    )
     notes: Mapped[str | None] = mapped_column(String(300))
     created_by: Mapped[int | None] = mapped_column(ForeignKey("users.id"))
     created_at: Mapped[datetime] = mapped_column(
