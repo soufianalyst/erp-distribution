@@ -280,6 +280,64 @@ class TestItFollowsTheInvoice:
 
         assert (await register(client, admin, customer_id))["line_count"] == 0
 
+    async def test_reopening_the_invoice_keeps_the_lines_filed(
+        self, client: AsyncClient
+    ) -> None:
+        """The flag reads back per line, so an edit does not unfile by accident.
+
+        Unmarking is deliberate — the test above proves the flag can be dropped. That
+        makes it dangerous for it to *also* be what happens by omission: a form that
+        reopens an invoice with the boxes clear and saves it would empty the register,
+        and every screen would look entirely normal afterwards. So the read side names
+        the state of each line, and re-submitting what it returned changes nothing.
+        """
+        admin = await login(client, "admin", TEST_ADMIN_PASSWORD)
+        warehouse_id, regulated_id = await stocked(client, admin, "RAT-REOPEN-A")
+        _, ordinary_id = await stocked(client, admin, "RAT-REOPEN-B")
+        customer_id = await create_customer(
+            client, admin, name="عميل التعديل", credit_limit="90000")
+
+        invoice_id = (await sell(
+            client, admin, customer_id, warehouse_id,
+            [
+                {"product_id": regulated_id, "quantity": "10", "rationed": True},
+                {"product_id": ordinary_id, "quantity": "4"},
+            ]
+        )).json()["data"]["id"]
+
+        reopened = await client.get(
+            f"/api/v1/sales/invoices/{invoice_id}", headers=admin)
+        assert reopened.status_code == 200, reopened.text
+        lines = reopened.json()["data"]["lines"]
+        flags = {line["product_id"]: line["rationed"] for line in lines}
+        assert flags[regulated_id] is True
+        assert flags[ordinary_id] is False
+
+        # What the form would send back: the rows as read, with one quantity changed.
+        resubmitted = [
+            {
+                "product_id": line["product_id"],
+                "quantity": "6" if line["product_id"] == ordinary_id
+                else line["quantity"],
+                "rationed": line["rationed"],
+            }
+            for line in lines
+        ]
+        edited = await client.put(
+            f"/api/v1/sales/invoices/{invoice_id}",
+            headers=admin,
+            json={
+                "customer_id": customer_id, "warehouse_id": warehouse_id,
+                "payment_method": "cash", "tax_rate_ids": [],
+                "lines": resubmitted,
+            })
+        assert edited.status_code == 200, edited.text
+
+        data = await register(client, admin, customer_id)
+        assert data["line_count"] == 1
+        assert [e["product_id"] for e in data["entries"]] == [regulated_id]
+        assert Decimal(data["total_quantity"]) == Decimal("10")
+
     async def test_deleting_the_invoice_empties_the_register(
         self, client: AsyncClient
     ) -> None:
@@ -546,3 +604,242 @@ class TestWhoMaySeeAndChangeIt:
     async def test_it_needs_a_login(self, client: AsyncClient) -> None:
         response = await client.get("/api/v1/sales/customers/1/rationed")
         assert response.status_code == 401
+
+
+class TestTheTaxOnTheDeclaration:
+    """The register prints as an invoice-shaped document, and which taxes appear on it
+    is chosen per register.
+
+    The arithmetic is the invoice's arithmetic — rate over the goods subtotal, rounded
+    half up — so a declaration and an invoice covering the same goods agree to the unit.
+    What differs is that the *amount* is never stored, and there is a test for exactly
+    that: a register's goods total moves when an invoice behind it is corrected, so a
+    frozen tax would be the only stale figure on the page.
+    """
+
+    async def test_no_tax_is_selected_by_default(
+        self, client: AsyncClient
+    ) -> None:
+        """A declaration says nothing about tax until somebody chooses."""
+        admin = await login(client, "admin", TEST_ADMIN_PASSWORD)
+        warehouse_id, product_id = await stocked(client, admin, "RAT-TAX0")
+        customer_id = await create_customer(
+            client, admin, name="عميل بلا ضريبة", credit_limit="90000")
+        await sell(client, admin, customer_id, warehouse_id,
+                   [{"product_id": product_id, "quantity": "10", "rationed": True}])
+
+        data = await register(client, admin, customer_id)
+        assert data["taxes"] == []
+        assert Decimal(data["tax_total"]) == Decimal("0.00")
+        assert Decimal(data["grand_total"]) == Decimal(data["total_value"])
+
+    async def test_a_selected_tax_appears_and_adds_to_the_total(
+        self, client: AsyncClient
+    ) -> None:
+        admin = await login(client, "admin", TEST_ADMIN_PASSWORD)
+        warehouse_id, product_id = await stocked(client, admin, "RAT-TAX1")
+        customer_id = await create_customer(
+            client, admin, name="عميل الضريبة", credit_limit="90000")
+        # 10 × 10.50 = 105.00 of goods.
+        await sell(client, admin, customer_id, warehouse_id,
+                   [{"product_id": product_id, "quantity": "10", "rationed": True}])
+        opened = await register(client, admin, customer_id)
+        assert Decimal(opened["total_value"]) == Decimal("105.00")
+
+        rates = (await client.get(
+            "/api/v1/settings/tax-rates", headers=admin)).json()["data"]
+        chosen = next(r for r in rates if r["is_active"])
+        response = await client.put(
+            f"/api/v1/sales/rationed/{opened['record_id']}/taxes",
+            headers=admin, json={"tax_rate_ids": [chosen["id"]]})
+        assert response.status_code == 200, response.text
+
+        data = response.json()["data"]
+        assert [t["name"] for t in data["taxes"]] == [chosen["name"]]
+        expected = (Decimal("105.00") * Decimal(str(chosen["rate"])) / Decimal("100")
+                    ).quantize(Decimal("0.01"))
+        assert Decimal(data["taxes"][0]["amount"]) == expected
+        assert Decimal(data["tax_total"]) == expected
+        assert Decimal(data["grand_total"]) == Decimal("105.00") + expected
+
+    async def test_several_taxes_may_be_shown_at_once(
+        self, client: AsyncClient
+    ) -> None:
+        """Same as an invoice: VAT plus a local levy, each on its own line."""
+        admin = await login(client, "admin", TEST_ADMIN_PASSWORD)
+        extra = await client.post(
+            "/api/v1/settings/tax-rates", headers=admin,
+            json={"name": "رسم محلي", "code": "LOCAL-RAT", "rate": "2",
+                  "is_active": True, "is_default": False})
+        assert extra.status_code == 201, extra.text
+
+        warehouse_id, product_id = await stocked(client, admin, "RAT-TAX2")
+        customer_id = await create_customer(
+            client, admin, name="عميل ضريبتين", credit_limit="90000")
+        await sell(client, admin, customer_id, warehouse_id,
+                   [{"product_id": product_id, "quantity": "10", "rationed": True}])
+        opened = await register(client, admin, customer_id)
+
+        rates = (await client.get(
+            "/api/v1/settings/tax-rates", headers=admin)).json()["data"]
+        ids = [r["id"] for r in rates if r["is_active"]][:2]
+        assert len(ids) == 2
+
+        data = (await client.put(
+            f"/api/v1/sales/rationed/{opened['record_id']}/taxes",
+            headers=admin, json={"tax_rate_ids": ids})).json()["data"]
+        assert len(data["taxes"]) == 2
+        assert Decimal(data["tax_total"]) == sum(
+            (Decimal(t["amount"]) for t in data["taxes"]), Decimal("0"))
+
+    async def test_the_tax_amount_follows_a_correction_to_the_invoice(
+        self, client: AsyncClient
+    ) -> None:
+        """The reason the amount is computed rather than stored.
+
+        Halve the quantity on the invoice and the declaration's tax has to halve with
+        it. A snapshotted amount would leave the one figure an authority checks first
+        describing goods that were never delivered.
+        """
+        admin = await login(client, "admin", TEST_ADMIN_PASSWORD)
+        warehouse_id, product_id = await stocked(client, admin, "RAT-TAXFIX")
+        customer_id = await create_customer(
+            client, admin, name="عميل تصحيح الضريبة", credit_limit="90000")
+        invoice_id = (await sell(
+            client, admin, customer_id, warehouse_id,
+            [{"product_id": product_id, "quantity": "10", "rationed": True}]
+        )).json()["data"]["id"]
+
+        opened = await register(client, admin, customer_id)
+        rates = (await client.get(
+            "/api/v1/settings/tax-rates", headers=admin)).json()["data"]
+        chosen = next(r for r in rates if r["is_active"])
+        before = (await client.put(
+            f"/api/v1/sales/rationed/{opened['record_id']}/taxes",
+            headers=admin, json={"tax_rate_ids": [chosen["id"]]})).json()["data"]
+
+        edited = await client.put(
+            f"/api/v1/sales/invoices/{invoice_id}",
+            headers=admin,
+            json={
+                "customer_id": customer_id, "warehouse_id": warehouse_id,
+                "payment_method": "cash", "tax_rate_ids": [],
+                "lines": [
+                    {"product_id": product_id, "quantity": "5", "rationed": True}
+                ],
+            })
+        assert edited.status_code == 200, edited.text
+
+        after = await register(client, admin, customer_id)
+        assert Decimal(after["total_value"]) * 2 == Decimal(before["total_value"])
+        assert Decimal(after["tax_total"]) * 2 == Decimal(before["tax_total"])
+        # The rate itself is unchanged — only the base moved.
+        assert Decimal(after["taxes"][0]["rate"]) == Decimal(before["taxes"][0]["rate"])
+
+    async def test_the_selection_survives_closing_so_a_reprint_matches(
+        self, client: AsyncClient
+    ) -> None:
+        """Print it twice, get the same document."""
+        admin = await login(client, "admin", TEST_ADMIN_PASSWORD)
+        warehouse_id, product_id = await stocked(client, admin, "RAT-TAXKEEP")
+        customer_id = await create_customer(
+            client, admin, name="عميل الطباعة مرتين", credit_limit="90000")
+        await sell(client, admin, customer_id, warehouse_id,
+                   [{"product_id": product_id, "quantity": "10", "rationed": True}])
+        opened = await register(client, admin, customer_id)
+        rates = (await client.get(
+            "/api/v1/settings/tax-rates", headers=admin)).json()["data"]
+        chosen = next(r for r in rates if r["is_active"])
+        await client.put(
+            f"/api/v1/sales/rationed/{opened['record_id']}/taxes",
+            headers=admin, json={"tax_rate_ids": [chosen["id"]]})
+
+        await client.post(
+            f"/api/v1/sales/rationed/{opened['record_id']}/close",
+            headers=admin, json={})
+
+        first = (await client.get(
+            f"/api/v1/sales/rationed/{opened['record_id']}", headers=admin)).json()["data"]
+        second = (await client.get(
+            f"/api/v1/sales/rationed/{opened['record_id']}", headers=admin)).json()["data"]
+        assert first["taxes"] == second["taxes"]
+        assert first["grand_total"] == second["grand_total"]
+        assert Decimal(first["tax_total"]) > 0
+
+    async def test_the_next_register_inherits_the_same_taxes(
+        self, client: AsyncClient
+    ) -> None:
+        """The successor starts with last month's selection, not blank.
+
+        The declaration is monthly and the tax rules do not change with the month, so a
+        blank successor means re-ticking the same boxes twelve times a year — and the one
+        month somebody forgets prints a declaration short of its tax. It stays editable,
+        so inheriting costs nothing when the rules do change.
+        """
+        admin = await login(client, "admin", TEST_ADMIN_PASSWORD)
+        warehouse_id, product_id = await stocked(client, admin, "RAT-TAXNEXT")
+        customer_id = await create_customer(
+            client, admin, name="عميل الشهر القادم", credit_limit="90000")
+        await sell(client, admin, customer_id, warehouse_id,
+                   [{"product_id": product_id, "quantity": "10", "rationed": True}])
+        opened = await register(client, admin, customer_id)
+        rates = (await client.get(
+            "/api/v1/settings/tax-rates", headers=admin)).json()["data"]
+        chosen = next(r for r in rates if r["is_active"])
+        await client.put(
+            f"/api/v1/sales/rationed/{opened['record_id']}/taxes",
+            headers=admin, json={"tax_rate_ids": [chosen["id"]]})
+
+        closed = await client.post(
+            f"/api/v1/sales/rationed/{opened['record_id']}/close",
+            headers=admin, json={})
+        assert closed.status_code == 200, closed.text
+
+        successor = await register(client, admin, customer_id)
+        assert successor["record_id"] != opened["record_id"]
+        assert [t["tax_rate_id"] for t in successor["taxes"]] == [chosen["id"]]
+        assert [t["name"] for t in successor["taxes"]] == [chosen["name"]]
+        # Inherited, not carried as a figure: the new register holds no goods yet, so its
+        # tax is zero even though the rate is selected.
+        assert Decimal(successor["tax_total"]) == Decimal("0")
+
+    async def test_a_closed_declaration_cannot_have_its_tax_changed(
+        self, client: AsyncClient
+    ) -> None:
+        """It has been issued; changing the tax afterwards would make the client's copy
+        and the system disagree about what was declared."""
+        admin = await login(client, "admin", TEST_ADMIN_PASSWORD)
+        warehouse_id, product_id = await stocked(client, admin, "RAT-TAXFROZEN")
+        customer_id = await create_customer(
+            client, admin, name="عميل ضريبة مقفلة", credit_limit="90000")
+        await sell(client, admin, customer_id, warehouse_id,
+                   [{"product_id": product_id, "quantity": "10", "rationed": True}])
+        opened = await register(client, admin, customer_id)
+        await client.post(
+            f"/api/v1/sales/rationed/{opened['record_id']}/close",
+            headers=admin, json={})
+
+        rates = (await client.get(
+            "/api/v1/settings/tax-rates", headers=admin)).json()["data"]
+        response = await client.put(
+            f"/api/v1/sales/rationed/{opened['record_id']}/taxes",
+            headers=admin, json={"tax_rate_ids": [rates[0]["id"]]})
+        assert response.status_code == 400
+        assert "مقفل" in response.json()["message"]
+
+    async def test_a_rep_cannot_choose_the_tax(self, client: AsyncClient) -> None:
+        admin = await login(client, "admin", TEST_ADMIN_PASSWORD)
+        sales = await login(client, "salesman", TEST_SALES_PASSWORD)
+        me = (await client.get("/api/v1/auth/me", headers=sales)).json()["data"]
+        warehouse_id, product_id = await stocked(client, admin, "RAT-TAXPERM")
+        customer_id = await create_customer(
+            client, admin, name="عميل ضريبة المندوب", credit_limit="90000",
+            salesman_id=me["id"])
+        await sell(client, admin, customer_id, warehouse_id,
+                   [{"product_id": product_id, "quantity": "5", "rationed": True}])
+        record_id = (await register(client, admin, customer_id))["record_id"]
+
+        response = await client.put(
+            f"/api/v1/sales/rationed/{record_id}/taxes",
+            headers=sales, json={"tax_rate_ids": []})
+        assert response.status_code == 403

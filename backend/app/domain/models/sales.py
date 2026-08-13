@@ -214,11 +214,29 @@ class SalesInvoiceLine(Base):
     # asked to, so a register that relied on the cascade alone would behave one way
     # under test and another in production. That is not a risk worth taking on a
     # record that gets declared to an authority.
+    #
+    # `lazy="selectin"` because `rationed` is read wherever a line is serialised, and
+    # five different services load invoice lines. Making each of them remember a chained
+    # `selectinload` means the sixth one raises MissingGreenlet at runtime — which is
+    # exactly how this was found. Loading it with the line costs one small query per
+    # invoice and cannot be forgotten.
     rationed_entry: Mapped["RationedLine | None"] = relationship(
         back_populates="invoice_line",
         cascade="all, delete-orphan",
         uselist=False,
+        lazy="selectin",
     )
+
+    @property
+    def rationed(self) -> bool:
+        """Whether this line is filed in the customer's regulated-goods register.
+
+        Read by `SalesLineOut` so the invoice form can restore the tick when an invoice
+        is reopened for editing. Without it an edit would silently unfile every
+        regulated line on the invoice — the form would rebuild the rows with the box
+        clear and save that as the truth.
+        """
+        return self.rationed_entry is not None
 
 
 class SalesInvoiceTax(Base):
@@ -864,6 +882,37 @@ class RationedRecord(Base):
     lines: Mapped[list["RationedLine"]] = relationship(
         back_populates="record", cascade="all, delete-orphan"
     )
+    taxes: Mapped[list["RationedRecordTax"]] = relationship(
+        back_populates="record", cascade="all, delete-orphan"
+    )
+
+
+class RationedRecordTax(Base):
+    """One tax to show on a register's printed declaration.
+
+    Name and rate are snapshotted the way `SalesInvoiceTax` snapshots them, so a
+    declaration keeps showing the rate it was issued under even if the TaxRate is later
+    edited or deleted. The **amount is not stored**, and that is the one deliberate
+    difference: a register's goods total moves whenever an invoice behind it is
+    corrected, so a frozen tax amount would be the only stale number on an otherwise
+    live document — and the one an authority would check first.
+    """
+
+    __tablename__ = "rationed_record_taxes"
+
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    record_id: Mapped[int] = mapped_column(
+        ForeignKey("rationed_records.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    tax_rate_id: Mapped[int | None] = mapped_column(
+        ForeignKey("tax_rates.id", ondelete="SET NULL"), nullable=True
+    )
+    name: Mapped[str] = mapped_column(String(100), nullable=False)
+    rate: Mapped[Decimal] = mapped_column(Numeric(6, 3), nullable=False)
+
+    record: Mapped["RationedRecord"] = relationship(back_populates="taxes")
 
 
 class RationedLine(Base):

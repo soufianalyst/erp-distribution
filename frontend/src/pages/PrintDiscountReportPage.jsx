@@ -40,7 +40,7 @@ export default function PrintDiscountReportPage() {
         <Button onClick={() => window.print()}>🖨️ طباعة</Button>
       </div>
 
-      <div className="mx-auto max-w-[210mm] bg-white p-10 shadow print:max-w-none print:p-0 print:shadow-none">
+      <div className="mx-auto max-w-[210mm] bg-white p-10 text-slate-900 shadow print:max-w-none print:p-0 print:shadow-none">
         <header className="flex items-start justify-between border-b-4 border-slate-800 pb-4">
           <div>
             <h1 className="text-2xl font-extrabold text-slate-900">{company.data.name}</h1>

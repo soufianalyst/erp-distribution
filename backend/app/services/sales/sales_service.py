@@ -1029,7 +1029,8 @@ class SalesService:
         result = await self.session.execute(
             select(SalesInvoice)
             .options(
-                selectinload(SalesInvoice.lines), selectinload(SalesInvoice.taxes)
+                selectinload(SalesInvoice.lines),
+                selectinload(SalesInvoice.taxes),
             )
             .where(SalesInvoice.id == invoice_id)
         )
@@ -1060,7 +1061,8 @@ class SalesService:
         stmt = (
             select(SalesInvoice)
             .options(
-                selectinload(SalesInvoice.lines), selectinload(SalesInvoice.taxes)
+                selectinload(SalesInvoice.lines),
+                selectinload(SalesInvoice.taxes),
             )
             .order_by(SalesInvoice.id.desc())
         )

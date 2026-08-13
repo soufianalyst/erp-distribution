@@ -522,6 +522,9 @@ export function Badge({ tone = "slate", children }) {
     red: "bg-rose-100 text-rose-800 dark:bg-rose-900/50 dark:text-rose-200",
     amber: "bg-amber-100 text-amber-800 dark:bg-amber-900/50 dark:text-amber-200",
     blue: "bg-sky-100 text-sky-800 dark:bg-sky-900/50 dark:text-sky-200",
+    // Reserved for المواد المقننة, which is a classification rather than a state —
+    // reusing a status colour for it would read as "this line is fine / late / paid".
+    indigo: "bg-indigo-100 text-indigo-800 dark:bg-indigo-900/50 dark:text-indigo-200",
   };
   return (
     <span

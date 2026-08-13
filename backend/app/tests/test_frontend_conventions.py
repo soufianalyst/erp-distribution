@@ -34,6 +34,7 @@ ALLOWED = {
     "pages/PrintAdjustmentPage.jsx": "printed document",
     "pages/PrintDamageReportPage.jsx": "printed document",
     "pages/PrintDiscountReportPage.jsx": "printed document",
+    "pages/PrintRationedPage.jsx": "printed document",
     # Detail views of a single record — bounded by the document itself, not by how
     # much the business has traded.
     "pages/AuditLogPage.jsx": "before/after fields of one audited change",

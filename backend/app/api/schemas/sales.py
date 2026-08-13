@@ -94,6 +94,10 @@ class SalesLineOut(BaseModel):
     # later rename cannot rewrite what this invoice says it sold.
     product_name: str
     unit_name: str
+    # المواد المقننة: filed in the customer's regulated-goods register. Reflected back
+    # so reopening the invoice for edit restores the tick rather than clearing it — an
+    # edit would otherwise unfile every regulated line on the invoice silently.
+    rationed: bool
     # Warehouse this line was picked from — drives print grouping by warehouse.
     warehouse_id: int | None
     quantity: Decimal
@@ -667,6 +671,24 @@ class RationedEntryOut(BaseModel):
     added_at: datetime
 
 
+class RationedTaxLineOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    # Read by the register screen to tick the boxes it saved last time.
+    tax_rate_id: int | None
+    name: str
+    rate: Decimal
+    # Computed from the register's current goods total, not stored — see
+    # RationedRecordTax for why the amount is deliberately not frozen.
+    amount: Decimal
+
+
+class RationedTaxesIn(BaseModel):
+    """Which taxes the printed declaration shows. Empty means none."""
+
+    tax_rate_ids: list[int] = Field(default_factory=list)
+
+
 class RationedRegisterOut(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
@@ -683,6 +705,9 @@ class RationedRegisterOut(BaseModel):
     total_quantity: Decimal
     # A value, not an amount due: these goods were already charged on their invoices.
     total_value: Decimal
+    taxes: list[RationedTaxLineOut]
+    tax_total: Decimal
+    grand_total: Decimal
     entries: list[RationedEntryOut]
 
 

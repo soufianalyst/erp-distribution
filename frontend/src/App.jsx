@@ -20,6 +20,7 @@ import MarkdownPlanPage from "./pages/MarkdownPlanPage";
 import FieldPage from "./pages/FieldPage";
 import LoginPage from "./pages/LoginPage";
 import PrintInvoicePage from "./pages/PrintInvoicePage";
+import PrintRationedPage from "./pages/PrintRationedPage";
 import PrintPickingPage from "./pages/PrintPickingPage";
 import PrintAdjustmentPage from "./pages/PrintAdjustmentPage";
 import PrintDamageReportPage from "./pages/PrintDamageReportPage";
@@ -129,6 +130,14 @@ function StaffApp() {
               element={
                 <RequireAuth>
                   <PrintStocktakePage />
+                </RequireAuth>
+              }
+            />
+            <Route
+              path="/print/rationed/:recordId"
+              element={
+                <RequireAuth>
+                  <PrintRationedPage />
                 </RequireAuth>
               }
             />

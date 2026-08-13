@@ -12,6 +12,7 @@ from app.api.schemas.sales import (
     RationedCloseIn,
     RationedCloseOut,
     RationedRecordSummaryOut,
+    RationedTaxesIn,
     RationedRegisterOut,
     CollectionActivityIn,
     CollectionActivityOut,
@@ -741,3 +742,26 @@ async def untag_rationed_line(
     """
     await RationedService(db).untag(line_id)
     return APIResponse(data=None, message="تم حذف السطر من سجل المواد المقننة.")
+
+
+@router.put(
+    "/rationed/{record_id}/taxes",
+    response_model=APIResponse[RationedRegisterOut],
+    dependencies=[rationed_manage],
+)
+async def set_rationed_taxes(
+    record_id: int, body: RationedTaxesIn, db: AsyncSession = Depends(get_db)
+) -> APIResponse[RationedRegisterOut]:
+    """اختيار الضرائب التي تظهر على بيان المواد المقننة عند طباعته.
+
+    تُحفظ على السجل نفسه لا على شاشة الطباعة، حتى لا تُنتج طباعتان للبيان نفسه رقمين
+    مختلفين. النسبة تُثبَّت كما هي اليوم، أما المبلغ فيُحسب من قيمة المواد الحالية:
+    قيمة السجل تتغير بتغيّر فواتيره، فلو جُمِّد مبلغ الضريبة لكان الرقم الوحيد القديم
+    في بيان كل ما فيه حديث.
+    """
+    service = RationedService(db)
+    await service.set_taxes(record_id, body.tax_rate_ids)
+    return APIResponse(
+        data=RationedRegisterOut.model_validate(await service.load(record_id)),
+        message="تم تحديث ضرائب البيان.",
+    )

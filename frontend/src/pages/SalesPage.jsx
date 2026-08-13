@@ -31,7 +31,16 @@ import api, { apiMessage } from "../services/api";
 // Matches the shared Table's page size, so the pager and the server agree.
 const PAGE_SIZE = 15;
 
-const EMPTY_LINE = { product_id: "", product_label: "", quantity: "", unit_id: "" };
+// `rationed` is المواد المقننة: the line is charged on this invoice like any other,
+// and also filed in the customer's regulated-goods register. Off by default — filing
+// is the exception, and a flag that defaults on would silently declare everything.
+const EMPTY_LINE = {
+  product_id: "",
+  product_label: "",
+  quantity: "",
+  unit_id: "",
+  rationed: false,
+};
 
 
 
@@ -179,10 +188,16 @@ function FinalizeInvoice({ totals, initialCollectable, onConfirm, onCancel, busy
 function linesFromInvoice(invoice) {
   const byProduct = {};
   const named = {};
+  const filed = {};
   for (const line of invoice.lines) {
     byProduct[line.product_id] =
       (byProduct[line.product_id] || 0) + Number(line.quantity);
     named[line.product_id] = line.product_name;
+    // FEFO can split one form line across several batches, so the flag is read from
+    // whichever piece carries it. Restoring it matters more than it looks: the form
+    // rebuilds the invoice from these rows on save, so a row that came back unticked
+    // would quietly remove the line from the customer's register.
+    filed[line.product_id] = filed[line.product_id] || !!line.rationed;
   }
   // Labelled from the invoice's own line, not from a catalogue lookup: the form used
   // to need all 1,060 products loaded before it could show what an invoice contained.
@@ -193,6 +208,7 @@ function linesFromInvoice(invoice) {
     product_label: named[product_id] ?? "",
     quantity: String(quantity),
     unit_id: "",
+    rationed: !!filed[product_id],
   }));
 }
 
@@ -398,6 +414,23 @@ function InvoiceForm({
                     {warehouses.find((w) => w.id === product.warehouse_id)?.name ??
                       "⚠️ الصنف غير مرتبط بمستودع"}
                   </div>
+                )}
+                {/* Under the product rather than in its own column: the row already
+                    spends all twelve columns, and the flag is a fact about the item,
+                    not a third figure to enter. Shown once a product is chosen so a
+                    blank new row stays blank. */}
+                {line.product_id && (
+                  <label
+                    className="mt-1 flex w-fit cursor-pointer items-center gap-1.5 text-xs font-bold text-indigo-700 dark:text-indigo-300"
+                    title="تُحتسب على الفاتورة كالمعتاد، وتُسجَّل إضافياً في سجل المواد المقننة للعميل."
+                  >
+                    <input
+                      type="checkbox"
+                      checked={!!line.rationed}
+                      onChange={(e) => setLine(index, "rationed", e.target.checked)}
+                    />
+                    مادة مقننة — تُسجَّل باسم العميل
+                  </label>
                 )}
               </div>
               <div className="col-span-2">
@@ -1483,8 +1516,15 @@ export default function SalesPage() {
                 {
                   key: "product_id",
                   label: "الصنف",
-                  // Invoice lines carry the name they were sold under.
-                  render: (r) => r.product_name,
+                  // Invoice lines carry the name they were sold under. The badge marks
+                  // a line filed in the customer's regulated-goods register, so the
+                  // filing is visible from the invoice and not only from the register.
+                  render: (r) => (
+                    <span className="flex flex-wrap items-center gap-1.5">
+                      {r.product_name}
+                      {r.rationed && <Badge tone="indigo">مقننة</Badge>}
+                    </span>
+                  ),
                 },
                 { key: "batch_number", label: "التشغيلة (FEFO)" },
                 { key: "quantity", label: "الكمية", render: (r) => qty(r.quantity) },
