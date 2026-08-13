@@ -59,6 +59,10 @@ class SalesLineIn(BaseModel):
     quantity: Decimal = Field(gt=0)
     # Optional alternative unit; when omitted the quantity is in the base unit.
     unit_id: int | None = None
+    # المواد المقننة: file this line in the customer's regulated-goods register as
+    # well as selling it. Purely additional — the line is priced, charged, posted and
+    # picked exactly as any other, and the register has no accounting effect at all.
+    rationed: bool = False
 
 
 class SalesInvoiceCreate(BaseModel):
@@ -641,3 +645,62 @@ class CollectionActivityOut(BaseModel):
     note: str | None
     created_by: int | None
     created_at: datetime
+
+
+# --- المواد المقننة (regulated-goods register) ---
+class RationedEntryOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    line_id: int
+    invoice_id: int
+    invoice_reference: str
+    invoice_date: date
+    product_id: int
+    product_name: str
+    unit_name: str
+    quantity: Decimal
+    # Sent back on a posted credit note, so the register shows what was kept.
+    returned_quantity: Decimal
+    net_quantity: Decimal
+    unit_price: Decimal
+    net_total: Decimal
+    added_at: datetime
+
+
+class RationedRegisterOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    record_id: int
+    customer_id: int
+    customer_name: str
+    customer_phone: str | None
+    opened_at: datetime
+    closed_at: datetime | None
+    closed_by_name: str | None
+    notes: str | None
+    is_open: bool
+    line_count: int
+    total_quantity: Decimal
+    # A value, not an amount due: these goods were already charged on their invoices.
+    total_value: Decimal
+    entries: list[RationedEntryOut]
+
+
+class RationedRecordSummaryOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: int
+    opened_at: datetime
+    closed_at: datetime | None
+    notes: str | None
+
+
+class RationedCloseIn(BaseModel):
+    notes: str | None = Field(default=None, max_length=500)
+
+
+class RationedCloseOut(BaseModel):
+    closed: RationedRegisterOut
+    # The register that is now accumulating: closing one always opens the next, so a
+    # tag recorded a second later has somewhere to go.
+    new_record_id: int

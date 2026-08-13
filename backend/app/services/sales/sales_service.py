@@ -259,8 +259,11 @@ class SalesService:
         customer: Customer,
         price_overrides: dict[int, Decimal] | None = None,
         source_warehouse_id: int | None = None,
-    ) -> tuple[Decimal, Decimal]:
-        """FEFO-allocate the requested lines onto the invoice; returns (subtotal, cost_total).
+    ) -> tuple[Decimal, Decimal, list[SalesInvoiceLine]]:
+        """FEFO-allocate the requested lines onto the invoice.
+
+        Returns (subtotal, cost_total, rationed_lines) — the third being the invoice
+        lines whose input asked to be filed in the customer's regulated-goods register.
 
         One input line becomes one invoice line per allocated batch. `price_overrides`
         (keyed by product_id) is for internal use only — e.g. honoring a quotation's
@@ -290,6 +293,7 @@ class SalesService:
 
         subtotal = Decimal("0")
         cost_total = Decimal("0")
+        rationed: list[SalesInvoiceLine] = []
         for line in data.lines:
             product = await self.stock.get_active_product(line.product_id)
             if product.warehouse_id is None:
@@ -348,7 +352,13 @@ class SalesService:
                     cost_total += (take * batch.unit_cost).quantize(
                         TWO_PLACES, rounding=ROUND_HALF_UP
                     )
-        return subtotal, cost_total
+                # المواد المقننة: FEFO can split one requested line across several
+                # batches, so the flag travels from the *input* line to every invoice
+                # line it produced. Tagging only the first would under-declare a
+                # product drawn from two lots.
+                if getattr(line, "rationed", False):
+                    rationed.append(invoice.lines[-1])
+        return subtotal, cost_total, rationed
 
     @staticmethod
     def _resolve_invoice_warehouse(invoice: SalesInvoice) -> int | None:
@@ -551,7 +561,7 @@ class SalesService:
             client_uuid=client_uuid,
         )
 
-        subtotal, cost_total = await self._build_lines(
+        subtotal, cost_total, rationed_lines = await self._build_lines(
             invoice, data, customer, price_overrides, source_warehouse_id
         )
         invoice.warehouse_id = self._resolve_invoice_warehouse(invoice)
@@ -582,6 +592,16 @@ class SalesService:
         self.session.add(invoice)
         await self.session.flush()
         await self._post_invoice_entries(invoice, customer, subtotal, cost_total, user)
+
+        if rationed_lines:
+            # Inside the same transaction as the sale, so a register entry cannot
+            # survive an invoice that rolled back. It posts nothing — see
+            # RationedService — it only files pointers to the lines just written.
+            from app.services.sales.rationed_service import RationedService
+
+            await RationedService(self.session).tag_lines(
+                [line.id for line in rationed_lines], user
+            )
 
         # Single commit: stock deduction, the invoice, and its postings succeed or fail together.
         await self.session.commit()
@@ -815,7 +835,9 @@ class SalesService:
         invoice.total = Decimal("0")
         invoice.paid_amount = Decimal("0")
 
-        subtotal, cost_total = await self._build_lines(invoice, data, customer)
+        subtotal, cost_total, rationed_lines = await self._build_lines(
+            invoice, data, customer
+        )
         invoice.warehouse_id = self._resolve_invoice_warehouse(invoice)
         vat_amount = self._apply_taxes(invoice, tax_rates, subtotal)
         gross = subtotal + vat_amount
@@ -843,6 +865,17 @@ class SalesService:
 
         await self.session.flush()
         await self._post_invoice_entries(invoice, customer, subtotal, cost_total, user)
+
+        # An edit replaces the invoice's lines, and the register's pointers to the old
+        # ones went with them (ON DELETE CASCADE). Re-filing here is what makes the
+        # register follow a correction rather than keep declaring the superseded
+        # quantities — the behaviour the register exists to have.
+        if rationed_lines:
+            from app.services.sales.rationed_service import RationedService
+
+            await RationedService(self.session).tag_lines(
+                [line.id for line in rationed_lines], user
+            )
 
         await self.session.commit()
         return await self.get_invoice(invoice.id)

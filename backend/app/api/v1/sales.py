@@ -9,6 +9,10 @@ from app.api.deps import require_permissions
 from app.api.schemas.common import APIResponse
 from app.api.schemas.pagination import Page, PageParams
 from app.api.schemas.sales import (
+    RationedCloseIn,
+    RationedCloseOut,
+    RationedRecordSummaryOut,
+    RationedRegisterOut,
     CollectionActivityIn,
     CollectionActivityOut,
     CollectionsWorklistOut,
@@ -42,6 +46,7 @@ from app.api.schemas.sales import (
 from app.db.session import get_db
 from app.domain.models.sales import CollectionOutcome
 from app.services.sales.collections_service import CollectionsService
+from app.services.sales.rationed_service import RationedService
 from app.domain.models.user import User
 from app.domain.models.sales import CreditResolution, RoundSettlementStatus
 from app.services.sales.field_sync_service import FieldSyncService
@@ -631,3 +636,108 @@ async def collection_history(
     return APIResponse(
         data=[CollectionActivityOut.model_validate(a) for a in history]
     )
+
+
+# --- المواد المقننة (regulated-goods register) ---
+#
+# Nothing under here posts to the ledger, moves stock, or bills anybody. The goods were
+# charged on their sales invoices; this is the parallel record of which client took
+# which of them, kept so a monthly declaration can be produced.
+rationed_view = Depends(require_permissions("sales.rationed_view"))
+rationed_manage = Depends(require_permissions("sales.rationed_manage"))
+
+
+@router.get(
+    "/customers/{customer_id}/rationed",
+    response_model=APIResponse[RationedRegisterOut],
+)
+async def customer_rationed_register(
+    customer_id: int,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(require_permissions("sales.rationed_view")),
+) -> APIResponse[RationedRegisterOut]:
+    """سجل المواد المقننة المفتوح لهذا العميل — واحد فقط في كل وقت.
+
+    ليس فاتورة ولا يُرحّل محاسبياً: المواد نفسها محسوبة على فواتير البيع العادية،
+    وهذا سجل بما استلمه العميل منها ليُصدر منه الإقرار الشهري.
+
+    الكميات والأسعار تُقرأ من أسطر الفواتير مباشرة ولا تُنسخ هنا، فأي تصحيح أو إلغاء
+    أو مرتجع على الفاتورة يظهر في السجل تلقائياً.
+    """
+    service = RationedService(db)
+    customer = await SalesService(db).get_customer(customer_id)
+    SalesService(db).ensure_customer_access(current_user, customer)
+    register = await service.register_for(customer_id)
+    return APIResponse(data=RationedRegisterOut.model_validate(register))
+
+
+@router.get(
+    "/rationed/{record_id}",
+    response_model=APIResponse[RationedRegisterOut],
+    dependencies=[rationed_view],
+)
+async def rationed_register(
+    record_id: int, db: AsyncSession = Depends(get_db)
+) -> APIResponse[RationedRegisterOut]:
+    """سجل بعينه، مفتوحاً كان أو مقفلاً — للعرض والطباعة."""
+    register = await RationedService(db).load(record_id)
+    return APIResponse(data=RationedRegisterOut.model_validate(register))
+
+
+@router.get(
+    "/customers/{customer_id}/rationed/history",
+    response_model=APIResponse[list[RationedRecordSummaryOut]],
+    dependencies=[rationed_view],
+)
+async def rationed_history(
+    customer_id: int, db: AsyncSession = Depends(get_db)
+) -> APIResponse[list[RationedRecordSummaryOut]]:
+    """السجلات المقفلة لهذا العميل، الأحدث أولاً."""
+    records = await RationedService(db).history(customer_id)
+    return APIResponse(
+        data=[RationedRecordSummaryOut.model_validate(r) for r in records]
+    )
+
+
+@router.post(
+    "/rationed/{record_id}/close",
+    response_model=APIResponse[RationedCloseOut],
+)
+async def close_rationed_register(
+    record_id: int,
+    body: RationedCloseIn,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(require_permissions("sales.rationed_manage")),
+) -> APIResponse[RationedCloseOut]:
+    """إقفال السجل الحالي وفتح سجل جديد للعميل في الحال.
+
+    يُرفض إقفال سجل فارغ: إقرار بلا أسطر ليس سجلاً لشيء، وسيبدو في التاريخ كشهرٍ لم
+    يستلم فيه العميل أي مواد مقننة.
+    """
+    closed, new_record_id = await RationedService(db).close(
+        record_id, current_user, notes=body.notes
+    )
+    return APIResponse(
+        data=RationedCloseOut(
+            closed=RationedRegisterOut.model_validate(closed),
+            new_record_id=new_record_id,
+        ),
+        message="تم إقفال سجل المواد المقننة وفتح سجل جديد.",
+    )
+
+
+@router.delete(
+    "/rationed/lines/{line_id}",
+    response_model=APIResponse[None],
+    dependencies=[rationed_manage],
+)
+async def untag_rationed_line(
+    line_id: int, db: AsyncSession = Depends(get_db)
+) -> APIResponse[None]:
+    """حذف سطر من السجل المفتوح؛ لا يمسّ الفاتورة ولا المخزون ولا الحسابات.
+
+    السجل المقفل لا يُعدَّل: نسخته مطبوعة ومُعلنة، وحذف سطر منه يجعل الورق والنظام
+    يتناقضان بشأن ما أُبلغت به الجهة.
+    """
+    await RationedService(db).untag(line_id)
+    return APIResponse(data=None, message="تم حذف السطر من سجل المواد المقننة.")

@@ -67,6 +67,17 @@ PERMISSION_GROUPS: list[dict] = [
                 "label": "الموافقة على تجاوز الحد الائتماني",
             },
             {
+                # Seeing the register and *changing* it are separate: a rep needs to
+                # know what his shop has taken so he can answer for it, and must not
+                # be the one deciding what a monthly declaration says.
+                "code": "sales.rationed_view",
+                "label": "عرض سجل المواد المقننة",
+            },
+            {
+                "code": "sales.rationed_manage",
+                "label": "تعديل وإقفال وطباعة سجل المواد المقننة",
+            },
+            {
                 # Chasing debt is its own job, held apart from raising invoices: the
                 # person selling to a shop is the last one who wants to be the one
                 # refusing it credit.
@@ -243,6 +254,7 @@ ROLE_DEFAULT_PERMISSIONS: dict[str, frozenset[str]] = {
             "sales.payments",
             # Scoped to his own shops by the same rule as the customer list.
             "sales.collections",
+            "sales.rationed_view",
             "delivery.view",
             "settings.view",
         }
@@ -279,6 +291,8 @@ ROLE_DEFAULT_PERMISSIONS: dict[str, frozenset[str]] = {
             "sales.payments",
             # The accountant works the whole book; a rep only his own shops.
             "sales.collections",
+            "sales.rationed_view",
+            "sales.rationed_manage",
             "sales.all_customers",
             "suppliers.view",
             "suppliers.manage",

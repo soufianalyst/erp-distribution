@@ -10,10 +10,12 @@ from sqlalchemy import (
     DateTime,
     Enum,
     ForeignKey,
+    Index,
     Integer,
     Numeric,
     String,
     func,
+    text,
 )
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
@@ -206,6 +208,17 @@ class SalesInvoiceLine(Base):
     line_total: Mapped[Decimal] = mapped_column(Numeric(14, 2), nullable=False)
 
     invoice: Mapped[SalesInvoice] = relationship(back_populates="lines")
+    # المواد المقننة. Declared here, on the *line*, so SQLAlchemy removes the register
+    # entry when the line goes — the database `ON DELETE CASCADE` is a backstop, not
+    # the mechanism. Tests run on SQLite, which does not enforce foreign keys unless
+    # asked to, so a register that relied on the cascade alone would behave one way
+    # under test and another in production. That is not a risk worth taking on a
+    # record that gets declared to an authority.
+    rationed_entry: Mapped["RationedLine | None"] = relationship(
+        back_populates="invoice_line",
+        cascade="all, delete-orphan",
+        uselist=False,
+    )
 
 
 class SalesInvoiceTax(Base):
@@ -797,3 +810,95 @@ class CollectionActivity(Base):
     )
 
     customer: Mapped[Customer] = relationship()
+
+
+class RationedRecord(Base):
+    """المواد المقننة — a per-customer register of regulated goods they received.
+
+    Not an invoice, and deliberately incapable of becoming one. Regulated stock is
+    sold and charged on the ordinary sales invoice like anything else; this is the
+    parallel register the business has to keep of *which* client took *which* of those
+    goods, so a monthly declaration can be produced from it.
+
+    Nothing here posts to the ledger, moves stock, or creates a receivable. Those all
+    happened on the real invoice, once. A second document that also touched the
+    accounts would double every regulated sale in the books.
+
+    **It holds no quantities and no prices.** A record is a set of pointers to real
+    invoice lines, and every figure on screen is read through to the line it points at.
+    That is what makes the register follow the invoice: correct a quantity, cancel an
+    invoice, take goods back, and the register changes with it, because there is only
+    one copy of the number and the invoice owns it. Copying the figures here would have
+    produced a register that was right on the day it was written and silently wrong
+    afterwards — which for a declaration to an authority is the worst failure mode
+    available.
+    """
+
+    __tablename__ = "rationed_records"
+    __table_args__ = (
+        # One open register per customer, enforced by the database rather than by the
+        # service remembering to check. A partial unique index: any number of closed
+        # records may exist, but only one may have closed_at IS NULL.
+        Index(
+            "uq_rationed_records_one_open_per_customer",
+            "customer_id",
+            unique=True,
+            postgresql_where=text("closed_at IS NULL"),
+            sqlite_where=text("closed_at IS NULL"),
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    customer_id: Mapped[int] = mapped_column(
+        ForeignKey("customers.id"), nullable=False, index=True
+    )
+    opened_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+    # NULL means this is the customer's current, still-accumulating register.
+    closed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    closed_by: Mapped[int | None] = mapped_column(ForeignKey("users.id"))
+    notes: Mapped[str | None] = mapped_column(String(500))
+
+    customer: Mapped[Customer] = relationship()
+    lines: Mapped[list["RationedLine"]] = relationship(
+        back_populates="record", cascade="all, delete-orphan"
+    )
+
+
+class RationedLine(Base):
+    """One invoice line marked as regulated, filed under a customer's register.
+
+    A pointer and nothing more. The unique constraint on `sales_invoice_line_id` is
+    what stops the same physical line being counted in two registers — or twice in
+    one — which on a monthly declaration would be an overstatement nobody could
+    explain afterwards.
+
+    Deleting the invoice takes its lines and therefore these rows with it: an entry
+    for goods on a cancelled invoice is not a record, it is a claim about a sale that
+    did not happen.
+    """
+
+    __tablename__ = "rationed_lines"
+
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    record_id: Mapped[int] = mapped_column(
+        ForeignKey("rationed_records.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    sales_invoice_line_id: Mapped[int] = mapped_column(
+        ForeignKey("sales_invoice_lines.id", ondelete="CASCADE"),
+        nullable=False,
+        unique=True,
+        index=True,
+    )
+    added_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+    added_by: Mapped[int | None] = mapped_column(ForeignKey("users.id"))
+
+    record: Mapped[RationedRecord] = relationship(back_populates="lines")
+    invoice_line: Mapped[SalesInvoiceLine] = relationship(
+        back_populates="rationed_entry"
+    )
