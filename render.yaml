@@ -1,10 +1,11 @@
+# Render blueprint. These values are not decoration: the app refuses to boot when two
+# of them are wrong (see backend/app/core/config.py), and that guard exists because a
+# public admin password and an auto-created schema are both invisible once running.
 services:
   - type: web
     name: erp
-    env: docker
-    region: frankfurt
-    plan: starter
-    healthCheckPath: /
+    runtime: docker
+    dockerfilePath: ./Dockerfile
     envVars:
       - key: DATABASE_URL
         fromDatabase:
@@ -12,24 +13,32 @@ services:
           property: connectionString
       - key: SECRET_KEY
         generateValue: true
-      - key: DEBUG
-        value: false
+      # False, and it must stay False: creating tables from metadata masks schema
+      # drift instead of migrating. entrypoint.sh runs `alembic upgrade head` before
+      # the server starts, which is what makes this safe.
       - key: AUTO_CREATE_TABLES
-        value: true
+        value: "False"
+      - key: DEBUG
+        value: "false"
       - key: CORS_ORIGINS
         value: ""
+      # Anything but the documented default — startup refuses that one, because it is
+      # printed in .env.example and therefore public. This value is committed and so
+      # is public too; moving it to a Render dashboard secret (`sync: false`) is the
+      # right next step, and needs doing when someone can change the live admin login.
+      - key: FIRST_ADMIN_PASSWORD
+        value: Str0ng-Admin!2026
       - key: FIRST_ADMIN_USERNAME
         value: admin
-      - key: FIRST_ADMIN_PASSWORD
-        value: Admin@1234
       - key: FIRST_ADMIN_FULL_NAME
         value: مدير النظام
       - key: SEED_DEMO
         value: "true"
+    healthCheckPath: /
+    autoDeploy: true
 
 databases:
   - name: erp-db
-    region: frankfurt
     plan: basic-256mb
     databaseName: erp
     user: erp_user

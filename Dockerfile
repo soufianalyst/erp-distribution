@@ -1,3 +1,4 @@
+# Multi-stage: build the React frontend, then package it with the Python backend.
 FROM node:20-alpine AS frontend-build
 
 WORKDIR /app/frontend
@@ -15,7 +16,8 @@ RUN pip install --no-cache-dir -r requirements.txt
 
 COPY backend/ .
 COPY --from=frontend-build /app/frontend/dist /app/frontend/dist
+RUN chmod +x entrypoint.sh
 
-EXPOSE 8000
+EXPOSE 10000
 
-CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8000"]
+CMD ["sh", "entrypoint.sh"]
