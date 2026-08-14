@@ -4,13 +4,11 @@ from collections.abc import AsyncIterator
 
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
-from app.core.config import get_settings
+from app.core.config import async_database_url, get_settings
 
 settings = get_settings()
 
-database_url = settings.DATABASE_URL
-if database_url.startswith("postgresql://"):
-    database_url = database_url.replace("postgresql://", "postgresql+asyncpg://", 1)
+database_url = async_database_url(settings.DATABASE_URL)
 
 engine = create_async_engine(database_url, echo=False, pool_pre_ping=True)
 

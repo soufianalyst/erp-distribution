@@ -115,3 +115,59 @@ class TestTheGuardReportsEverythingAtOnce:
         assert result.returncode != 0
         for expected in ("SECRET_KEY", "FIRST_ADMIN_PASSWORD", "AUTO_CREATE_TABLES"):
             assert expected in result.stderr, f"{expected} missing from the report"
+
+
+class TestTheDatabaseUrlIsNormalisedForAsyncpg:
+    """A hosting provider's URL must work when pasted in verbatim.
+
+    Render and Heroku hand out `postgres://`; asyncpg answers only to
+    `postgresql+asyncpg://`. Nobody rewrites that by hand at 2am while a deploy is
+    down, and the failure names the wrong thing when they forget:
+
+        Can't load plugin: sqlalchemy.dialects:postgres
+    """
+
+    def test_it_accepts_every_form_a_provider_hands_out(self) -> None:
+        from app.core.config import async_database_url
+
+        expected = "postgresql+asyncpg://u:p@host:5432/db"
+        assert async_database_url("postgres://u:p@host:5432/db") == expected
+        assert async_database_url("postgresql://u:p@host:5432/db") == expected
+        # Already correct — returned untouched rather than mangled into
+        # postgresql+asyncpg+asyncpg://
+        assert async_database_url(expected) == expected
+
+    def test_it_rewrites_only_the_scheme(self) -> None:
+        """The credentials and host survive, including a password containing the
+        substring it matches on."""
+        from app.core.config import async_database_url
+
+        url = "postgres://user:postgres://weird@db.internal:5432/erp"
+        assert async_database_url(url) == (
+            "postgresql+asyncpg://user:postgres://weird@db.internal:5432/erp"
+        )
+
+    def test_anything_else_is_left_alone(self) -> None:
+        """SQLite drives the test suite; it must pass through untouched."""
+        from app.core.config import async_database_url
+
+        assert async_database_url("sqlite+aiosqlite:///:memory:") == (
+            "sqlite+aiosqlite:///:memory:"
+        )
+
+    def test_both_readers_use_the_one_definition(self) -> None:
+        """Structural: the rewrite existed in two copies and they disagreed.
+
+        The app engine handled `postgresql://` and so did Alembic, and neither handled
+        `postgres://` — so a deploy could migrate and then fail to serve, or the reverse,
+        depending on which URL form was configured.
+        """
+        import pathlib
+
+        backend = pathlib.Path(__file__).resolve().parents[2]
+        for relative in ("app/db/session.py", "alembic/env.py"):
+            source = (backend / relative).read_text(encoding="utf-8")
+            assert "async_database_url" in source, f"{relative} must use the shared helper"
+            assert 'replace("postgresql://' not in source, (
+                f"{relative} has its own copy of the rewrite again"
+            )

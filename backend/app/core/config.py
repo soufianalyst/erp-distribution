@@ -51,6 +51,27 @@ class Settings(BaseSettings):
 
 
 @lru_cache
+def async_database_url(url: str) -> str:
+    """A database URL as SQLAlchemy's async driver needs to see it.
+
+    Managed hosts hand out `postgres://` (Render, Heroku) or `postgresql://`; asyncpg
+    only answers to `postgresql+asyncpg://`. Pasting a provider's URL in verbatim is the
+    normal thing to do, so the normalisation belongs here rather than in the reader's
+    head.
+
+    Written once because it was written twice. The application engine and Alembic each
+    carried their own copy and each handled only `postgresql://`, so a `postgres://` URL
+    failed in both — with `Can't load plugin: sqlalchemy.dialects:postgres`, which names
+    the symptom and not the cause.
+    """
+    if url.startswith("postgresql+asyncpg://"):
+        return url
+    for prefix in ("postgresql://", "postgres://"):
+        if url.startswith(prefix):
+            return f"postgresql+asyncpg://{url[len(prefix):]}"
+    return url
+
+
 def get_settings() -> Settings:
     """Load settings once, refusing to start on dev-only defaults outside debug.
 

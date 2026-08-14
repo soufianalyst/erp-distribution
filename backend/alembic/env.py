@@ -9,7 +9,7 @@ from sqlalchemy.engine import Connection
 from sqlalchemy.ext.asyncio import async_engine_from_config
 
 import app.domain.models  # noqa: F401  # register every table on Base.metadata
-from app.core.config import get_settings
+from app.core.config import async_database_url, get_settings
 from app.db.base import Base
 
 config = context.config
@@ -17,10 +17,7 @@ if config.config_file_name is not None:
     fileConfig(config.config_file_name)
 
 # Single source of truth: the same DATABASE_URL the application uses.
-db_url = get_settings().DATABASE_URL
-if db_url.startswith("postgresql://"):
-    db_url = db_url.replace("postgresql://", "postgresql+asyncpg://", 1)
-config.set_main_option("sqlalchemy.url", db_url)
+config.set_main_option("sqlalchemy.url", async_database_url(get_settings().DATABASE_URL))
 
 target_metadata = Base.metadata
 
